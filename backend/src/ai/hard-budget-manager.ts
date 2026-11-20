@@ -1,8 +1,26 @@
 import { AiProvider } from './types.js';
-import { getModelMetadata, calculateCallCost, DetailedTokenUsage } from './models-catalog.js';
+import {
+  getModelMetadata,
+  calculateCallCost,
+  DetailedTokenUsage,
+  FreeTierGroup,
+  OPENAI_FREE_TIER_LIMITS,
+  getModelFreeTierGroup,
+} from './models-catalog.js';
 import { DatabaseService } from '../storage/database.js';
 
 export type BudgetStatus = 'OK' | 'WARNING_50' | 'WARNING_80' | 'CRITICAL_95' | 'AI_BUDGET_EXCEEDED';
+
+export interface OpenAiFreeTierConfig {
+  enabled: boolean;                      // Proyecto participa en programa de tokens gratuitos (Data Sharing)
+  verified: boolean;                     // Verificado con OpenAI (no asumir beneficio hasta verificarlo)
+  verifiedAt?: number | null;
+  lastVerificationError?: string | null;
+  mainGroupDailyLimitTokens: number;     // 250,000 tokens/día (gpt-4o, gpt-6-luna, gpt-4-turbo)
+  smallGroupDailyLimitTokens: number;    // 2,500,000 tokens/día (gpt-4o-mini, o3-mini)
+  participatingOrganizationId?: string | null;
+  dataSharingConsentConfirmed?: boolean;
+}
 
 export interface HardBudgetConfig {
   dailyBudgetLimitUsd: number;      // Default: 0.50 USD
@@ -18,6 +36,7 @@ export interface HardBudgetConfig {
   autoResetPeriod: boolean;         // Default: true
   isBlocked: boolean;               // Mandatory hard stop flag
   blockedReason: string | null;
+  openaiFreeTier: OpenAiFreeTierConfig;
   updatedAt: number;
 }
 
@@ -57,6 +76,33 @@ export interface HardBudgetSummary {
     reasoningTokens: number;
     totalTokens: number;
   };
+  openaiFreeTier: {
+    enabled: boolean;
+    verified: boolean;
+    verifiedAt: number | null;
+    mainGroup: {
+      limitTokens: number;
+      usedTokens: number;
+      remainingTokens: number;
+      percentUsed: number;
+      models: string[];
+    };
+    smallGroup: {
+      limitTokens: number;
+      usedTokens: number;
+      remainingTokens: number;
+      percentUsed: number;
+      models: string[];
+    };
+    financialsToday: {
+      grossSpendUsd: number;
+      discountUsd: number;
+      netSpendUsd: number;
+      freeTokensConsumed: number;
+      paidTokensConsumed: number;
+      verifiedBilledSpendUsd: number | null;
+    };
+  };
   activeReservationsCount: number;
   totalCallsCount: number;
   nextDailyResetUtc: string;
@@ -77,6 +123,16 @@ export const DEFAULT_HARD_BUDGET_CONFIG: HardBudgetConfig = {
   autoResetPeriod: true,
   isBlocked: false,
   blockedReason: null,
+  openaiFreeTier: {
+    enabled: false,
+    verified: false,
+    verifiedAt: null,
+    lastVerificationError: null,
+    mainGroupDailyLimitTokens: OPENAI_FREE_TIER_LIMITS.MAIN_GROUP_DAILY_TOKENS,
+    smallGroupDailyLimitTokens: OPENAI_FREE_TIER_LIMITS.SMALL_GROUP_DAILY_TOKENS,
+    participatingOrganizationId: null,
+    dataSharingConsentConfirmed: false,
+  },
   updatedAt: Date.now(),
 };
 
@@ -90,9 +146,18 @@ export class HardBudgetManager {
   private config: HardBudgetConfig;
   private reservations: Map<string, BudgetReservation> = new Map();
   private triggeredThresholds: Set<number> = new Set();
+  private triggeredFreeTierThresholds: Set<string> = new Set();
   private lastResetDay: number = new Date().getUTCDate();
   private notifiers: NotifierCallbacks = {};
   private db?: DatabaseService;
+
+  // Trackers diarios para grupos de tokens gratuitos (Data Sharing OpenAI)
+  private mainGroupTokensUsedToday: number = 0;
+  private smallGroupTokensUsedToday: number = 0;
+  private grossSpendTodayUsd: number = 0;
+  private discountTodayUsd: number = 0;
+  private netSpendTodayUsd: number = 0;
+  private freeTokensConsumedToday: number = 0;
 
   // In-memory usage records for fast aggregation & recovery
   private usageRecords: Array<{
@@ -106,18 +171,50 @@ export class HardBudgetManager {
     cachedTokens: number;
     reasoningTokens: number;
     costUsd: number;
+    costGrossUsd?: number;
+    discountUsd?: number;
+    freeTierGroup?: FreeTierGroup;
+    isFreeTier?: boolean;
   }> = [];
 
   constructor(initialConfig?: Partial<HardBudgetConfig>, notifiers?: NotifierCallbacks, db?: DatabaseService) {
-    this.config = { ...DEFAULT_HARD_BUDGET_CONFIG, ...(initialConfig || {}) };
+    this.config = {
+      ...DEFAULT_HARD_BUDGET_CONFIG,
+      ...(initialConfig || {}),
+      openaiFreeTier: {
+        ...DEFAULT_HARD_BUDGET_CONFIG.openaiFreeTier,
+        ...(initialConfig?.openaiFreeTier || {}),
+      },
+    };
     if (notifiers) {
       this.notifiers = notifiers;
     }
     this.db = db;
+    if (this.db) {
+      this.syncDailyUsageFromDatabase();
+    }
   }
 
   public setDatabase(db: DatabaseService): void {
     this.db = db;
+    this.syncDailyUsageFromDatabase();
+  }
+
+  public syncDailyUsageFromDatabase(): void {
+    if (!this.db) return;
+    try {
+      const startOfDay = new Date();
+      startOfDay.setUTCHours(0, 0, 0, 0);
+      const usage = this.db.getFreeTierUsageToday(startOfDay.getTime());
+      if (usage) {
+        this.mainGroupTokensUsedToday = usage.mainGroupTokens || 0;
+        this.smallGroupTokensUsedToday = usage.smallGroupTokens || 0;
+        this.grossSpendTodayUsd = usage.grossSpendUsd || 0;
+        this.discountTodayUsd = usage.discountUsd || 0;
+        this.netSpendTodayUsd = usage.netSpendUsd || 0;
+        this.freeTokensConsumedToday = usage.freeTokensCount || 0;
+      }
+    } catch {}
   }
 
   public setNotifiers(notifiers: NotifierCallbacks): void {
@@ -142,11 +239,172 @@ export class HardBudgetManager {
     if (currentDay !== this.lastResetDay) {
       this.lastResetDay = currentDay;
       this.triggeredThresholds.clear();
+      this.triggeredFreeTierThresholds.clear();
+      this.mainGroupTokensUsedToday = 0;
+      this.smallGroupTokensUsedToday = 0;
+      this.grossSpendTodayUsd = 0;
+      this.discountTodayUsd = 0;
+      this.netSpendTodayUsd = 0;
+      this.freeTokensConsumedToday = 0;
       // If blocked solely due to daily limit, auto-unblock on new day
       if (this.config.isBlocked && this.config.blockedReason?.includes('diario')) {
         this.config.isBlocked = false;
         this.config.blockedReason = null;
         this.config.updatedAt = Date.now();
+      }
+    }
+  }
+
+  /**
+   * Returns the official Data Sharing Free Tier Group for a given model.
+   */
+  public getFreeTierGroup(model: string): FreeTierGroup {
+    return getModelFreeTierGroup(model);
+  }
+
+  /**
+   * Returns remaining daily free tokens for a given group.
+   */
+  public getRemainingFreeTokens(group: FreeTierGroup): number {
+    this.checkPeriodReset();
+    const cfg = this.config.openaiFreeTier;
+    if (!cfg || !cfg.enabled || !cfg.verified) return 0;
+    if (group === 'MAIN') {
+      return Math.max(0, cfg.mainGroupDailyLimitTokens - this.mainGroupTokensUsedToday);
+    }
+    if (group === 'SMALL') {
+      return Math.max(0, cfg.smallGroupDailyLimitTokens - this.smallGroupTokensUsedToday);
+    }
+    return 0;
+  }
+
+  /**
+   * Evaluates OpenAI Free Tier eligibility and applies the Official Overage Rule:
+   * "Considerar que una solicitud que supera el cupo disponible puede facturarse completamente."
+   */
+  public calculateFreeTierBenefit(
+    model: string,
+    totalTokens: number,
+    grossCostUsd: number
+  ): {
+    group: FreeTierGroup;
+    isEligible: boolean;
+    isFree: boolean;
+    totalTokens: number;
+    grossCostUsd: number;
+    discountUsd: number;
+    netCostUsd: number;
+    reason: string;
+  } {
+    this.checkPeriodReset();
+    const meta = getModelMetadata(model);
+    const group = meta.freeTierGroup || 'NONE';
+    const cfg = this.config.openaiFreeTier;
+
+    if (meta.provider !== 'OPENAI' || group === 'NONE') {
+      return {
+        group: 'NONE',
+        isEligible: false,
+        isFree: false,
+        totalTokens,
+        grossCostUsd,
+        discountUsd: 0,
+        netCostUsd: grossCostUsd,
+        reason: meta.provider !== 'OPENAI' ? 'Proveedor no es OpenAI' : 'Modelo no elegible para tokens gratuitos',
+      };
+    }
+
+    if (!cfg || !cfg.enabled) {
+      return {
+        group,
+        isEligible: false,
+        isFree: false,
+        totalTokens,
+        grossCostUsd,
+        discountUsd: 0,
+        netCostUsd: grossCostUsd,
+        reason: 'Programa de tokens gratuitos de OpenAI no habilitado',
+      };
+    }
+
+    if (!cfg.verified) {
+      return {
+        group,
+        isEligible: false,
+        isFree: false,
+        totalTokens,
+        grossCostUsd,
+        discountUsd: 0,
+        netCostUsd: grossCostUsd,
+        reason: 'Programa no verificado con OpenAI (estimación conservadora)',
+      };
+    }
+
+    const remaining = this.getRemainingFreeTokens(group);
+
+    // Regla de Exceso Oficial: Si una solicitud supera el cupo remanente, se factura 100% como costo bruto
+    if (totalTokens > remaining) {
+      return {
+        group,
+        isEligible: true,
+        isFree: false,
+        totalTokens,
+        grossCostUsd,
+        discountUsd: 0,
+        netCostUsd: grossCostUsd,
+        reason: `Solicitud (${totalTokens.toLocaleString()} tokens) supera cupo gratuito remanente (${remaining.toLocaleString()} tokens). Se factura 100% según regla oficial.`,
+      };
+    }
+
+    // Cumple con el cupo gratuito: 100% bonificado
+    return {
+      group,
+      isEligible: true,
+      isFree: true,
+      totalTokens,
+      grossCostUsd,
+      discountUsd: grossCostUsd,
+      netCostUsd: 0,
+      reason: `Beneficio Data Sharing OpenAI aplicado: 100% bonificado (${group === 'MAIN' ? 'Grupo Principal' : 'Grupo Modelos Pequeños'}).`,
+    };
+  }
+
+  /**
+   * Checks thresholds (80%, 95%, 100%) for free tier groups.
+   */
+  public checkFreeTierThresholds(group: FreeTierGroup): void {
+    if (group === 'NONE') return;
+    const cfg = this.config.openaiFreeTier;
+    if (!cfg || !cfg.enabled || !cfg.verified) return;
+
+    const limit = group === 'MAIN' ? cfg.mainGroupDailyLimitTokens : cfg.smallGroupDailyLimitTokens;
+    const used = group === 'MAIN' ? this.mainGroupTokensUsedToday : this.smallGroupTokensUsedToday;
+    const percent = Math.min(100, (used / limit) * 100);
+    const groupLabel = group === 'MAIN' ? 'Grupo Principal (250k)' : 'Grupo Modelos Pequeños (2.5M)';
+
+    for (const threshold of [80, 95, 100]) {
+      const key = `${group}_${threshold}`;
+      if (percent >= threshold && !this.triggeredFreeTierThresholds.has(key)) {
+        this.triggeredFreeTierThresholds.add(key);
+
+        const severity = threshold === 100 ? 'CRITICAL' : threshold === 95 ? 'WARNING' : 'INFO';
+        const title =
+          threshold === 100
+            ? `🛑 Cupo Gratuito OpenAI Agotado (100%) - ${groupLabel}`
+            : `⚠️ Cupo Gratuito OpenAI al ${threshold}% - ${groupLabel}`;
+        const msg =
+          threshold === 100
+            ? `Se han consumido ${used.toLocaleString()} de ${limit.toLocaleString()} tokens gratuitos diarios de OpenAI en el ${groupLabel}. Las siguientes solicitudes se facturarán contra el presupuesto diario monetario ($${this.config.dailyBudgetLimitUsd.toFixed(2)} USD).`
+            : `El consumo de tokens gratuitos de OpenAI en el ${groupLabel} alcanzó el ${percent.toFixed(1)}% (${used.toLocaleString()} / ${limit.toLocaleString()} tokens).`;
+
+        this.notifiers.sendTelegramAlert?.(title, msg, severity).catch(() => {});
+        this.notifiers.sendWebPushAlert?.(title, msg).catch(() => {});
+        this.notifiers.logAudit?.('OPENAI_FREE_TIER', `ALERT_${threshold}`, {
+          group,
+          percent: parseFloat(percent.toFixed(1)),
+          usedTokens: used,
+          limitTokens: limit,
+        });
       }
     }
   }
@@ -220,13 +478,14 @@ export class HardBudgetManager {
   /**
    * Pre-call Atomic Budget Reservation.
    * Calculates worst-case cost and checks all limits (daily, monthly, provider, model, task).
-   * If any limit would be exceeded, immediately blocks the call.
+   * Safeguard: Never assumes a request is free unless verified and within remaining quota.
    */
   public reserveBudget(params: {
     provider: AiProvider;
     model: string;
     task: string;
     maxEstimatedCostUsd?: number;
+    estimatedTokens?: number;
   }): {
     allowed: boolean;
     reservationId?: string;
@@ -246,14 +505,29 @@ export class HardBudgetManager {
       };
     }
 
-    const estimatedCost = params.maxEstimatedCostUsd ?? this.estimateWorstCaseCost(params.model);
+    const estimatedGrossCost = params.maxEstimatedCostUsd ?? this.estimateWorstCaseCost(params.model);
+    const estimatedTokens = params.estimatedTokens ?? 4000;
 
-    // 1. Max cost per request limit
-    if (estimatedCost > this.config.maxCostPerRequestUsd) {
+    // Check if eligible for verified OpenAI free tier
+    let isEstimatedFree = false;
+    const group = this.getFreeTierGroup(params.model);
+    if (params.provider === 'OPENAI' && group !== 'NONE' && this.config.openaiFreeTier?.enabled && this.config.openaiFreeTier?.verified) {
+      const remainingFree = this.getRemainingFreeTokens(group);
+      if (estimatedTokens <= remainingFree) {
+        isEstimatedFree = true;
+      }
+    }
+
+    // Regla Inviolable: Si NO es gratuito (o no está verificado, o excede el cupo),
+    // se debe reservar el 100% del costo bruto contra los límites monetarios.
+    const reservationAmount = isEstimatedFree ? 0 : estimatedGrossCost;
+
+    // 1. Max cost per request limit (checked against gross cost if paid)
+    if (!isEstimatedFree && estimatedGrossCost > this.config.maxCostPerRequestUsd) {
       return {
         allowed: false,
         status: 'AI_BUDGET_EXCEEDED',
-        reason: `Costo estimado de solicitud ($${estimatedCost.toFixed(4)}) supera el máximo por petición configurado ($${this.config.maxCostPerRequestUsd.toFixed(4)})`,
+        reason: `Costo estimado de solicitud ($${estimatedGrossCost.toFixed(4)}) supera el máximo por petición configurado ($${this.config.maxCostPerRequestUsd.toFixed(4)})`,
         violatedLimit: 'MAX_PER_REQUEST',
       };
     }
@@ -263,8 +537,8 @@ export class HardBudgetManager {
     const currentPending = this.getReservedPendingUsd();
 
     // 2. Global daily limit
-    if (currentToday + currentPending + estimatedCost > this.config.dailyBudgetLimitUsd) {
-      this.triggerBlock(`Límite de presupuesto diario alcanzado ($${(currentToday + currentPending).toFixed(4)} + $${estimatedCost.toFixed(4)} > $${this.config.dailyBudgetLimitUsd.toFixed(4)})`);
+    if (!isEstimatedFree && currentToday + currentPending + reservationAmount > this.config.dailyBudgetLimitUsd) {
+      this.triggerBlock(`Límite de presupuesto diario alcanzado ($${(currentToday + currentPending).toFixed(4)} + $${reservationAmount.toFixed(4)} > $${this.config.dailyBudgetLimitUsd.toFixed(4)})`);
       return {
         allowed: false,
         status: 'AI_BUDGET_EXCEEDED',
@@ -274,7 +548,7 @@ export class HardBudgetManager {
     }
 
     // 3. Global monthly limit
-    if (currentMonth + currentPending + estimatedCost > this.config.monthlyBudgetLimitUsd) {
+    if (!isEstimatedFree && currentMonth + currentPending + reservationAmount > this.config.monthlyBudgetLimitUsd) {
       this.triggerBlock(`Límite de presupuesto mensual alcanzado ($${(currentMonth + currentPending).toFixed(4)} > $${this.config.monthlyBudgetLimitUsd.toFixed(4)})`);
       return {
         allowed: false,
@@ -284,8 +558,8 @@ export class HardBudgetManager {
       };
     }
 
-    // 4. Provider specific limit
-    if (this.config.providerLimitsUsd) {
+    // 4. Provider specific limit (Gemini remains independent)
+    if (!isEstimatedFree && this.config.providerLimitsUsd) {
       const provKey = params.provider.toLowerCase() as 'openai' | 'gemini';
       const provLimit = this.config.providerLimitsUsd[provKey];
       if (provLimit !== undefined) {
@@ -294,7 +568,7 @@ export class HardBudgetManager {
         const provTodaySpend = this.usageRecords
           .filter((r) => r.timestamp >= startOfDay.getTime() && r.provider === params.provider)
           .reduce((acc, r) => acc + r.costUsd, 0);
-        if (provTodaySpend + estimatedCost > provLimit) {
+        if (provTodaySpend + reservationAmount > provLimit) {
           return {
             allowed: false,
             status: 'AI_BUDGET_EXCEEDED',
@@ -306,14 +580,14 @@ export class HardBudgetManager {
     }
 
     // 5. Model specific limit
-    if (this.config.modelLimitsUsd && this.config.modelLimitsUsd[params.model]) {
+    if (!isEstimatedFree && this.config.modelLimitsUsd && this.config.modelLimitsUsd[params.model]) {
       const modelLimit = this.config.modelLimitsUsd[params.model];
       const startOfDay = new Date();
       startOfDay.setUTCHours(0, 0, 0, 0);
       const modelTodaySpend = this.usageRecords
         .filter((r) => r.timestamp >= startOfDay.getTime() && r.model === params.model)
         .reduce((acc, r) => acc + r.costUsd, 0);
-      if (modelTodaySpend + estimatedCost > modelLimit) {
+      if (modelTodaySpend + reservationAmount > modelLimit) {
         return {
           allowed: false,
           status: 'AI_BUDGET_EXCEEDED',
@@ -324,14 +598,14 @@ export class HardBudgetManager {
     }
 
     // 6. Task specific limit
-    if (this.config.taskLimitsUsd && this.config.taskLimitsUsd[params.task]) {
+    if (!isEstimatedFree && this.config.taskLimitsUsd && this.config.taskLimitsUsd[params.task]) {
       const taskLimit = this.config.taskLimitsUsd[params.task];
       const startOfDay = new Date();
       startOfDay.setUTCHours(0, 0, 0, 0);
       const taskTodaySpend = this.usageRecords
         .filter((r) => r.timestamp >= startOfDay.getTime() && r.task === params.task)
         .reduce((acc, r) => acc + r.costUsd, 0);
-      if (taskTodaySpend + estimatedCost > taskLimit) {
+      if (taskTodaySpend + reservationAmount > taskLimit) {
         return {
           allowed: false,
           status: 'AI_BUDGET_EXCEEDED',
@@ -345,7 +619,7 @@ export class HardBudgetManager {
     const reservationId = `res_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     this.reservations.set(reservationId, {
       id: reservationId,
-      amountUsd: estimatedCost,
+      amountUsd: reservationAmount,
       provider: params.provider,
       model: params.model,
       task: params.task,
@@ -356,14 +630,13 @@ export class HardBudgetManager {
     return {
       allowed: true,
       reservationId,
-      reservedAmountUsd: estimatedCost,
+      reservedAmountUsd: reservationAmount,
       status: this.calculateCurrentStatus(),
     };
   }
 
   /**
-   * Reconciles a completed call: releases reservation and logs actual usage.
-   * If status is UNCERTAIN_TIMEOUT, holds estimated cost conservatively to protect the budget.
+   * Reconciles a completed call: releases reservation and logs actual usage with free tier benefit.
    */
   public reconcileReservation(
     reservationId: string,
@@ -379,41 +652,89 @@ export class HardBudgetManager {
       status?: 'SUCCESS' | 'UNCERTAIN_TIMEOUT' | 'ERROR';
       latencyMs?: number;
     }
-  ): void {
+  ): {
+    grossCostUsd: number;
+    discountUsd: number;
+    netCostUsd: number;
+    isFreeTier: boolean;
+    freeTierGroup: FreeTierGroup;
+    benefitReason: string;
+  } {
     const reservation = this.reservations.get(reservationId);
     this.reservations.delete(reservationId);
 
-    let actualCost: number;
+    const promptTokens = usage.promptTokens || 0;
+    const completionTokens = usage.completionTokens || 0;
+    const cachedTokens = usage.cachedTokens || 0;
+    const reasoningTokens = usage.reasoningTokens || 0;
+    const totalTokens = promptTokens + completionTokens + reasoningTokens;
+
+    let grossCost: number;
     if (usage.status === 'UNCERTAIN_TIMEOUT') {
-      actualCost = usage.costUsd !== undefined ? usage.costUsd : (reservation?.amountUsd || 0);
-    } else if (usage.status === 'ERROR' && (usage.promptTokens || 0) === 0 && (usage.completionTokens || 0) === 0) {
-      actualCost = 0;
+      grossCost = usage.costUsd !== undefined ? usage.costUsd : (reservation?.amountUsd || 0);
+    } else if (usage.status === 'ERROR' && promptTokens === 0 && completionTokens === 0) {
+      grossCost = 0;
     } else {
-      actualCost =
+      grossCost =
         usage.costUsd !== undefined
           ? usage.costUsd
           : calculateCallCost(usage.model, {
-              promptTokens: usage.promptTokens,
-              completionTokens: usage.completionTokens,
-              cachedTokens: usage.cachedTokens || 0,
-              reasoningTokens: usage.reasoningTokens || 0,
+              promptTokens,
+              completionTokens,
+              cachedTokens,
+              reasoningTokens,
             });
     }
+
+    // Calculate OpenAI free tier benefit
+    const benefit = this.calculateFreeTierBenefit(usage.model, totalTokens, grossCost);
+    const netCost = benefit.netCostUsd;
+    const discount = benefit.discountUsd;
+    const isFree = benefit.isFree;
+
+    if (isFree && benefit.group !== 'NONE') {
+      if (benefit.group === 'MAIN') {
+        this.mainGroupTokensUsedToday += totalTokens;
+      } else if (benefit.group === 'SMALL') {
+        this.smallGroupTokensUsedToday += totalTokens;
+      }
+      this.freeTokensConsumedToday += totalTokens;
+      this.checkFreeTierThresholds(benefit.group);
+    }
+
+    this.grossSpendTodayUsd += grossCost;
+    this.discountTodayUsd += discount;
+    this.netSpendTodayUsd += netCost;
 
     this.recordDirectUsage(
       usage.provider,
       usage.model,
       usage.task,
-      actualCost,
+      netCost,
       {
-        prompt: usage.promptTokens,
-        completion: usage.completionTokens,
-        cached: usage.cachedTokens,
-        reasoning: usage.reasoningTokens,
+        prompt: promptTokens,
+        completion: completionTokens,
+        cached: cachedTokens,
+        reasoning: reasoningTokens,
       },
       usage.status || 'SUCCESS',
-      usage.latencyMs || 0
+      usage.latencyMs || 0,
+      {
+        grossCostUsd: grossCost,
+        discountUsd: discount,
+        freeTierGroup: benefit.group,
+        isFreeTier: isFree,
+      }
     );
+
+    return {
+      grossCostUsd: grossCost,
+      discountUsd: discount,
+      netCostUsd: netCost,
+      isFreeTier: isFree,
+      freeTierGroup: benefit.group,
+      benefitReason: benefit.reason,
+    };
   }
 
   public releaseReservation(reservationId: string): void {
@@ -430,9 +751,20 @@ export class HardBudgetManager {
     costUsd: number,
     tokens?: { prompt: number; completion: number; cached?: number; reasoning?: number },
     status: string = 'SUCCESS',
-    latencyMs: number = 0
+    latencyMs: number = 0,
+    freeTierMeta?: {
+      grossCostUsd?: number;
+      discountUsd?: number;
+      freeTierGroup?: FreeTierGroup;
+      isFreeTier?: boolean;
+    }
   ): void {
     const roundedCost = parseFloat(costUsd.toFixed(6));
+    const grossCost = freeTierMeta?.grossCostUsd !== undefined ? freeTierMeta.grossCostUsd : roundedCost;
+    const discount = freeTierMeta?.discountUsd !== undefined ? freeTierMeta.discountUsd : 0;
+    const freeTierGroup = freeTierMeta?.freeTierGroup || 'NONE';
+    const isFreeTier = freeTierMeta?.isFreeTier ?? false;
+
     const record = {
       id: `usg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       timestamp: Date.now(),
@@ -444,6 +776,10 @@ export class HardBudgetManager {
       cachedTokens: tokens?.cached || 0,
       reasoningTokens: tokens?.reasoning || 0,
       costUsd: roundedCost,
+      costGrossUsd: grossCost,
+      discountUsd: discount,
+      freeTierGroup,
+      isFreeTier,
     };
     this.usageRecords.push(record);
 
@@ -458,7 +794,13 @@ export class HardBudgetManager {
           tokensPrompt: record.promptTokens,
           tokensCompletion: record.completionTokens,
           tokensCached: record.cachedTokens,
-          costUsd: record.costUsd,
+          tokensReasoning: record.reasoningTokens,
+          costUsd: roundedCost,
+          costGrossUsd: grossCost,
+          discountUsd: discount,
+          costNetUsd: roundedCost,
+          freeTierGroup,
+          isFreeTier,
           latencyMs,
           status,
         });
@@ -579,6 +921,10 @@ export class HardBudgetManager {
         ...this.config.taskLimitsUsd,
         ...(updates.taskLimitsUsd || {}),
       },
+      openaiFreeTier: {
+        ...this.config.openaiFreeTier,
+        ...(updates.openaiFreeTier || {}),
+      },
       updatedAt: Date.now(),
     };
 
@@ -630,6 +976,38 @@ export class HardBudgetManager {
       reasoningTokens += r.reasoningTokens;
     }
 
+    // Free tier summary metrics
+    const cfg = this.config.openaiFreeTier;
+    const mainLimit = cfg?.mainGroupDailyLimitTokens || OPENAI_FREE_TIER_LIMITS.MAIN_GROUP_DAILY_TOKENS;
+    const smallLimit = cfg?.smallGroupDailyLimitTokens || OPENAI_FREE_TIER_LIMITS.SMALL_GROUP_DAILY_TOKENS;
+
+    const mainUsed = this.mainGroupTokensUsedToday;
+    const smallUsed = this.smallGroupTokensUsedToday;
+
+    const mainRemaining = Math.max(0, mainLimit - mainUsed);
+    const smallRemaining = Math.max(0, smallLimit - smallUsed);
+
+    const mainPercent = Math.min(100, parseFloat(((mainUsed / mainLimit) * 100).toFixed(1)));
+    const smallPercent = Math.min(100, parseFloat(((smallUsed / smallLimit) * 100).toFixed(1)));
+
+    // Fetch stats from DB if available
+    let grossSpendToday = this.grossSpendTodayUsd;
+    let discountToday = this.discountTodayUsd;
+    let netSpendToday = this.netSpendTodayUsd;
+    let freeTokensToday = this.freeTokensConsumedToday;
+
+    if (this.db) {
+      try {
+        const stats = this.db.getAiConsumptionStats();
+        if (stats && stats.grossSpendTodayUsd !== undefined) {
+          grossSpendToday = Number(stats.grossSpendTodayUsd);
+          discountToday = Number(stats.discountTodayUsd);
+          netSpendToday = Number(stats.netSpendTodayUsd);
+          freeTokensToday = Number(stats.freeTokensToday);
+        }
+      } catch {}
+    }
+
     const now = new Date();
     const nextDailyResetUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
     const nextMonthlyResetUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
@@ -659,6 +1037,33 @@ export class HardBudgetManager {
         cachedTokens,
         reasoningTokens,
         totalTokens: promptTokens + completionTokens + reasoningTokens,
+      },
+      openaiFreeTier: {
+        enabled: !!cfg?.enabled,
+        verified: !!cfg?.verified,
+        verifiedAt: cfg?.verifiedAt || null,
+        mainGroup: {
+          limitTokens: mainLimit,
+          usedTokens: mainUsed,
+          remainingTokens: mainRemaining,
+          percentUsed: mainPercent,
+          models: ['gpt-4o', 'gpt-6-luna', 'gpt-4-turbo'],
+        },
+        smallGroup: {
+          limitTokens: smallLimit,
+          usedTokens: smallUsed,
+          remainingTokens: smallRemaining,
+          percentUsed: smallPercent,
+          models: ['gpt-4o-mini', 'o3-mini'],
+        },
+        financialsToday: {
+          grossSpendUsd: parseFloat(grossSpendToday.toFixed(4)),
+          discountUsd: parseFloat(discountToday.toFixed(4)),
+          netSpendUsd: parseFloat(netSpendToday.toFixed(4)),
+          freeTokensConsumed: freeTokensToday,
+          paidTokensConsumed: Math.max(0, (promptTokens + completionTokens + reasoningTokens) - freeTokensToday),
+          verifiedBilledSpendUsd: cfg?.verified ? parseFloat(netSpendToday.toFixed(4)) : null,
+        },
       },
       activeReservationsCount: this.reservations.size,
       totalCallsCount: this.usageRecords.length,

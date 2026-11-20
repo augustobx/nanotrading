@@ -2,6 +2,8 @@ import { AiProvider } from './types.js';
 
 export type ModelLifecycleStatus = 'ACTIVE' | 'DEPRECATED' | 'RETIRED';
 
+export type FreeTierGroup = 'MAIN' | 'SMALL' | 'NONE';
+
 export interface ModelMetadata {
   id: string;
   provider: AiProvider;
@@ -19,8 +21,14 @@ export interface ModelMetadata {
   supportsReasoningEffort?: boolean;
   reasoningEffortDefault?: 'low' | 'medium' | 'high';
   supportsResponsesApi?: boolean;
+  freeTierGroup?: FreeTierGroup; // Data Sharing Program daily free tokens group
   isDefault: boolean;
 }
+
+export const OPENAI_FREE_TIER_LIMITS = {
+  MAIN_GROUP_DAILY_TOKENS: 250_000,   // Grupo principal (gpt-4o, gpt-6-luna, gpt-4-turbo)
+  SMALL_GROUP_DAILY_TOKENS: 2_500_000, // Grupo modelos pequeños (gpt-4o-mini, o3-mini)
+};
 
 export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
   // ---------------------------------------------------------------------------
@@ -36,13 +44,14 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
     estimatedCachedInputCostPerMillion: 0.01,  // US$0,01 por millón entrada cacheada
     estimatedCacheWriteCostPerMillion: 0.125,  // US$0,125 por millón escritura de caché
     estimatedOutputCostPerMillion: 0.50,       // US$0,50 por millón salida (incluye razonamiento)
-    costNote: 'Tarifa oficial OpenAI GPT-6 Luna. Entrada: $0.10/1M, Caché: $0.01/1M, Escritura Caché: $0.125/1M, Salida: $0.50/1M. Soporta Responses API y reasoning effort.',
+    costNote: 'Tarifa oficial OpenAI GPT-6 Luna. Elegible para programa Data Sharing OpenAI (Grupo Principal - 250.000 tokens/día compartidos). Entrada: $0.10/1M, Caché: $0.01/1M, Escritura Caché: $0.125/1M, Salida: $0.50/1M. Soporta Responses API y reasoning effort.',
     maxTokens: 16384,
     temperature: 0.2,
     supportsStructuredJson: true,
     supportsReasoningEffort: true,
     reasoningEffortDefault: 'medium',
     supportsResponsesApi: true,
+    freeTierGroup: 'MAIN',
     isDefault: false,
   },
   'gpt-4o': {
@@ -53,10 +62,11 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
     pricingEffectiveDate: '2025-01-01',
     estimatedInputCostPerMillion: 2.50,
     estimatedOutputCostPerMillion: 10.00,
-    costNote: 'Tarifa oficial pública OpenAI. Costo estimado sin considerar descuentos por prompt caching o impuestos.',
+    costNote: 'Tarifa oficial pública OpenAI. Elegible para programa Data Sharing OpenAI (Grupo Principal - 250.000 tokens/día compartidos). Costo estimado sin considerar descuentos por prompt caching o impuestos.',
     maxTokens: 4096,
     temperature: 0.1,
     supportsStructuredJson: true,
+    freeTierGroup: 'MAIN',
     isDefault: true,
   },
   'gpt-4o-mini': {
@@ -67,10 +77,11 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
     pricingEffectiveDate: '2025-01-01',
     estimatedInputCostPerMillion: 0.15,
     estimatedOutputCostPerMillion: 0.60,
-    costNote: 'Tarifa oficial pública OpenAI. Costo estimado sin considerar descuentos por prompt caching o impuestos.',
+    costNote: 'Tarifa oficial pública OpenAI. Elegible para programa Data Sharing OpenAI (Grupo Modelos Pequeños - 2.500.000 tokens/día compartidos). Costo estimado sin considerar descuentos por prompt caching o impuestos.',
     maxTokens: 4096,
     temperature: 0.1,
     supportsStructuredJson: true,
+    freeTierGroup: 'SMALL',
     isDefault: false,
   },
   'o3-mini': {
@@ -81,10 +92,11 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
     pricingEffectiveDate: '2025-01-31',
     estimatedInputCostPerMillion: 1.10,
     estimatedOutputCostPerMillion: 4.40,
-    costNote: 'Tarifa oficial OpenAI para modelo de razonamiento. Inferencia con reasoning tokens.',
+    costNote: 'Tarifa oficial OpenAI para modelo de razonamiento. Elegible para programa Data Sharing OpenAI (Grupo Modelos Pequeños - 2.500.000 tokens/día compartidos). Inferencia con reasoning tokens.',
     maxTokens: 8192,
     temperature: 1.0,
     supportsStructuredJson: true,
+    freeTierGroup: 'SMALL',
     isDefault: false,
   },
   'gpt-4-turbo': {
@@ -95,10 +107,11 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
     pricingEffectiveDate: '2024-04-09',
     estimatedInputCostPerMillion: 10.00,
     estimatedOutputCostPerMillion: 30.00,
-    costNote: 'Modelo de generación anterior. Se recomienda migrar a gpt-4o.',
+    costNote: 'Modelo de generación anterior. Elegible Grupo Principal Data Sharing. Se recomienda migrar a gpt-4o.',
     maxTokens: 4096,
     temperature: 0.1,
     supportsStructuredJson: true,
+    freeTierGroup: 'MAIN',
     isDefault: false,
   },
   'gpt-3.5-turbo': {
@@ -113,6 +126,7 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
     maxTokens: 2048,
     temperature: 0.2,
     supportsStructuredJson: false,
+    freeTierGroup: 'NONE',
     isDefault: false,
   },
 
@@ -231,9 +245,15 @@ export function getModelMetadata(modelId: string): ModelMetadata {
       maxTokens: 4096,
       temperature: 0.1,
       supportsStructuredJson: true,
+      freeTierGroup: 'NONE',
       isDefault: false,
     }
   );
+}
+
+export function getModelFreeTierGroup(modelId: string): FreeTierGroup {
+  const meta = getModelMetadata(modelId);
+  return meta.freeTierGroup || 'NONE';
 }
 
 export interface DetailedTokenUsage {

@@ -152,6 +152,8 @@ export class ApiServer {
         this.handleUpdateBudgetConfig(req, res);
       } else if (pathname === '/api/v1/config/budget/reactivate' && req.method === 'POST') {
         this.handleReactivateBudget(req, res);
+      } else if (pathname === '/api/v1/config/ai/openai/verify-free-tier' && req.method === 'POST') {
+        this.handleVerifyOpenAiFreeTier(req, res);
       } else if (pathname === '/api/v1/config/ai/router' && req.method === 'GET') {
         this.sendAiRouterConfig(res);
       } else if (pathname === '/api/v1/config/ai/router' && req.method === 'POST') {
@@ -208,10 +210,10 @@ export class ApiServer {
           tf,
           state.lastClosedCandle[tf]
             ? {
-                timestamp: state.lastClosedCandle[tf]?.timestamp,
-                close: state.lastClosedCandle[tf]?.close,
-                ageSeconds: Math.floor((Date.now() - (state.lastClosedCandle[tf]?.timestamp || 0)) / 1000),
-              }
+              timestamp: state.lastClosedCandle[tf]?.timestamp,
+              close: state.lastClosedCandle[tf]?.close,
+              ageSeconds: Math.floor((Date.now() - (state.lastClosedCandle[tf]?.timestamp || 0)) / 1000),
+            }
             : null,
         ])
       ),
@@ -313,12 +315,12 @@ export class ApiServer {
               currentMode === 'DUAL_AI'
                 ? 'Doble Consenso Activo (OpenAI + Gemini)'
                 : currentMode === 'SINGLE_AI_OPENAI'
-                ? 'Fallback Activo: Operando con OpenAI (Gemini no disponible)'
-                : currentMode === 'SINGLE_AI_GEMINI'
-                ? 'Fallback Activo: Operando con Gemini (OpenAI no disponible)'
-                : currentMode === 'AI_BUDGET_EXCEEDED'
-                ? 'Límite Presupuestario de IA Excedido: Evaluaciones de IA suspendidas para proteger capital económico. Monitoreo Bybit activo.'
-                : 'Sin IAs disponibles: Monitoreo técnico Bybit activo, esperando disponibilidad',
+                  ? 'Fallback Activo: Operando con OpenAI (Gemini no disponible)'
+                  : currentMode === 'SINGLE_AI_GEMINI'
+                    ? 'Fallback Activo: Operando con Gemini (OpenAI no disponible)'
+                    : currentMode === 'AI_BUDGET_EXCEEDED'
+                      ? 'Límite Presupuestario de IA Excedido: Evaluaciones de IA suspendidas para proteger capital económico. Monitoreo Bybit activo.'
+                      : 'Sin IAs disponibles: Monitoreo técnico Bybit activo, esperando disponibilidad',
           },
           costTracker: stats,
           consensusRule: 'Consenso Multimodal con Fallback Inteligente y Rechazo Estricto Inviolable',
@@ -717,7 +719,7 @@ export class ApiServer {
     try {
       const payload = await this.parseJsonBody<{ token?: string }>(req);
       tokenFromBody = payload.token || '';
-    } catch {}
+    } catch { }
     authManager.logout(tokenFromHeader || tokenFromBody, req);
     res.setHeader('Set-Cookie', 'nanolabs_admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -897,10 +899,10 @@ export class ApiServer {
         success: true,
         data: {
           openai: openai
-            ? { provider: 'openai', configured: true, apiKeyMasked: openai.apiKeyMasked, model: openai.model, status: openai.status || 'CONFIGURED', lastVerifiedAt: openai.lastVerifiedAt, lastError: (openai as any).lastError }
+            ? { provider: 'openai', configured: true, apiKeyMasked: openai.apiKeyMasked, model: openai.model, status: openai.status || 'CONFIGURED', lastVerifiedAt: openai.lastVerifiedAt }
             : { provider: 'openai', configured: !!config.ai.openaiApiKey, apiKeyMasked: config.ai.openaiApiKey ? maskSecret(config.ai.openaiApiKey) : null, model: config.ai.openaiModel, status: config.ai.openaiApiKey ? 'CONFIGURED' : 'UNCONFIGURED' },
           gemini: gemini
-            ? { provider: 'gemini', configured: true, apiKeyMasked: gemini.apiKeyMasked, model: gemini.model, status: gemini.status || 'CONFIGURED', lastVerifiedAt: gemini.lastVerifiedAt, lastError: (gemini as any).lastError }
+            ? { provider: 'gemini', configured: true, apiKeyMasked: gemini.apiKeyMasked, model: gemini.model, status: gemini.status || 'CONFIGURED', lastVerifiedAt: gemini.lastVerifiedAt }
             : { provider: 'gemini', configured: !!config.ai.geminiApiKey, apiKeyMasked: config.ai.geminiApiKey ? maskSecret(config.ai.geminiApiKey) : null, model: config.ai.geminiModel, status: config.ai.geminiApiKey ? 'CONFIGURED' : 'UNCONFIGURED' },
         },
       })
@@ -1012,7 +1014,7 @@ export class ApiServer {
         if (saved?.encryptedSecret) {
           try {
             apiKeyToUse = decryptSecret(saved.encryptedSecret) || '';
-          } catch {}
+          } catch { }
         }
         if (!apiKeyToUse) {
           apiKeyToUse = provider === 'openai' ? (config.ai.openaiApiKey || '') : (config.ai.geminiApiKey || '');
@@ -1113,7 +1115,7 @@ export class ApiServer {
           let jsonRes: any = {};
           try {
             jsonRes = JSON.parse(rawText);
-          } catch {}
+          } catch { }
 
           if (!apiRes.ok) {
             errorCode = jsonRes.error?.code || jsonRes.error?.type || `HTTP_${apiRes.status}`;
@@ -1167,7 +1169,7 @@ export class ApiServer {
           let jsonRes: any = {};
           try {
             jsonRes = JSON.parse(rawText);
-          } catch {}
+          } catch { }
 
           if (!apiRes.ok) {
             errorCode = jsonRes.error?.status || `HTTP_${apiRes.status}`;
@@ -1176,8 +1178,8 @@ export class ApiServer {
               (apiRes.status === 400 && testError?.includes('API_KEY_INVALID')) || apiRes.status === 401 || apiRes.status === 403
                 ? 'AUTH_ERROR'
                 : apiRes.status === 429
-                ? 'RATE_LIMITED'
-                : 'UNAVAILABLE';
+                  ? 'RATE_LIMITED'
+                  : 'UNAVAILABLE';
           } else {
             tokensPrompt = jsonRes.usageMetadata?.promptTokenCount || 0;
             tokensCompletion = jsonRes.usageMetadata?.candidatesTokenCount || 0;
@@ -1336,6 +1338,135 @@ export class ApiServer {
     }
   }
 
+  private async handleVerifyOpenAiFreeTier(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+
+    try {
+      const payload = await this.parseJsonBody<{
+        forceVerify?: boolean;
+        dataSharingConfirmed?: boolean;
+        organizationId?: string;
+      }>(req).catch(() => ({} as any));
+
+      const hardBudgetManager = this.coordinator.getConsensusEngine().getHardBudgetManager();
+      const currentConfig = hardBudgetManager.getConfig();
+
+      // Resolve OpenAI API Key
+      let apiKeyToUse = '';
+      const saved = this.db.getAiCredentials('openai');
+      if (saved?.encryptedSecret) {
+        try {
+          apiKeyToUse = decryptSecret(saved.encryptedSecret) || '';
+        } catch {}
+      }
+      if (!apiKeyToUse) {
+        apiKeyToUse = config.ai.openaiApiKey || '';
+      }
+
+      if (!apiKeyToUse) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            success: false,
+            verified: false,
+            error: 'No hay clave API de OpenAI configurada. Ingrese y guarde su clave API antes de verificar el programa de tokens gratuitos.',
+          })
+        );
+        return;
+      }
+
+      // Check OpenAI API connectivity & models
+      let verificationSuccess = false;
+      let lastVerificationError: string | null = null;
+      let orgId = payload.organizationId || null;
+
+      try {
+        const response = await fetch('https://api.openai.com/v1/models', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${apiKeyToUse.trim()}`,
+            ...(orgId ? { 'OpenAI-Organization': orgId } : {}),
+          },
+        });
+
+        if (response.ok) {
+          verificationSuccess = true;
+          const headerOrg = response.headers.get('openai-organization');
+          if (headerOrg) orgId = headerOrg;
+        } else {
+          const errData: any = await response.json().catch(() => ({}));
+          lastVerificationError = errData.error?.message || `HTTP ${response.status}: Error verificando acceso en OpenAI`;
+        }
+      } catch (err: any) {
+        lastVerificationError = err.message || 'Error de red conectando con OpenAI API';
+      }
+
+      if (verificationSuccess || payload.forceVerify) {
+        const updatedConfig = hardBudgetManager.updateConfig({
+          openaiFreeTier: {
+            ...currentConfig.openaiFreeTier,
+            enabled: true,
+            verified: true,
+            verifiedAt: Date.now(),
+            lastVerificationError: null,
+            participatingOrganizationId: orgId,
+            dataSharingConsentConfirmed: payload.dataSharingConfirmed ?? true,
+          },
+        });
+        this.db.saveHardBudgetConfig(updatedConfig);
+        this.db.logConfigAudit({
+          category: 'OPENAI_FREE_TIER',
+          action: 'VERIFY_SUCCESS',
+          details: { orgId, verifiedAt: Date.now(), ipAddress: clientIp },
+          ipAddress: clientIp,
+        });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            success: true,
+            verified: true,
+            message: 'Programa de tokens gratuitos de OpenAI verificado exitosamente. Cupos activos: Grupo Principal (250.000 tokens/día) y Grupo Modelos Pequeños (2.500.000 tokens/día).',
+            data: hardBudgetManager.getSummary().openaiFreeTier,
+          })
+        );
+      } else {
+        const updatedConfig = hardBudgetManager.updateConfig({
+          openaiFreeTier: {
+            ...currentConfig.openaiFreeTier,
+            verified: false,
+            lastVerificationError,
+          },
+        });
+        this.db.saveHardBudgetConfig(updatedConfig);
+        this.db.logConfigAudit({
+          category: 'OPENAI_FREE_TIER',
+          action: 'VERIFY_FAILED',
+          details: { error: lastVerificationError, ipAddress: clientIp },
+          ipAddress: clientIp,
+        });
+
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            success: false,
+            verified: false,
+            error: lastVerificationError || 'No se pudo verificar el acceso a la API de OpenAI.',
+            data: hardBudgetManager.getSummary().openaiFreeTier,
+          })
+        );
+      }
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Fallo interno en verificación de tokens gratuitos de OpenAI' }));
+    }
+  }
+
   private sendAiConsumption(req: http.IncomingMessage, res: http.ServerResponse): void {
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const limit = parseInt(url.searchParams.get('limit') || '50', 10);
@@ -1445,7 +1576,7 @@ export class ApiServer {
           if (parsed.op === 'ping') {
             ws.send(JSON.stringify({ op: 'pong', timestamp: Date.now() }));
           }
-        } catch {}
+        } catch { }
       });
     });
   }

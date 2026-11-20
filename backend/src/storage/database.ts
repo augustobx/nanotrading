@@ -262,6 +262,7 @@ export class DatabaseService {
         auto_reset_period INTEGER NOT NULL,
         is_blocked INTEGER NOT NULL,
         blocked_reason TEXT,
+        openai_free_tier_json TEXT,
         updated_at INTEGER NOT NULL
       );
 
@@ -274,7 +275,13 @@ export class DatabaseService {
         tokens_prompt INTEGER NOT NULL,
         tokens_completion INTEGER NOT NULL,
         tokens_cached INTEGER NOT NULL,
+        tokens_reasoning INTEGER DEFAULT 0,
         cost_usd REAL NOT NULL,
+        cost_gross_usd REAL DEFAULT 0,
+        discount_usd REAL DEFAULT 0,
+        cost_net_usd REAL DEFAULT 0,
+        free_tier_group TEXT DEFAULT 'NONE',
+        is_free_tier INTEGER DEFAULT 0,
         latency_ms INTEGER NOT NULL,
         status TEXT NOT NULL,
         analysis_id TEXT
@@ -337,6 +344,24 @@ export class DatabaseService {
         this.db.exec(`ALTER TABLE signals ADD COLUMN ${col}`);
       } catch {}
     }
+
+    const consumptionExtraCols = [
+      'tokens_reasoning INTEGER DEFAULT 0',
+      'cost_gross_usd REAL DEFAULT 0',
+      'discount_usd REAL DEFAULT 0',
+      'cost_net_usd REAL DEFAULT 0',
+      "free_tier_group TEXT DEFAULT 'NONE'",
+      'is_free_tier INTEGER DEFAULT 0',
+    ];
+    for (const col of consumptionExtraCols) {
+      try {
+        this.db.exec(`ALTER TABLE ai_consumption_logs ADD COLUMN ${col}`);
+      } catch {}
+    }
+
+    try {
+      this.db.exec("ALTER TABLE hard_budget_config ADD COLUMN openai_free_tier_json TEXT");
+    } catch {}
   }
 
   private prepareStatements(): void {
@@ -1153,8 +1178,8 @@ export class DatabaseService {
     if (this.isClosed) return;
     try {
       this.db.prepare(`
-        INSERT INTO hard_budget_config (id, daily_budget_limit_usd, monthly_budget_limit_usd, max_cost_per_request_usd, provider_limits_json, model_limits_json, task_limits_json, alert_thresholds_json, auto_reset_period, is_blocked, blocked_reason, updated_at)
-        VALUES ('primary_hard_budget', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO hard_budget_config (id, daily_budget_limit_usd, monthly_budget_limit_usd, max_cost_per_request_usd, provider_limits_json, model_limits_json, task_limits_json, alert_thresholds_json, auto_reset_period, is_blocked, blocked_reason, openai_free_tier_json, updated_at)
+        VALUES ('primary_hard_budget', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           daily_budget_limit_usd = excluded.daily_budget_limit_usd,
           monthly_budget_limit_usd = excluded.monthly_budget_limit_usd,
@@ -1166,6 +1191,7 @@ export class DatabaseService {
           auto_reset_period = excluded.auto_reset_period,
           is_blocked = excluded.is_blocked,
           blocked_reason = excluded.blocked_reason,
+          openai_free_tier_json = excluded.openai_free_tier_json,
           updated_at = excluded.updated_at
       `).run(
         config.dailyBudgetLimitUsd,
@@ -1178,6 +1204,7 @@ export class DatabaseService {
         config.autoResetPeriod ? 1 : 0,
         config.isBlocked ? 1 : 0,
         config.blockedReason || null,
+        config.openaiFreeTier ? JSON.stringify(config.openaiFreeTier) : null,
         config.updatedAt || Date.now()
       );
     } catch (err: any) {
@@ -1202,6 +1229,7 @@ export class DatabaseService {
         autoResetPeriod: row.auto_reset_period === 1,
         isBlocked: row.is_blocked === 1,
         blockedReason: row.blocked_reason,
+        openaiFreeTier: row.openai_free_tier_json ? JSON.parse(row.openai_free_tier_json) : null,
         updatedAt: Number(row.updated_at),
       };
     } catch {
@@ -1218,7 +1246,13 @@ export class DatabaseService {
     tokensPrompt: number;
     tokensCompletion: number;
     tokensCached?: number;
+    tokensReasoning?: number;
     costUsd: number;
+    costGrossUsd?: number;
+    discountUsd?: number;
+    costNetUsd?: number;
+    freeTierGroup?: string;
+    isFreeTier?: boolean;
     latencyMs: number;
     status: string;
     analysisId?: string;
@@ -1226,9 +1260,18 @@ export class DatabaseService {
     if (this.isClosed) return;
     try {
       const id = log.id || `cons_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      const costGross = log.costGrossUsd !== undefined ? log.costGrossUsd : log.costUsd;
+      const discount = log.discountUsd !== undefined ? log.discountUsd : 0;
+      const costNet = log.costNetUsd !== undefined ? log.costNetUsd : (costGross - discount);
+
       this.db.prepare(`
-        INSERT INTO ai_consumption_logs (id, timestamp, provider, model, task, tokens_prompt, tokens_completion, tokens_cached, cost_usd, latency_ms, status, analysis_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO ai_consumption_logs (
+          id, timestamp, provider, model, task,
+          tokens_prompt, tokens_completion, tokens_cached, tokens_reasoning,
+          cost_usd, cost_gross_usd, discount_usd, cost_net_usd,
+          free_tier_group, is_free_tier, latency_ms, status, analysis_id
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         log.timestamp || Date.now(),
@@ -1238,7 +1281,13 @@ export class DatabaseService {
         log.tokensPrompt || 0,
         log.tokensCompletion || 0,
         log.tokensCached || 0,
-        log.costUsd || 0,
+        log.tokensReasoning || 0,
+        costNet, // cost_usd preserves actual net financial spend
+        costGross,
+        discount,
+        costNet,
+        log.freeTierGroup || 'NONE',
+        log.isFreeTier ? 1 : 0,
         log.latencyMs || 0,
         log.status || 'SUCCESS',
         log.analysisId || null
@@ -1262,7 +1311,13 @@ export class DatabaseService {
         tokensPrompt: Number(r.tokens_prompt),
         tokensCompletion: Number(r.tokens_completion),
         tokensCached: Number(r.tokens_cached),
+        tokensReasoning: Number(r.tokens_reasoning || 0),
         costUsd: Number(r.cost_usd),
+        costGrossUsd: Number(r.cost_gross_usd !== undefined && r.cost_gross_usd !== null ? r.cost_gross_usd : r.cost_usd),
+        discountUsd: Number(r.discount_usd || 0),
+        costNetUsd: Number(r.cost_net_usd !== undefined && r.cost_net_usd !== null ? r.cost_net_usd : r.cost_usd),
+        freeTierGroup: r.free_tier_group || 'NONE',
+        isFreeTier: r.is_free_tier === 1,
         latencyMs: Number(r.latency_ms),
         status: r.status,
         analysisId: r.analysis_id,
@@ -1281,11 +1336,32 @@ export class DatabaseService {
       const startOfLast7Days = now - 7 * 86400000;
       const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
 
-      const todayRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend, COUNT(*) as calls FROM ai_consumption_logs WHERE timestamp >= ?').get(startOfToday) as any;
+      const todayRow = this.db.prepare(`
+        SELECT 
+          COALESCE(SUM(cost_usd), 0) as spend, 
+          COALESCE(SUM(cost_gross_usd), 0) as grossSpend,
+          COALESCE(SUM(discount_usd), 0) as discount,
+          COALESCE(SUM(cost_net_usd), 0) as netSpend,
+          COALESCE(SUM(CASE WHEN is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as freeTokens,
+          COUNT(*) as calls 
+        FROM ai_consumption_logs 
+        WHERE timestamp >= ?
+      `).get(startOfToday) as any;
+
       const yesterdayRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend FROM ai_consumption_logs WHERE timestamp >= ? AND timestamp < ?').get(startOfYesterday, startOfToday) as any;
       const weekRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend FROM ai_consumption_logs WHERE timestamp >= ?').get(startOfLast7Days) as any;
       const monthRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend FROM ai_consumption_logs WHERE timestamp >= ?').get(startOfMonth) as any;
-      const totalRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend, COALESCE(SUM(tokens_prompt), 0) as prompt, COALESCE(SUM(tokens_completion), 0) as comp, COALESCE(SUM(tokens_cached), 0) as cached, COUNT(*) as calls, COALESCE(AVG(latency_ms), 0) as avgLat FROM ai_consumption_logs').get() as any;
+      const totalRow = this.db.prepare(`
+        SELECT 
+          COALESCE(SUM(cost_usd), 0) as spend, 
+          COALESCE(SUM(tokens_prompt), 0) as prompt, 
+          COALESCE(SUM(tokens_completion), 0) as comp, 
+          COALESCE(SUM(tokens_cached), 0) as cached, 
+          COALESCE(SUM(tokens_reasoning), 0) as reasoning,
+          COUNT(*) as calls, 
+          COALESCE(AVG(latency_ms), 0) as avgLat 
+        FROM ai_consumption_logs
+      `).get() as any;
 
       const byProviderRows = this.db.prepare('SELECT provider, COALESCE(SUM(cost_usd), 0) as spend, COUNT(*) as calls FROM ai_consumption_logs GROUP BY provider').all() as any[];
       const byModelRows = this.db.prepare('SELECT model, COALESCE(SUM(cost_usd), 0) as spend, COUNT(*) as calls FROM ai_consumption_logs GROUP BY model ORDER BY spend DESC LIMIT 10').all() as any[];
@@ -1293,6 +1369,10 @@ export class DatabaseService {
 
       return {
         todaySpendUsd: Number(todayRow?.spend || 0),
+        grossSpendTodayUsd: Number(todayRow?.grossSpend || todayRow?.spend || 0),
+        discountTodayUsd: Number(todayRow?.discount || 0),
+        netSpendTodayUsd: Number(todayRow?.netSpend || todayRow?.spend || 0),
+        freeTokensToday: Number(todayRow?.freeTokens || 0),
         todayCalls: Number(todayRow?.calls || 0),
         yesterdaySpendUsd: Number(yesterdayRow?.spend || 0),
         last7DaysSpendUsd: Number(weekRow?.spend || 0),
@@ -1301,6 +1381,7 @@ export class DatabaseService {
         totalPromptTokens: Number(totalRow?.prompt || 0),
         totalCompletionTokens: Number(totalRow?.comp || 0),
         totalCachedTokens: Number(totalRow?.cached || 0),
+        totalReasoningTokens: Number(totalRow?.reasoning || 0),
         totalCalls: Number(totalRow?.calls || 0),
         avgLatencyMs: Math.round(Number(totalRow?.avgLat || 0)),
         byProvider: byProviderRows,
@@ -1309,6 +1390,40 @@ export class DatabaseService {
       };
     } catch {
       return {};
+    }
+  }
+
+  public getFreeTierUsageToday(startOfUtcDay: number): {
+    mainGroupTokens: number;
+    smallGroupTokens: number;
+    grossSpendUsd: number;
+    discountUsd: number;
+    netSpendUsd: number;
+    freeTokensCount: number;
+  } {
+    if (this.isClosed) return { mainGroupTokens: 0, smallGroupTokens: 0, grossSpendUsd: 0, discountUsd: 0, netSpendUsd: 0, freeTokensCount: 0 };
+    try {
+      const row = this.db.prepare(`
+        SELECT 
+          COALESCE(SUM(CASE WHEN free_tier_group = 'MAIN' AND is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as mainTokens,
+          COALESCE(SUM(CASE WHEN free_tier_group = 'SMALL' AND is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as smallTokens,
+          COALESCE(SUM(cost_gross_usd), 0) as grossSpend,
+          COALESCE(SUM(discount_usd), 0) as discount,
+          COALESCE(SUM(cost_net_usd), 0) as netSpend,
+          COALESCE(SUM(CASE WHEN is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as freeTokens
+        FROM ai_consumption_logs
+        WHERE timestamp >= ?
+      `).get(startOfUtcDay) as any;
+      return {
+        mainGroupTokens: Number(row?.mainTokens || 0),
+        smallGroupTokens: Number(row?.smallTokens || 0),
+        grossSpendUsd: Number(row?.grossSpend || 0),
+        discountUsd: Number(row?.discount || 0),
+        netSpendUsd: Number(row?.netSpend || 0),
+        freeTokensCount: Number(row?.freeTokens || 0),
+      };
+    } catch {
+      return { mainGroupTokens: 0, smallGroupTokens: 0, grossSpendUsd: 0, discountUsd: 0, netSpendUsd: 0, freeTokensCount: 0 };
     }
   }
 

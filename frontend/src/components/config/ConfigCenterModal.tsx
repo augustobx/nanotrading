@@ -24,6 +24,7 @@ import {
   Power,
   TrendingUp,
   Percent,
+  Sparkles,
 } from 'lucide-react';
 import { getApiBaseUrl } from '../../utils/api-config';
 
@@ -198,6 +199,10 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
   const [savingBudget, setSavingBudget] = useState<boolean>(false);
   const [reactivatingBudget, setReactivatingBudget] = useState<boolean>(false);
   const [budgetMsg, setBudgetMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // OpenAI Free Tier (Data Sharing)
+  const [verifyingFreeTier, setVerifyingFreeTier] = useState<boolean>(false);
+  const [freeTierMsg, setFreeTierMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Security & Audit
   const [auditLogs, setAuditLogs] = useState<any[]>([]);
@@ -646,6 +651,57 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
     } finally {
       setReactivatingBudget(false);
     }
+  };
+
+  const handleVerifyFreeTier = async () => {
+    if (!isAdminAuthenticated) return;
+    setVerifyingFreeTier(true);
+    setFreeTierMsg(null);
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/ai/openai/verify-free-tier`, {
+        method: 'POST',
+        headers: getHeaders(true),
+        credentials: 'include',
+        body: JSON.stringify({ dataSharingConfirmed: true }),
+      });
+      const json = await res.json();
+      if (res.ok && json.success) {
+        setFreeTierMsg({
+          type: 'success',
+          text: json.message || 'Beneficio de tokens gratuitos verificado exitosamente.',
+        });
+        fetchHardBudget();
+      } else {
+        setFreeTierMsg({
+          type: 'error',
+          text: json.error || 'No se pudo verificar el acceso a tokens gratuitos con OpenAI.',
+        });
+      }
+    } catch (err: any) {
+      setFreeTierMsg({ type: 'error', text: err.message || 'Error de conexión verificando beneficio.' });
+    } finally {
+      setVerifyingFreeTier(false);
+    }
+  };
+
+  const handleToggleFreeTier = async (enabled: boolean) => {
+    if (!isAdminAuthenticated) return;
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/budget`, {
+        method: 'POST',
+        headers: getHeaders(true),
+        credentials: 'include',
+        body: JSON.stringify({
+          openaiFreeTier: {
+            ...hardBudgetSummary?.openaiFreeTier,
+            enabled,
+          },
+        }),
+      });
+      if (res.ok) {
+        fetchHardBudget();
+      }
+    } catch {}
   };
 
   const handleTestAiConnection = async (provider: 'openai' | 'gemini') => {
@@ -1722,6 +1778,40 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                     </div>
                   </div>
 
+                  {/* Data Sharing Benefit Indicator */}
+                  <div className="p-3 rounded bg-[#0a0d14] border border-[#1f2638] flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
+                      <span className="text-slate-300">Programa OpenAI Data Sharing:</span>
+                      {hardBudgetSummary?.openaiFreeTier?.enabled ? (
+                        hardBudgetSummary?.openaiFreeTier?.verified ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-600">
+                            ACTIVO (250k / 2.5M tokens libres/día)
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-950 text-amber-300 border border-amber-600">
+                            NO VERIFICADO (Estimación Conservadora)
+                          </span>
+                        )
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-400">
+                          DESACTIVADO
+                        </span>
+                      )}
+                    </div>
+                    {isAdminAuthenticated && (
+                      <button
+                        type="button"
+                        onClick={handleVerifyFreeTier}
+                        disabled={verifyingFreeTier}
+                        className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-emerald-300 text-[11px] font-medium border border-slate-700 flex items-center gap-1.5 self-start sm:self-auto cursor-pointer"
+                      >
+                        {verifyingFreeTier ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                        <span>Verificar Tokens Gratuitos</span>
+                      </button>
+                    )}
+                  </div>
+
                   {aiCreds?.openai?.lastVerifiedAt && (
                     <div className="text-[11px] text-slate-400 font-mono flex items-center gap-2">
                       <span>Última verificación exitosa:</span>
@@ -2407,6 +2497,201 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                       />
                     </div>
                   </div>
+                </div>
+
+                {/* OpenAI Free Tier (Data Sharing Program) Card */}
+                <div className="p-5 rounded-lg bg-[#111624] border border-[#21283b] space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-emerald-400" />
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400">
+                        Programa de Tokens Gratuitos de OpenAI (Data Sharing)
+                      </h4>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {hardBudgetSummary?.openaiFreeTier?.enabled ? (
+                        hardBudgetSummary?.openaiFreeTier?.verified ? (
+                          <span className="px-2.5 py-0.5 rounded text-[11px] font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-600 flex items-center gap-1.5 shadow-sm">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> VERIFICADO ACTIVO
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-950 text-amber-300 border border-amber-600 flex items-center gap-1.5 shadow-sm">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" /> NO VERIFICADO (Estimación Conservadora)
+                          </span>
+                        )
+                      ) : (
+                        <span className="px-2.5 py-0.5 rounded text-[11px] font-mono bg-slate-800 text-slate-400 border border-slate-700">
+                          DESACTIVADO (Sin Participación)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Beneficio oficial de OpenAI que otorga tokens diarios gratuitos a proyectos que optan por compartir entradas y salidas (Data Sharing). 
+                    El sistema mantiene dos contadores independientes con reinicio estricto a las <strong>00:00 UTC</strong>.
+                  </p>
+
+                  {/* Warning / Overage Rules Banner */}
+                  <div className="p-3 rounded-lg bg-[#0a0d14] border border-[#1f2638] space-y-2 text-xs">
+                    <div className="flex items-start gap-2 text-amber-300 font-semibold">
+                      <Shield className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                      <span>Regla Oficial de Exceso &amp; Salvaguarda Presupuestaria Inviolable:</span>
+                    </div>
+                    <ul className="list-disc list-inside text-slate-300 text-[11px] space-y-1 pl-1">
+                      <li>
+                        <strong>Regla de Exceso 100%:</strong> Una solicitud que supera el cupo remanente de su grupo se factura completamente como costo bruto (cero descuento).
+                      </li>
+                      <li>
+                        <strong>Límite Económico Intocable:</strong> Nunca se supera el límite monetario configurado (${hardBudgetSummary?.dailyBudgetLimitUsd?.toFixed(2) || '0.50'} USD) asumiendo incorrectamente gratuidad.
+                      </li>
+                      <li>
+                        <strong>Google Gemini:</strong> Permanece 100% independiente con presupuesto y contabilidad separados.
+                      </li>
+                    </ul>
+                  </div>
+
+                  {freeTierMsg && (
+                    <div
+                      className={`p-3 rounded text-xs flex items-center gap-2 ${
+                        freeTierMsg.type === 'success'
+                          ? 'bg-emerald-950/60 text-emerald-200 border border-emerald-800'
+                          : 'bg-red-950/60 text-red-200 border border-red-800'
+                      }`}
+                    >
+                      {freeTierMsg.type === 'success' ? <CheckCircle2 className="w-4 h-4" /> : <AlertTriangle className="w-4 h-4" />}
+                      <span>{freeTierMsg.text}</span>
+                    </div>
+                  )}
+
+                  {/* Quota Progress Bars */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Main Group: 250k */}
+                    <div className="p-3.5 rounded-lg bg-[#0a0d14] border border-[#1f2638] space-y-2.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-white flex items-center gap-1.5">
+                          <Layers className="w-3.5 h-3.5 text-orange-400" /> Grupo Principal (Flagship)
+                        </span>
+                        <span className="font-mono text-slate-300 text-[11px]">
+                          <strong>{(hardBudgetSummary?.openaiFreeTier?.mainGroup?.usedTokens || 0).toLocaleString()}</strong> / {(hardBudgetSummary?.openaiFreeTier?.mainGroup?.limitTokens || 250000).toLocaleString()} tokens
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono">
+                        Modelos compartidos: <span className="text-orange-300">gpt-4o, gpt-6-luna, gpt-4-turbo</span>
+                      </div>
+                      <div className="w-full h-2.5 rounded-full bg-[#111624] border border-[#21283b] overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-500 rounded-full ${
+                            (hardBudgetSummary?.openaiFreeTier?.mainGroup?.percentUsed || 0) >= 100
+                              ? 'bg-red-500'
+                              : (hardBudgetSummary?.openaiFreeTier?.mainGroup?.percentUsed || 0) >= 95
+                              ? 'bg-orange-500'
+                              : (hardBudgetSummary?.openaiFreeTier?.mainGroup?.percentUsed || 0) >= 80
+                              ? 'bg-amber-500'
+                              : 'bg-emerald-500'
+                          }`}
+                          style={{ width: `${Math.min(100, hardBudgetSummary?.openaiFreeTier?.mainGroup?.percentUsed || 0)}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                        <span>Restantes: <strong className="text-slate-200">{(hardBudgetSummary?.openaiFreeTier?.mainGroup?.remainingTokens ?? 250000).toLocaleString()}</strong></span>
+                        <span>{hardBudgetSummary?.openaiFreeTier?.mainGroup?.percentUsed || 0}% consumido</span>
+                      </div>
+                    </div>
+
+                    {/* Small Group: 2.5M */}
+                    <div className="p-3.5 rounded-lg bg-[#0a0d14] border border-[#1f2638] space-y-2.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-white flex items-center gap-1.5">
+                          <Cpu className="w-3.5 h-3.5 text-blue-400" /> Grupo Modelos Pequeños (Mini)
+                        </span>
+                        <span className="font-mono text-slate-300 text-[11px]">
+                          <strong>{(hardBudgetSummary?.openaiFreeTier?.smallGroup?.usedTokens || 0).toLocaleString()}</strong> / {(hardBudgetSummary?.openaiFreeTier?.smallGroup?.limitTokens || 2500000).toLocaleString()} tokens
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono">
+                        Modelos compartidos: <span className="text-blue-300">gpt-4o-mini, o3-mini</span>
+                      </div>
+                      <div className="w-full h-2.5 rounded-full bg-[#111624] border border-[#21283b] overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-500 rounded-full ${
+                            (hardBudgetSummary?.openaiFreeTier?.smallGroup?.percentUsed || 0) >= 100
+                              ? 'bg-red-500'
+                              : (hardBudgetSummary?.openaiFreeTier?.smallGroup?.percentUsed || 0) >= 95
+                              ? 'bg-orange-500'
+                              : (hardBudgetSummary?.openaiFreeTier?.smallGroup?.percentUsed || 0) >= 80
+                              ? 'bg-amber-500'
+                              : 'bg-emerald-500'
+                          }`}
+                          style={{ width: `${Math.min(100, hardBudgetSummary?.openaiFreeTier?.smallGroup?.percentUsed || 0)}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[10px] font-mono text-slate-500">
+                        <span>Restantes: <strong className="text-slate-200">{(hardBudgetSummary?.openaiFreeTier?.smallGroup?.remainingTokens ?? 2500000).toLocaleString()}</strong></span>
+                        <span>{hardBudgetSummary?.openaiFreeTier?.smallGroup?.percentUsed || 0}% consumido</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Financial & Token Breakdown Metrics Grid (Item 8) */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
+                    <div className="p-3 rounded-lg bg-[#0a0d14] border border-[#1f2638]">
+                      <span className="text-[10px] text-slate-400 uppercase font-mono block">Tokens Gratuitos</span>
+                      <span className="text-sm font-bold font-mono text-emerald-400">
+                        {(hardBudgetSummary?.openaiFreeTier?.financialsToday?.freeTokensConsumed || 0).toLocaleString()}
+                      </span>
+                      <span className="text-[10px] text-slate-500 block">Bonificados hoy</span>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-[#0a0d14] border border-[#1f2638]">
+                      <span className="text-[10px] text-slate-400 uppercase font-mono block">Costo Bruto Teórico</span>
+                      <span className="text-sm font-bold font-mono text-slate-300">
+                        ${(hardBudgetSummary?.openaiFreeTier?.financialsToday?.grossSpendUsd || 0).toFixed(4)}
+                      </span>
+                      <span className="text-[10px] text-slate-500 block">Tarifa estándar</span>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-[#0a0d14] border border-[#1f2638]">
+                      <span className="text-[10px] text-slate-400 uppercase font-mono block">Descuento Aplicado</span>
+                      <span className="text-sm font-bold font-mono text-emerald-300">
+                        -${(hardBudgetSummary?.openaiFreeTier?.financialsToday?.discountUsd || 0).toFixed(4)}
+                      </span>
+                      <span className="text-[10px] text-slate-500 block">Ahorro Data Sharing</span>
+                    </div>
+
+                    <div className="p-3 rounded-lg bg-[#0a0d14] border border-[#1f2638]">
+                      <span className="text-[10px] text-slate-400 uppercase font-mono block">Costo Neto Facturable</span>
+                      <span className="text-sm font-bold font-mono text-white">
+                        ${(hardBudgetSummary?.openaiFreeTier?.financialsToday?.netSpendUsd || 0).toFixed(4)}
+                      </span>
+                      <span className="text-[10px] text-slate-500 block">Impacto en presupuesto</span>
+                    </div>
+                  </div>
+
+                  {/* Actions & Verification Controls */}
+                  {isAdminAuthenticated && (
+                    <div className="pt-3 border-t border-[#1f2638] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={!!hardBudgetSummary?.openaiFreeTier?.enabled}
+                          onChange={(e) => handleToggleFreeTier(e.target.checked)}
+                          className="accent-emerald-500 w-4 h-4 rounded"
+                        />
+                        <span>Habilitar participación en programa de tokens gratuitos (Data Sharing)</span>
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={handleVerifyFreeTier}
+                        disabled={verifyingFreeTier}
+                        className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold shadow-md flex items-center gap-2 cursor-pointer transition-all"
+                      >
+                        {verifyingFreeTier ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                        <span>Verificar Beneficio con OpenAI</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Form to Edit Hard Budget Limits */}

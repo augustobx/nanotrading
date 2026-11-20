@@ -294,6 +294,14 @@ export class PostgresDatabaseService {
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS realized_net_pnl_usdt DOUBLE PRECISION;
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS entry_mode VARCHAR(30) DEFAULT 'SIGNALS_ONLY';
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS evaluation_mode VARCHAR(30) DEFAULT 'DUAL_AI';
+
+        ALTER TABLE hard_budget_config ADD COLUMN IF NOT EXISTS openai_free_tier_json TEXT;
+        ALTER TABLE ai_consumption_logs ADD COLUMN IF NOT EXISTS tokens_reasoning INTEGER DEFAULT 0;
+        ALTER TABLE ai_consumption_logs ADD COLUMN IF NOT EXISTS cost_gross_usd DOUBLE PRECISION DEFAULT 0;
+        ALTER TABLE ai_consumption_logs ADD COLUMN IF NOT EXISTS discount_usd DOUBLE PRECISION DEFAULT 0;
+        ALTER TABLE ai_consumption_logs ADD COLUMN IF NOT EXISTS cost_net_usd DOUBLE PRECISION DEFAULT 0;
+        ALTER TABLE ai_consumption_logs ADD COLUMN IF NOT EXISTS free_tier_group VARCHAR(20) DEFAULT 'NONE';
+        ALTER TABLE ai_consumption_logs ADD COLUMN IF NOT EXISTS is_free_tier INTEGER DEFAULT 0;
       `);
     } finally {
       client.release();
@@ -991,8 +999,8 @@ export class PostgresDatabaseService {
 
   public async saveHardBudgetConfig(config: any): Promise<void> {
     const query = `
-      INSERT INTO hard_budget_config (id, daily_budget_limit_usd, monthly_budget_limit_usd, max_cost_per_request_usd, provider_limits_json, model_limits_json, task_limits_json, alert_thresholds_json, auto_reset_period, is_blocked, blocked_reason, updated_at)
-      VALUES ('primary_hard_budget', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      INSERT INTO hard_budget_config (id, daily_budget_limit_usd, monthly_budget_limit_usd, max_cost_per_request_usd, provider_limits_json, model_limits_json, task_limits_json, alert_thresholds_json, auto_reset_period, is_blocked, blocked_reason, openai_free_tier_json, updated_at)
+      VALUES ('primary_hard_budget', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
       ON CONFLICT (id) DO UPDATE SET
         daily_budget_limit_usd = EXCLUDED.daily_budget_limit_usd,
         monthly_budget_limit_usd = EXCLUDED.monthly_budget_limit_usd,
@@ -1004,6 +1012,7 @@ export class PostgresDatabaseService {
         auto_reset_period = EXCLUDED.auto_reset_period,
         is_blocked = EXCLUDED.is_blocked,
         blocked_reason = EXCLUDED.blocked_reason,
+        openai_free_tier_json = EXCLUDED.openai_free_tier_json,
         updated_at = EXCLUDED.updated_at
     `;
     await this.pool.query(query, [
@@ -1017,6 +1026,7 @@ export class PostgresDatabaseService {
       config.autoResetPeriod ? 1 : 0,
       config.isBlocked ? 1 : 0,
       config.blockedReason || null,
+      config.openaiFreeTier ? JSON.stringify(config.openaiFreeTier) : null,
       config.updatedAt || Date.now(),
     ]);
   }
@@ -1036,6 +1046,7 @@ export class PostgresDatabaseService {
       autoResetPeriod: r.auto_reset_period === 1,
       isBlocked: r.is_blocked === 1,
       blockedReason: r.blocked_reason,
+      openaiFreeTier: r.openai_free_tier_json ? (typeof r.openai_free_tier_json === 'string' ? JSON.parse(r.openai_free_tier_json) : r.openai_free_tier_json) : null,
       updatedAt: Number(r.updated_at),
     };
   }

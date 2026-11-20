@@ -158,6 +158,7 @@ export class ConsensusEngine extends EventEmitter {
       provider: 'OPENAI',
       model: openaiModel,
       task: 'SETUP_EVALUATION',
+      estimatedTokens: 4000,
     });
 
     if (!openaiResv.allowed) {
@@ -223,7 +224,7 @@ export class ConsensusEngine extends EventEmitter {
 
     if (openaiResv.reservationId) {
       const isOpenaiTimeout = openaiRes.availabilityStatus === 'TIMEOUT' || openaiRes.error?.toLowerCase().includes('timeout');
-      this.hardBudgetManager.reconcileReservation(openaiResv.reservationId, {
+      const reconcile = this.hardBudgetManager.reconcileReservation(openaiResv.reservationId, {
         provider: 'OPENAI',
         model: openaiRes.model || openaiModel,
         task: 'SETUP_EVALUATION',
@@ -233,10 +234,20 @@ export class ConsensusEngine extends EventEmitter {
         status: isOpenaiTimeout ? 'UNCERTAIN_TIMEOUT' : (openaiRes.error ? 'ERROR' : 'SUCCESS'),
         latencyMs: openaiRes.latencyMs,
       });
+
+      // Registrar datos del beneficio Data Sharing / Free Tier en el resultado de análisis
+      (openaiRes as any).grossCostUsd = reconcile.grossCostUsd;
+      (openaiRes as any).discountUsd = reconcile.discountUsd;
+      (openaiRes as any).netCostUsd = reconcile.netCostUsd;
+      (openaiRes as any).freeTierGroup = reconcile.freeTierGroup;
+      (openaiRes as any).isFreeTier = reconcile.isFreeTier;
+      (openaiRes as any).benefitReason = reconcile.benefitReason;
+      openaiRes.estimatedCostUsd = reconcile.netCostUsd; // Net cost reflects financial impact
     }
+
     if (geminiResv.reservationId) {
       const isGeminiTimeout = geminiRes.availabilityStatus === 'TIMEOUT' || geminiRes.error?.toLowerCase().includes('timeout');
-      this.hardBudgetManager.reconcileReservation(geminiResv.reservationId, {
+      const reconcile = this.hardBudgetManager.reconcileReservation(geminiResv.reservationId, {
         provider: 'GEMINI',
         model: geminiRes.model || geminiModel,
         task: 'SETUP_EVALUATION',
@@ -246,9 +257,16 @@ export class ConsensusEngine extends EventEmitter {
         status: isGeminiTimeout ? 'UNCERTAIN_TIMEOUT' : (geminiRes.error ? 'ERROR' : 'SUCCESS'),
         latencyMs: geminiRes.latencyMs,
       });
+
+      (geminiRes as any).grossCostUsd = reconcile.grossCostUsd;
+      (geminiRes as any).discountUsd = reconcile.discountUsd;
+      (geminiRes as any).netCostUsd = reconcile.netCostUsd;
+      (geminiRes as any).freeTierGroup = 'NONE';
+      (geminiRes as any).isFreeTier = false;
+      geminiRes.estimatedCostUsd = reconcile.netCostUsd;
     }
 
-    // Record usage
+    // Record usage in costTracker
     if (openaiRes && openaiRes.tokensPrompt > 0) {
       this.costTracker.recordUsage('OPENAI', openaiRes.model, openaiRes.tokensPrompt, openaiRes.tokensCompletion);
     }
@@ -259,30 +277,6 @@ export class ConsensusEngine extends EventEmitter {
     // Persist reviews to database
     this.saveAiReview(setup.id, openaiRes);
     this.saveAiReview(setup.id, geminiRes);
-
-    // Persist detailed consumption logs (Fase 4.5)
-    this.db.logAiConsumption({
-      provider: 'OPENAI',
-      model: openaiRes.model,
-      task: 'SETUP_EVALUATION',
-      tokensPrompt: openaiRes.tokensPrompt,
-      tokensCompletion: openaiRes.tokensCompletion,
-      costUsd: openaiRes.estimatedCostUsd,
-      latencyMs: openaiRes.latencyMs,
-      status: openaiRes.error ? 'ERROR' : 'SUCCESS',
-      analysisId: setup.id,
-    });
-    this.db.logAiConsumption({
-      provider: 'GEMINI',
-      model: geminiRes.model,
-      task: 'RISK_AUDIT',
-      tokensPrompt: geminiRes.tokensPrompt,
-      tokensCompletion: geminiRes.tokensCompletion,
-      costUsd: geminiRes.estimatedCostUsd,
-      latencyMs: geminiRes.latencyMs,
-      status: geminiRes.error ? 'ERROR' : 'SUCCESS',
-      analysisId: setup.id,
-    });
 
     // Step 9: Determine Evaluation Mode & Fallback
     const isOpenAiAvailable = !openaiRes.error && openaiRes.availabilityStatus === 'AVAILABLE';

@@ -76,13 +76,25 @@ export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
   updatedAt: Date.now(),
 };
 
+export interface FreeTierRouterContext {
+  enabled?: boolean;
+  verified?: boolean;
+  mainRemainingTokens?: number;
+  smallRemainingTokens?: number;
+}
+
 export class AiModelRouter {
   private config: RouterConfig;
   private decisionHistory: RouterAuditRecord[] = [];
   private maxHistoryLength: number = 200;
+  private freeTierContext?: FreeTierRouterContext;
 
   constructor(initialConfig?: RouterConfig) {
     this.config = initialConfig ? { ...DEFAULT_ROUTER_CONFIG, ...initialConfig } : { ...DEFAULT_ROUTER_CONFIG };
+  }
+
+  public setFreeTierContext(context: FreeTierRouterContext): void {
+    this.freeTierContext = context;
   }
 
   public getConfig(): RouterConfig {
@@ -112,10 +124,12 @@ export class AiModelRouter {
   public routeModel(
     task: AiTaskType,
     provider: AiProvider,
-    remainingBudgetUsd: number = 5.0
+    remainingBudgetUsd: number = 5.0,
+    perCallFreeTierContext?: FreeTierRouterContext
   ): RouterDecision {
     const { mode, profile, manualGlobal, manualByTask } = this.config;
     const catalog = (Object.values(AI_MODELS_CATALOG) as ModelMetadata[]).filter((m) => m.provider === provider && m.status === 'ACTIVE');
+    const freeTier = perCallFreeTierContext || this.freeTierContext;
 
     let selectedModel: string;
     let selectionReason: string;
@@ -148,14 +162,14 @@ export class AiModelRouter {
         selectedModel = getValidatedModel(target, provider);
         selectionReason = `Excepción manual híbrida para tarea '${task}' (${selectedModel}).`;
       } else {
-        const auto = this.resolveAutomatic(task, provider, profile, remainingBudgetUsd, catalog);
+        const auto = this.resolveAutomatic(task, provider, profile, remainingBudgetUsd, catalog, freeTier);
         selectedModel = auto.model;
         selectionReason = auto.reason;
       }
     }
     // 4. AUTOMATIC
     else {
-      const auto = this.resolveAutomatic(task, provider, profile, remainingBudgetUsd, catalog);
+      const auto = this.resolveAutomatic(task, provider, profile, remainingBudgetUsd, catalog, freeTier);
       selectedModel = auto.model;
       selectionReason = auto.reason;
     }
@@ -179,22 +193,53 @@ export class AiModelRouter {
   }
 
   /**
-   * Automatic selection logic based on task, profile, and remaining budget.
+   * Automatic selection logic based on task, profile, remaining budget, and OpenAI Free Tier benefits.
    */
   private resolveAutomatic(
     task: AiTaskType,
     provider: AiProvider,
     profile: RouterProfile,
     remainingBudgetUsd: number,
-    catalog: any[]
+    catalog: any[],
+    freeTier?: FreeTierRouterContext
   ): { model: string; reason: string } {
     // High reasoning tasks: SETUP_EVALUATION, RISK_AUDIT, CONSENSUS_REVIEW
     const isCriticalEvaluation =
-      task === 'SETUP_EVALUATION' || task === 'RISK_AUDIT' || task === 'CONSENSUS_REVIEW';
+      task === 'SETUP_EVALUATION' || task === 'RISK_AUDIT' || task === 'CONSENSUS_REVIEW' || task === 'POST_TRADE_ANALYSIS';
 
     // Fast/lightweight tasks: ALERT_EXPLANATION, MARKET_SUMMARY, TECHNICAL_CONTEXT
     const isLightweight =
       task === 'ALERT_EXPLANATION' || task === 'MARKET_SUMMARY' || task === 'TECHNICAL_CONTEXT';
+
+    // Priorización inteligente de tokens gratuitos de OpenAI (Data Sharing Program)
+    if (provider === 'OPENAI' && freeTier?.enabled && freeTier?.verified) {
+      const mainRemaining = freeTier.mainRemainingTokens ?? 0;
+      const smallRemaining = freeTier.smallRemainingTokens ?? 0;
+
+      // Si es evaluación crítica y hay cupo en Grupo Principal (250k)
+      if (isCriticalEvaluation && mainRemaining >= 3000) {
+        return {
+          model: 'gpt-4o',
+          reason: `Beneficio OpenAI Free Tier activo (Grupo Principal con ${mainRemaining.toLocaleString()} tokens disponibles): priorizando gpt-4o para máxima calidad cuantitativa sin costo neto.`,
+        };
+      }
+
+      // Si es tarea ligera y hay cupo en Grupo Modelos Pequeños (2.5M)
+      if (isLightweight && smallRemaining >= 1500) {
+        return {
+          model: 'gpt-4o-mini',
+          reason: `Beneficio OpenAI Free Tier activo (Grupo Modelos Pequeños con ${smallRemaining.toLocaleString()} tokens disponibles): priorizando gpt-4o-mini sin costo neto.`,
+        };
+      }
+
+      // Si el cupo del grupo principal está agotado pero queda en pequeños para tareas intermedias
+      if (isCriticalEvaluation && mainRemaining < 3000 && remainingBudgetUsd < 0.5) {
+        return {
+          model: 'gpt-4o-mini',
+          reason: `Cupo Free Tier Grupo Principal agotado (${mainRemaining} tokens) y presupuesto bajo ($${remainingBudgetUsd.toFixed(2)}): fallback a gpt-4o-mini para preservar presupuesto.`,
+        };
+      }
+    }
 
     if (profile === 'ECONOMIC' || remainingBudgetUsd < 0.5) {
       if (provider === 'OPENAI') {
