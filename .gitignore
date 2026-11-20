@@ -10,11 +10,11 @@ build/
 out/
 
 # Database & Storage
-data/*.db
-data/*.sqlite
-data/*.sqlite*
-data/postgres/
-data/redis/
+data/
+backend/data/
+*.db
+*.sqlite
+*.sqlite*
 
 # Logs
 logs/

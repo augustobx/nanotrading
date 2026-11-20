@@ -16,13 +16,8 @@ export function getApiBaseUrl(): string {
 
   // 2. Client-side browser resolution
   if (typeof window !== 'undefined') {
-    const isLocalhost =
-      window.location.hostname === 'localhost' ||
-      window.location.hostname === '127.0.0.1' ||
-      window.location.hostname === '0.0.0.0';
-
-    // In local dev without proxy, default to dedicated backend port 3001
-    if (isLocalhost && window.location.port === '3000') {
+    // If accessing on port 3000 (localhost or LAN IP like 192.168.x.x), backend is on port 3001
+    if (window.location.port === '3000') {
       return `${window.location.protocol}//${window.location.hostname}:3001`;
     }
 
@@ -43,16 +38,11 @@ export function getWebSocketLiveUrl(): string {
 
   // 2. Client-side browser resolution
   if (typeof window !== 'undefined') {
-    const isLocalhost =
-      window.location.hostname === 'localhost' ||
-      window.location.hostname === '127.0.0.1' ||
-      window.location.hostname === '0.0.0.0';
-
     const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 
-    // In local dev without proxy
-    if (isLocalhost && window.location.port === '3000') {
-      return `ws://${window.location.hostname}:3001/ws/live`;
+    // If accessing on port 3000 (localhost or LAN IP like 192.168.x.x), backend WS is on port 3001
+    if (window.location.port === '3000') {
+      return `${wsProto}//${window.location.hostname}:3001/ws/live`;
     }
 
     // In production behind reverse proxy (Nginx Proxy Manager upgrades /ws/live)

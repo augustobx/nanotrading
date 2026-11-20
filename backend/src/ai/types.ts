@@ -9,6 +9,21 @@ export type ConsensusVerdict = 'AUTHORIZED' | 'WAITING_CONDITIONS' | 'DISCARDED'
 
 export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 
+export type AiAvailabilityStatus =
+  | 'AVAILABLE'
+  | 'UNCONFIGURED'
+  | 'TIMEOUT'
+  | 'AUTH_ERROR'
+  | 'RATE_LIMIT_EXCEEDED'
+  | 'PROVIDER_ERROR'
+  | 'INVALID_RESPONSE';
+
+export type AiEvaluationMode =
+  | 'DUAL_AI'
+  | 'SINGLE_AI_OPENAI'
+  | 'SINGLE_AI_GEMINI'
+  | 'AI_UNAVAILABLE';
+
 export interface MarketSnapshotOrderBookLevel {
   price: number;
   size: number;
@@ -89,6 +104,7 @@ export interface AiEvaluationResult {
   estimatedCostUsd: number;
   rawResponse?: any;
   error?: string;
+  availabilityStatus?: AiAvailabilityStatus;
 }
 
 export interface ConsensusResult {
@@ -111,6 +127,7 @@ export interface ConsensusResult {
   geminiReview?: AiEvaluationResult;
   snapshotId: string;
   executionMode: 'SIGNALS_ONLY'; // Strictly guaranteed live trading disabled
+  evaluationMode?: AiEvaluationMode;
   ruleViolations: string[];
   confidenceScore: number;
   confidenceDisclaimer?: string;

@@ -10,6 +10,7 @@ import {
   ConsensusResult,
   ConsensusVerdict,
   AiEvaluationResult,
+  AiEvaluationMode,
   MarketSnapshot,
 } from './types.js';
 
@@ -34,6 +35,7 @@ export class ConsensusEngine extends EventEmitter {
   private maxPriceDriftPcnt: number;
   private maxSnapshotAgeMs: number;
   private activeSignals: Map<string, ConsensusResult> = new Map();
+  private lastEvaluationMode: AiEvaluationMode = 'DUAL_AI';
 
   constructor(options: ConsensusEngineOptions) {
     super();
@@ -125,7 +127,7 @@ export class ConsensusEngine extends EventEmitter {
       );
     }
 
-    // Step 8: Parallel Dual AI Consultation
+    // Step 8: Concurrent Dual AI Consultation
     let openaiRes: AiEvaluationResult;
     let geminiRes: AiEvaluationResult;
     try {
@@ -149,73 +151,155 @@ export class ConsensusEngine extends EventEmitter {
     this.saveAiReview(setup.id, openaiRes);
     this.saveAiReview(setup.id, geminiRes);
 
-    // Step 9: AI Availability & Double-Validation enforcement
-    if (openaiRes.error || geminiRes.error) {
-      const errReason = `Doble validación incompleta (OpenAI: ${openaiRes.error || 'OK'}, Gemini: ${geminiRes.error || 'OK'})`;
+    // Step 9: Determine Evaluation Mode & Fallback
+    const isOpenAiAvailable = !openaiRes.error && openaiRes.availabilityStatus === 'AVAILABLE';
+    const isGeminiAvailable = !geminiRes.error && geminiRes.availabilityStatus === 'AVAILABLE';
+
+    let evaluationMode: AiEvaluationMode;
+    if (isOpenAiAvailable && isGeminiAvailable) {
+      evaluationMode = 'DUAL_AI';
+    } else if (isOpenAiAvailable && !isGeminiAvailable) {
+      evaluationMode = 'SINGLE_AI_OPENAI';
+    } else if (!isOpenAiAvailable && isGeminiAvailable) {
+      evaluationMode = 'SINGLE_AI_GEMINI';
+    } else {
+      evaluationMode = 'AI_UNAVAILABLE';
+    }
+    this.lastEvaluationMode = evaluationMode;
+
+    // Step 10: Mode-Specific Evaluations
+    if (evaluationMode === 'AI_UNAVAILABLE') {
+      const errReason = `Ni OpenAI ni Gemini están disponibles (OpenAI: ${openaiRes.error || openaiRes.availabilityStatus}, Gemini: ${geminiRes.error || geminiRes.availabilityStatus})`;
       ruleViolations.push(errReason);
-      return this.waitDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'AI_VALIDATION_INCOMPLETE', openaiRes, geminiRes);
-    }
-
-    // Step 10: Consensus Rules (Both must APPROVE)
-    if (openaiRes.verdict === 'REJECT' || geminiRes.verdict === 'REJECT') {
-      const rejectSources = [];
-      if (openaiRes.verdict === 'REJECT') rejectSources.push(`OpenAI: ${openaiRes.reasoning}`);
-      if (geminiRes.verdict === 'REJECT') rejectSources.push(`Gemini: ${geminiRes.reasoning}`);
-      ruleViolations.push(`Rechazado por analista IA (${rejectSources.join(' | ')})`);
-      return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'AI_VERDICT_REJECT', openaiRes, geminiRes);
-    }
-
-    if (openaiRes.verdict === 'WAIT' || geminiRes.verdict === 'WAIT') {
-      const waitSources = [];
-      if (openaiRes.verdict === 'WAIT') waitSources.push(`OpenAI: ${openaiRes.reasoning}`);
-      if (geminiRes.verdict === 'WAIT') waitSources.push(`Gemini: ${geminiRes.reasoning}`);
-      ruleViolations.push(`En espera de confirmación adicional (${waitSources.join(' | ')})`);
-      return this.waitDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'AI_VERDICT_WAIT', openaiRes, geminiRes);
-    }
-
-    // Both approved: check confidence thresholds
-    if (openaiRes.confidence < this.minAiConfidence || geminiRes.confidence < this.minAiConfidence) {
-      ruleViolations.push(
-        `Nivel de confianza IA insuficiente: OpenAI=${openaiRes.confidence}%, Gemini=${geminiRes.confidence}% (mínimo ${this.minAiConfidence}%)`
+      return this.waitDecision(
+        signalId,
+        setup,
+        snapshot.snapshotId,
+        evaluatedAt,
+        ruleViolations,
+        'AI_UNAVAILABLE',
+        openaiRes,
+        geminiRes,
+        'AI_UNAVAILABLE'
       );
-      return this.waitDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'LOW_AI_CONFIDENCE', openaiRes, geminiRes);
     }
 
-    // Step 11: Conflict & Invalidation Checks
-    if (!openaiRes.structuralTargetRealistic || !geminiRes.structuralTargetRealistic) {
-      ruleViolations.push('Objetivo estructural Take Profit calificado como no realista por auditoría de IA');
-      return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'STRUCTURAL_TARGET_UNREALISTIC', openaiRes, geminiRes);
+    if (evaluationMode === 'DUAL_AI') {
+      // Both must APPROVE. If either says REJECT, strictly discard!
+      if (openaiRes.verdict === 'REJECT' || geminiRes.verdict === 'REJECT') {
+        const rejectSources = [];
+        if (openaiRes.verdict === 'REJECT') rejectSources.push(`OpenAI: ${openaiRes.reasoning}`);
+        if (geminiRes.verdict === 'REJECT') rejectSources.push(`Gemini: ${geminiRes.reasoning}`);
+        ruleViolations.push(`Rechazado por analista IA (${rejectSources.join(' | ')})`);
+        return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'AI_VERDICT_REJECT', openaiRes, geminiRes, 'DUAL_AI');
+      }
+
+      if (openaiRes.verdict === 'WAIT' || geminiRes.verdict === 'WAIT') {
+        const waitSources = [];
+        if (openaiRes.verdict === 'WAIT') waitSources.push(`OpenAI: ${openaiRes.reasoning}`);
+        if (geminiRes.verdict === 'WAIT') waitSources.push(`Gemini: ${geminiRes.reasoning}`);
+        ruleViolations.push(`En espera de confirmación adicional (${waitSources.join(' | ')})`);
+        return this.waitDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'AI_VERDICT_WAIT', openaiRes, geminiRes, 'DUAL_AI');
+      }
+
+      // Both approved: check confidence thresholds
+      if (openaiRes.confidence < this.minAiConfidence || geminiRes.confidence < this.minAiConfidence) {
+        ruleViolations.push(
+          `Nivel de confianza IA insuficiente: OpenAI=${openaiRes.confidence}%, Gemini=${geminiRes.confidence}% (mínimo ${this.minAiConfidence}%)`
+        );
+        return this.waitDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'LOW_AI_CONFIDENCE', openaiRes, geminiRes, 'DUAL_AI');
+      }
+
+      // Conflict & Invalidation Checks
+      if (!openaiRes.structuralTargetRealistic || !geminiRes.structuralTargetRealistic) {
+        ruleViolations.push('Objetivo estructural Take Profit calificado como no realista por auditoría de IA');
+        return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'STRUCTURAL_TARGET_UNREALISTIC', openaiRes, geminiRes, 'DUAL_AI');
+      }
+
+      if (openaiRes.riskAssessment?.riskLevel === 'CRITICAL' || geminiRes.riskAssessment?.riskLevel === 'CRITICAL') {
+        ruleViolations.push('Riesgo crítico detectado por análisis independiente');
+        return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'CRITICAL_RISK_DETECTED', openaiRes, geminiRes, 'DUAL_AI');
+      }
+    } else if (evaluationMode === 'SINGLE_AI_OPENAI') {
+      // Gemini is unavailable. Rely on OpenAI alone.
+      // CRUCIAL: If OpenAI rejects or waits, that is an analytical verdict, NOT a failure. Never bypass rejection!
+      if (openaiRes.verdict === 'REJECT') {
+        ruleViolations.push(`Rechazado por OpenAI: ${openaiRes.reasoning}`);
+        return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'AI_VERDICT_REJECT', openaiRes, geminiRes, 'SINGLE_AI_OPENAI');
+      }
+
+      if (openaiRes.verdict === 'WAIT') {
+        ruleViolations.push(`En espera según OpenAI: ${openaiRes.reasoning}`);
+        return this.waitDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'AI_VERDICT_WAIT', openaiRes, geminiRes, 'SINGLE_AI_OPENAI');
+      }
+
+      if (openaiRes.confidence < this.minAiConfidence) {
+        ruleViolations.push(`Nivel de confianza OpenAI insuficiente: ${openaiRes.confidence}% (mínimo ${this.minAiConfidence}%)`);
+        return this.waitDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'LOW_AI_CONFIDENCE', openaiRes, geminiRes, 'SINGLE_AI_OPENAI');
+      }
+
+      if (!openaiRes.structuralTargetRealistic) {
+        ruleViolations.push('Objetivo estructural Take Profit calificado como no realista por OpenAI');
+        return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'STRUCTURAL_TARGET_UNREALISTIC', openaiRes, geminiRes, 'SINGLE_AI_OPENAI');
+      }
+
+      if (openaiRes.riskAssessment?.riskLevel === 'CRITICAL') {
+        ruleViolations.push('Riesgo crítico detectado por análisis OpenAI');
+        return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'CRITICAL_RISK_DETECTED', openaiRes, geminiRes, 'SINGLE_AI_OPENAI');
+      }
+    } else if (evaluationMode === 'SINGLE_AI_GEMINI') {
+      // OpenAI is unavailable. Rely on Gemini alone.
+      // CRUCIAL: If Gemini rejects or waits, that is an analytical verdict, NOT a failure. Never bypass rejection!
+      if (geminiRes.verdict === 'REJECT') {
+        ruleViolations.push(`Rechazado por Gemini: ${geminiRes.reasoning}`);
+        return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'AI_VERDICT_REJECT', openaiRes, geminiRes, 'SINGLE_AI_GEMINI');
+      }
+
+      if (geminiRes.verdict === 'WAIT') {
+        ruleViolations.push(`En espera según Gemini: ${geminiRes.reasoning}`);
+        return this.waitDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'AI_VERDICT_WAIT', openaiRes, geminiRes, 'SINGLE_AI_GEMINI');
+      }
+
+      if (geminiRes.confidence < this.minAiConfidence) {
+        ruleViolations.push(`Nivel de confianza Gemini insuficiente: ${geminiRes.confidence}% (mínimo ${this.minAiConfidence}%)`);
+        return this.waitDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'LOW_AI_CONFIDENCE', openaiRes, geminiRes, 'SINGLE_AI_GEMINI');
+      }
+
+      if (!geminiRes.structuralTargetRealistic) {
+        ruleViolations.push('Objetivo estructural Take Profit calificado como no realista por Gemini');
+        return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'STRUCTURAL_TARGET_UNREALISTIC', openaiRes, geminiRes, 'SINGLE_AI_GEMINI');
+      }
+
+      if (geminiRes.riskAssessment?.riskLevel === 'CRITICAL') {
+        ruleViolations.push('Riesgo crítico detectado por auditoría Gemini');
+        return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'CRITICAL_RISK_DETECTED', openaiRes, geminiRes, 'SINGLE_AI_GEMINI');
+      }
     }
 
-    if (openaiRes.riskAssessment?.riskLevel === 'CRITICAL' || geminiRes.riskAssessment?.riskLevel === 'CRITICAL') {
-      ruleViolations.push('Riesgo crítico detectado por análisis independiente');
-      return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'CRITICAL_RISK_DETECTED', openaiRes, geminiRes);
-    }
-
-    // Step 12: Post-Evaluation Pre-Breach & Dynamic Price Drift Checks
+    // Step 11: Post-Evaluation Pre-Breach & Dynamic Price Drift Checks
     const currentPrice = this.coordinator.getMarketState().ticker?.lastPrice || snapshot.ticker.lastPrice;
 
-    // 12a. Pre-breached Stop Loss check (technical invalidation)
+    // 11a. Pre-breached Stop Loss check (technical invalidation)
     if (setup.direction === 'LONG' && currentPrice <= setup.stopLossPrice) {
       ruleViolations.push(`Stop Loss ya alcanzado antes de la entrada (Precio actual ${currentPrice} <= SL ${setup.stopLossPrice})`);
-      return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'STOP_LOSS_PRE_BREACHED', openaiRes, geminiRes);
+      return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'STOP_LOSS_PRE_BREACHED', openaiRes, geminiRes, evaluationMode);
     }
     if (setup.direction === 'SHORT' && currentPrice >= setup.stopLossPrice) {
       ruleViolations.push(`Stop Loss ya alcanzado antes de la entrada (Precio actual ${currentPrice} >= SL ${setup.stopLossPrice})`);
-      return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'STOP_LOSS_PRE_BREACHED', openaiRes, geminiRes);
+      return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'STOP_LOSS_PRE_BREACHED', openaiRes, geminiRes, evaluationMode);
     }
 
-    // 12b. Pre-reached Take Profit check
+    // 11b. Pre-reached Take Profit check
     if (setup.direction === 'LONG' && currentPrice >= setup.takeProfitPrice) {
       ruleViolations.push(`Take Profit ya alcanzado antes de la entrada (Precio actual ${currentPrice} >= TP ${setup.takeProfitPrice})`);
-      return this.expireDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'TAKE_PROFIT_PRE_REACHED', openaiRes, geminiRes);
+      return this.expireDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'TAKE_PROFIT_PRE_REACHED', openaiRes, geminiRes, evaluationMode);
     }
     if (setup.direction === 'SHORT' && currentPrice <= setup.takeProfitPrice) {
       ruleViolations.push(`Take Profit ya alcanzado antes de la entrada (Precio actual ${currentPrice} <= TP ${setup.takeProfitPrice})`);
-      return this.expireDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'TAKE_PROFIT_PRE_REACHED', openaiRes, geminiRes);
+      return this.expireDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'TAKE_PROFIT_PRE_REACHED', openaiRes, geminiRes, evaluationMode);
     }
 
-    // 12c. Dynamic Price Drift Calculation (ATR + Risk Distance Aware)
+    // 11c. Dynamic Price Drift Calculation (ATR + Risk Distance Aware)
     const riskDistance = Math.abs(setup.entryPrice - setup.stopLossPrice);
     const atr15m = snapshot.multiTimeframe['15m']?.atr || snapshot.multiTimeframe['5m']?.atr || 50;
     const maxDriftByCeiling = setup.entryPrice * this.maxPriceDriftPcnt; // 0.15% ceiling
@@ -228,11 +312,19 @@ export class ConsensusEngine extends EventEmitter {
       ruleViolations.push(
         `Desviación de precio post-análisis dinámica superada (desviación actual ${actualDriftUsdt.toFixed(2)} USDT > máximo permitido ${maxAllowedDriftUsdt.toFixed(2)} USDT; techo=${maxDriftByCeiling.toFixed(2)}, 10%R=${maxDriftByRisk.toFixed(2)}, 5%ATR=${maxDriftByAtr.toFixed(2)})`
       );
-      return this.expireDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'PRICE_DRIFT_EXCEEDED', openaiRes, geminiRes);
+      return this.expireDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'PRICE_DRIFT_EXCEEDED', openaiRes, geminiRes, evaluationMode);
     }
 
-    // Step 13: Final Authorization (Strictly SIGNALS_ONLY)
-    const confidenceScore = Math.round((openaiRes.confidence + geminiRes.confidence) / 2);
+    // Step 12: Final Authorization (Strictly SIGNALS_ONLY)
+    let confidenceScore: number;
+    if (evaluationMode === 'DUAL_AI') {
+      confidenceScore = Math.round((openaiRes.confidence + geminiRes.confidence) / 2);
+    } else if (evaluationMode === 'SINGLE_AI_OPENAI') {
+      confidenceScore = openaiRes.confidence;
+    } else {
+      confidenceScore = geminiRes.confidence;
+    }
+
     const result: ConsensusResult = {
       signalId,
       setupId: setup.id,
@@ -252,6 +344,7 @@ export class ConsensusEngine extends EventEmitter {
       geminiReview: geminiRes,
       snapshotId: snapshot.snapshotId,
       executionMode: 'SIGNALS_ONLY',
+      evaluationMode,
       ruleViolations: [],
       confidenceScore,
       confidenceDisclaimer: 'La confianza declarada por la IA es subjetiva y no constituye una probabilidad matemática de acierto. Prevalece la invalidación técnica.',
@@ -262,7 +355,7 @@ export class ConsensusEngine extends EventEmitter {
       evaluatedAt,
     };
 
-    // Step 14: Save Signal & Emit Event
+    // Step 13: Save Signal & Emit Event
     this.activeSignals.set(signalId, result);
     this.saveSignalToDb(result);
     this.emit('signal_authorized', result);
@@ -279,7 +372,8 @@ export class ConsensusEngine extends EventEmitter {
     violations: string[],
     reason: string,
     openai?: AiEvaluationResult,
-    gemini?: AiEvaluationResult
+    gemini?: AiEvaluationResult,
+    evaluationMode?: AiEvaluationMode
   ): ConsensusResult {
     const result: ConsensusResult = {
       signalId,
@@ -302,6 +396,7 @@ export class ConsensusEngine extends EventEmitter {
       geminiReview: gemini,
       snapshotId,
       executionMode: 'SIGNALS_ONLY',
+      evaluationMode: evaluationMode || 'DUAL_AI',
       confidenceScore: 0,
       evaluatedAt,
     };
@@ -319,8 +414,16 @@ export class ConsensusEngine extends EventEmitter {
     violations: string[],
     reason: string,
     openai?: AiEvaluationResult,
-    gemini?: AiEvaluationResult
+    gemini?: AiEvaluationResult,
+    evaluationMode?: AiEvaluationMode
   ): ConsensusResult {
+    const conf =
+      evaluationMode === 'SINGLE_AI_OPENAI'
+        ? openai?.confidence || 0
+        : evaluationMode === 'SINGLE_AI_GEMINI'
+        ? gemini?.confidence || 0
+        : Math.round(((openai?.confidence || 0) + (gemini?.confidence || 0)) / 2);
+
     const result: ConsensusResult = {
       signalId,
       setupId: setup.id,
@@ -342,7 +445,8 @@ export class ConsensusEngine extends EventEmitter {
       geminiReview: gemini,
       snapshotId,
       executionMode: 'SIGNALS_ONLY',
-      confidenceScore: Math.round(((openai?.confidence || 0) + (gemini?.confidence || 0)) / 2),
+      evaluationMode: evaluationMode || 'DUAL_AI',
+      confidenceScore: conf,
       evaluatedAt,
     };
 
@@ -359,7 +463,8 @@ export class ConsensusEngine extends EventEmitter {
     violations: string[],
     reason: string,
     openai?: AiEvaluationResult,
-    gemini?: AiEvaluationResult
+    gemini?: AiEvaluationResult,
+    evaluationMode?: AiEvaluationMode
   ): ConsensusResult {
     const result: ConsensusResult = {
       signalId,
@@ -382,6 +487,7 @@ export class ConsensusEngine extends EventEmitter {
       geminiReview: gemini,
       snapshotId,
       executionMode: 'SIGNALS_ONLY',
+      evaluationMode: evaluationMode || 'DUAL_AI',
       confidenceScore: 0,
       evaluatedAt,
     };
@@ -435,6 +541,7 @@ export class ConsensusEngine extends EventEmitter {
         status: signal.status,
         rejectionReason: signal.rejectionReason,
         snapshotId: signal.snapshotId,
+        evaluationMode: signal.evaluationMode || 'DUAL_AI',
         createdAt: signal.evaluatedAt,
       });
     } catch {}
@@ -446,5 +553,35 @@ export class ConsensusEngine extends EventEmitter {
 
   public getCostTracker(): CostTracker {
     return this.costTracker;
+  }
+
+  public getOpenAiAdapter(): OpenAiAdapter {
+    return this.openaiAdapter;
+  }
+
+  public getGeminiAdapter(): GeminiAdapter {
+    return this.geminiAdapter;
+  }
+
+  public getCurrentEvaluationMode(): AiEvaluationMode {
+    const openaiStatus = this.openaiAdapter.getStatus();
+    const geminiStatus = this.geminiAdapter.getStatus();
+    const isOpenAiConfigured = openaiStatus.configured;
+    const isGeminiConfigured = geminiStatus.configured;
+
+    if (isOpenAiConfigured && isGeminiConfigured) {
+      return 'DUAL_AI';
+    }
+    if (isOpenAiConfigured && !isGeminiConfigured) {
+      return 'SINGLE_AI_OPENAI';
+    }
+    if (!isOpenAiConfigured && isGeminiConfigured) {
+      return 'SINGLE_AI_GEMINI';
+    }
+    return 'AI_UNAVAILABLE';
+  }
+
+  public getLastEvaluationMode(): AiEvaluationMode {
+    return this.lastEvaluationMode;
   }
 }

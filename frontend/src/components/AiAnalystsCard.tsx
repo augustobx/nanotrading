@@ -14,13 +14,34 @@ import {
   ChevronUp,
   DollarSign,
   Layers,
+  Zap,
 } from 'lucide-react';
+
+export interface ProviderStatus {
+  provider: 'OPENAI' | 'GEMINI';
+  configured: boolean;
+  model: string;
+  lastSuccessTimestamp: number | null;
+  lastError: string | null;
+  availabilityStatus: string;
+  role: string;
+}
 
 interface AiAnalystsCardProps {
   aiStatus?: {
+    currentMode?: string;
+    lastEvaluationMode?: string;
     providers?: {
-      openai?: { configured: boolean; model: string; role: string };
-      gemini?: { configured: boolean; model: string; role: string };
+      openai?: ProviderStatus;
+      gemini?: ProviderStatus;
+    };
+    fallbackPolicy?: {
+      activeMode: string;
+      modes: string[];
+      rejectionsEnforced: boolean;
+      minAiConfidence: number;
+      strictNetRR: number;
+      description: string;
     };
     costTracker?: {
       dailySpendUsd: number;
@@ -45,6 +66,89 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
   const openaiConfig = aiStatus?.providers?.openai;
   const geminiConfig = aiStatus?.providers?.gemini;
   const costTracker = aiStatus?.costTracker;
+  const currentMode = aiStatus?.currentMode || aiStatus?.fallbackPolicy?.activeMode || 'DUAL_AI';
+
+  const getModeBadge = (mode: string) => {
+    switch (mode) {
+      case 'DUAL_AI':
+        return (
+          <span className="text-[10px] font-mono bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded font-semibold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            DUAL_AI (Doble Consenso)
+          </span>
+        );
+      case 'SINGLE_AI_OPENAI':
+        return (
+          <span className="text-[10px] font-mono bg-blue-500/10 text-blue-300 border border-blue-500/30 px-2 py-0.5 rounded font-semibold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+            FALLBACK: SINGLE_AI_OPENAI
+          </span>
+        );
+      case 'SINGLE_AI_GEMINI':
+        return (
+          <span className="text-[10px] font-mono bg-purple-500/10 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded font-semibold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
+            FALLBACK: SINGLE_AI_GEMINI
+          </span>
+        );
+      default:
+        return (
+          <span className="text-[10px] font-mono bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-semibold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+            AI_UNAVAILABLE (Standby Bybit)
+          </span>
+        );
+    }
+  };
+
+  const getProviderStatusBadge = (cfg?: ProviderStatus) => {
+    if (!cfg) {
+      return (
+        <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-slate-800 text-slate-400 border border-slate-700">
+          DESCONOCIDO
+        </span>
+      );
+    }
+    const status = cfg.availabilityStatus || (cfg.configured ? 'AVAILABLE' : 'UNCONFIGURED');
+    switch (status) {
+      case 'AVAILABLE':
+        return (
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+            DISPONIBLE
+          </span>
+        );
+      case 'UNCONFIGURED':
+        return (
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
+            SIN CONFIGURAR
+          </span>
+        );
+      case 'TIMEOUT':
+        return (
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-rose-500/10 text-rose-400 border border-rose-500/30">
+            TIMEOUT
+          </span>
+        );
+      case 'AUTH_ERROR':
+        return (
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-rose-500/10 text-rose-400 border border-rose-500/30">
+            ERROR AUTH
+          </span>
+        );
+      case 'RATE_LIMIT_EXCEEDED':
+        return (
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-rose-500/10 text-rose-400 border border-rose-500/30">
+            CUOTA AGOTADA
+          </span>
+        );
+      default:
+        return (
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded font-bold bg-rose-500/10 text-rose-400 border border-rose-500/30">
+            ERROR PROVEEDOR
+          </span>
+        );
+    }
+  };
 
   return (
     <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-4 shadow-xl">
@@ -53,16 +157,14 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
         <div className="flex items-center gap-2">
           <Brain className="w-4 h-4 text-[var(--color-brand,#FF6600)]" />
           <h3 className="font-display font-bold text-sm text-slate-200 uppercase tracking-wider">
-            Doble Inteligencia Artificial & Motor de Consenso (Fase 3 Activa)
+            Inteligencia Artificial Cuantitativa & Motor de Consenso
           </h3>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-[10px] font-mono bg-purple-500/10 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded font-bold">
             Modo: {aiStatus?.executionMode || 'SIGNALS_ONLY'}
           </span>
-          <span className="text-[10px] font-mono bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded font-semibold">
-            Doble Consenso Requerido
-          </span>
+          {getModeBadge(currentMode)}
         </div>
       </div>
 
@@ -76,7 +178,7 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
               : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
           }`}
         >
-          Modelos & Presupuesto
+          Modelos & Fallback
         </button>
         <button
           onClick={() => setActiveTab('signals')}
@@ -102,6 +204,19 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
 
       {activeTab === 'status' && (
         <div className="space-y-3">
+          {/* Policy Banner */}
+          {aiStatus?.fallbackPolicy && (
+            <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between text-xs font-mono">
+              <span className="text-slate-300 flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                {aiStatus.fallbackPolicy.description}
+              </span>
+              <span className="text-[10px] text-slate-500">
+                Rechazos Inviolables · Confianza Mín: {aiStatus.fallbackPolicy.minAiConfidence}% · R:R ≥ 1:4.0
+              </span>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {/* OpenAI Card */}
             <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-900/60 flex flex-col justify-between">
@@ -118,24 +233,25 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
                       </p>
                     </div>
                   </div>
-                  <span
-                    className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
-                      openaiConfig?.configured
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                        : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
-                    }`}
-                  >
-                    {openaiConfig?.configured ? 'ACTIVO' : 'SIN API KEY (STANDBY)'}
-                  </span>
+                  {getProviderStatusBadge(openaiConfig)}
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed mb-3">
                   Evalúa la confluencia de estructura multitemporal, zonas Premium/Discount, retrocesos a FVG/OB y verosimilitud del ratio R:R $\ge$ 1:4.
                 </p>
+                {openaiConfig?.lastError && (
+                  <div className="p-2 mb-2 rounded bg-rose-500/10 border border-rose-500/20 text-[10px] text-rose-300 font-mono truncate">
+                    Último error: {openaiConfig.lastError}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-[10px] font-mono text-slate-500">
                 <span>Llamadas: {costTracker?.callsByProvider?.OPENAI || 0}</span>
-                <span>Rol: Analista Estructural</span>
+                <span>
+                  {openaiConfig?.lastSuccessTimestamp
+                    ? `Último éxito: ${new Date(openaiConfig.lastSuccessTimestamp).toLocaleTimeString('es-AR')}`
+                    : 'Rol: Analista Estructural'}
+                </span>
               </div>
             </div>
 
@@ -150,28 +266,29 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
                     <div>
                       <h4 className="font-display font-bold text-xs text-white">Google Gemini</h4>
                       <p className="text-[10px] text-slate-400 font-mono">
-                        {geminiConfig?.model || 'gemini-2.5-flash'} (Auditor Crítico de Riesgos)
+                        {geminiConfig?.model || 'gemini-2.0-flash'} (Auditor Crítico de Riesgos)
                       </p>
                     </div>
                   </div>
-                  <span
-                    className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
-                      geminiConfig?.configured
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                        : 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
-                    }`}
-                  >
-                    {geminiConfig?.configured ? 'ACTIVO' : 'SIN API KEY (STANDBY)'}
-                  </span>
+                  {getProviderStatusBadge(geminiConfig)}
                 </div>
                 <p className="text-xs text-slate-400 leading-relaxed mb-3">
                   Actúa como abogado del diablo independiente. Busca contradicciones, trampas de liquidez, absorción adversa en el libro de órdenes y razones para descartar el setup.
                 </p>
+                {geminiConfig?.lastError && (
+                  <div className="p-2 mb-2 rounded bg-rose-500/10 border border-rose-500/20 text-[10px] text-rose-300 font-mono truncate">
+                    Último error: {geminiConfig.lastError}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-[10px] font-mono text-slate-500">
                 <span>Llamadas: {costTracker?.callsByProvider?.GEMINI || 0}</span>
-                <span>Rol: Auditor de Riesgos</span>
+                <span>
+                  {geminiConfig?.lastSuccessTimestamp
+                    ? `Último éxito: ${new Date(geminiConfig.lastSuccessTimestamp).toLocaleTimeString('es-AR')}`
+                    : 'Rol: Auditor de Riesgos'}
+                </span>
               </div>
             </div>
           </div>
@@ -210,6 +327,7 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
                     <th className="pb-2">Dirección</th>
                     <th className="pb-2">Entrada</th>
                     <th className="pb-2">R:R Neto</th>
+                    <th className="pb-2">Modo IA</th>
                     <th className="pb-2">OpenAI</th>
                     <th className="pb-2">Gemini</th>
                     <th className="pb-2">Consenso</th>
@@ -236,6 +354,17 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
                       </td>
                       <td className="py-2.5 text-white font-semibold">${sig.entryPrice?.toFixed(1)}</td>
                       <td className="py-2.5 text-amber-400 font-bold">1:{sig.rrNet?.toFixed(1) || '4.0'}</td>
+                      <td className="py-2.5">
+                        <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-semibold bg-slate-800 text-slate-300">
+                          {sig.evaluationMode === 'SINGLE_AI_OPENAI'
+                            ? 'OpenAI'
+                            : sig.evaluationMode === 'SINGLE_AI_GEMINI'
+                            ? 'Gemini'
+                            : sig.evaluationMode === 'AI_UNAVAILABLE'
+                            ? 'N/A'
+                            : 'Dual'}
+                        </span>
+                      </td>
                       <td className="py-2.5">
                         <span
                           className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
@@ -297,20 +426,25 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
                 <h4 className="font-display font-bold text-sm text-white">
                   Auditoría Detallada de Consenso: {selectedSignal.id}
                 </h4>
-                <span className="text-xs font-mono text-slate-400">
-                  {selectedSignal.rejectionReason ? `Motivo: ${selectedSignal.rejectionReason}` : 'Autorizada sin restricciones'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                    Modo: {selectedSignal.evaluationMode || 'DUAL_AI'}
+                  </span>
+                  <span className="text-xs font-mono text-slate-400">
+                    {selectedSignal.rejectionReason ? `Motivo: ${selectedSignal.rejectionReason}` : 'Autorizada sin restricciones'}
+                  </span>
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs font-mono">
                 <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800">
-                  <h5 className="font-bold text-emerald-400 mb-1">OpenAI ({selectedSignal.openaiVerdict})</h5>
+                  <h5 className="font-bold text-emerald-400 mb-1">OpenAI ({selectedSignal.openaiVerdict || 'N/A'})</h5>
                   <p className="text-slate-300 text-[11px] leading-relaxed">
                     {selectedSignal.openaiReview?.reasoning || 'Evaluación cuantitativa registrada.'}
                   </p>
                 </div>
                 <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800">
-                  <h5 className="font-bold text-blue-400 mb-1">Gemini ({selectedSignal.geminiVerdict})</h5>
+                  <h5 className="font-bold text-blue-400 mb-1">Gemini ({selectedSignal.geminiVerdict || 'N/A'})</h5>
                   <p className="text-slate-300 text-[11px] leading-relaxed">
                     {selectedSignal.geminiReview?.reasoning || 'Auditoría crítica de invalidaciones registrada.'}
                   </p>

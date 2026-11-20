@@ -28,6 +28,7 @@ export interface ActiveSignalItem {
   netRR: number;
   state: string;
   entryMode: string;
+  evaluationMode?: string;
   simulatedEntryTime?: number;
   exitTime?: number;
   durationMs?: number;
@@ -168,6 +169,17 @@ export function SignalLifecycleMonitor({
                     <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
                       {signal.entryMode || 'PAPER_TRADING'}
                     </span>
+                    {signal.evaluationMode && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                        {signal.evaluationMode === 'SINGLE_AI_OPENAI'
+                          ? 'Solo OpenAI'
+                          : signal.evaluationMode === 'SINGLE_AI_GEMINI'
+                          ? 'Solo Gemini'
+                          : signal.evaluationMode === 'DUAL_AI'
+                          ? 'Ambas IA'
+                          : signal.evaluationMode}
+                      </span>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-2">

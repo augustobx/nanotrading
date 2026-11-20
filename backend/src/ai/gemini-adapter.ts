@@ -1,4 +1,4 @@
-import { MarketSnapshot, AiEvaluationResult } from './types.js';
+import { MarketSnapshot, AiEvaluationResult, AiAvailabilityStatus } from './types.js';
 import { calculateCallCost, getValidatedModel } from './models-catalog.js';
 
 export interface GeminiAdapterOptions {
@@ -13,12 +13,19 @@ export class GeminiAdapter {
   private model: string;
   private timeoutMs: number;
   private mockEvaluator?: (snapshot: MarketSnapshot) => Promise<Partial<AiEvaluationResult>>;
+  private lastSuccessTimestamp: number | null = null;
+  private lastError: string | null = null;
+  private lastAvailabilityStatus: AiAvailabilityStatus = 'AVAILABLE';
 
   constructor(options: GeminiAdapterOptions = {}) {
     this.apiKey = options.apiKey || process.env.GEMINI_API_KEY || '';
     this.model = getValidatedModel(options.model || process.env.GEMINI_MODEL || 'gemini-2.0-flash', 'GEMINI');
     this.timeoutMs = options.timeoutMs || 8000;
     this.mockEvaluator = options.mockEvaluator;
+    if (!this.apiKey && !this.mockEvaluator) {
+      this.lastAvailabilityStatus = 'UNCONFIGURED';
+      this.lastError = 'GEMINI_API_KEY no configurada';
+    }
   }
 
   public setMockEvaluator(fn?: (snapshot: MarketSnapshot) => Promise<Partial<AiEvaluationResult>>): void {
@@ -35,6 +42,15 @@ export class GeminiAdapter {
       const promptTokens = mockRes.tokensPrompt || 620;
       const completionTokens = mockRes.tokensCompletion || 260;
       const estimatedCostUsd = calculateCallCost(this.model, promptTokens, completionTokens);
+      const availabilityStatus: AiAvailabilityStatus = mockRes.availabilityStatus || (mockRes.error ? 'PROVIDER_ERROR' : 'AVAILABLE');
+
+      this.lastAvailabilityStatus = availabilityStatus;
+      if (availabilityStatus === 'AVAILABLE') {
+        this.lastSuccessTimestamp = Date.now();
+        this.lastError = null;
+      } else {
+        this.lastError = mockRes.error || 'Error simulado de Gemini';
+      }
 
       return {
         provider: 'GEMINI',
@@ -56,10 +72,14 @@ export class GeminiAdapter {
         tokensPrompt: promptTokens,
         tokensCompletion: completionTokens,
         estimatedCostUsd,
+        error: mockRes.error,
+        availabilityStatus,
       };
     }
 
     if (!this.apiKey) {
+      this.lastAvailabilityStatus = 'UNCONFIGURED';
+      this.lastError = 'GEMINI_API_KEY no configurada';
       return {
         provider: 'GEMINI',
         model: this.model,
@@ -81,6 +101,7 @@ export class GeminiAdapter {
         tokensCompletion: 0,
         estimatedCostUsd: 0,
         error: 'API_KEY_MISSING',
+        availabilityStatus: 'UNCONFIGURED',
       };
     }
 
@@ -134,6 +155,10 @@ Responde obligatoriamente en JSON estricto.`;
       const completionTokens = data.usageMetadata?.candidatesTokenCount || 280;
       const estimatedCostUsd = calculateCallCost(this.model, promptTokens, completionTokens);
 
+      this.lastAvailabilityStatus = 'AVAILABLE';
+      this.lastSuccessTimestamp = Date.now();
+      this.lastError = null;
+
       return {
         provider: 'GEMINI',
         model: this.model,
@@ -155,18 +180,35 @@ Responde obligatoriamente en JSON estricto.`;
         tokensCompletion: completionTokens,
         estimatedCostUsd,
         rawResponse: parsed,
+        availabilityStatus: 'AVAILABLE',
       };
     } catch (err: any) {
       clearTimeout(timeoutId);
       const latencyMs = Date.now() - startTime;
+
+      let availabilityStatus: AiAvailabilityStatus = 'PROVIDER_ERROR';
+      const errMsg = String(err?.message || err);
+      if (err.name === 'AbortError' || /abort|timeout/i.test(errMsg)) {
+        availabilityStatus = 'TIMEOUT';
+      } else if (/401|403|API_KEY_INVALID|invalid_api_key|unauthorized/i.test(errMsg)) {
+        availabilityStatus = 'AUTH_ERROR';
+      } else if (/429|RESOURCE_EXHAUSTED|quota|rate_limit/i.test(errMsg)) {
+        availabilityStatus = 'RATE_LIMIT_EXCEEDED';
+      } else if (/json|syntaxerror|unexpected token/i.test(errMsg)) {
+        availabilityStatus = 'INVALID_RESPONSE';
+      }
+
+      this.lastAvailabilityStatus = availabilityStatus;
+      this.lastError = errMsg;
+
       return {
         provider: 'GEMINI',
         model: this.model,
         verdict: 'WAIT',
         confidence: 0,
-        reasoning: `Error al consultar Gemini: ${err.message}`,
+        reasoning: `Error al consultar Gemini: ${errMsg}`,
         argumentsFor: [],
-        argumentsAgainst: [`Fallo en la consulta: ${err.message}`],
+        argumentsAgainst: [`Fallo en la consulta: ${errMsg}`],
         riskAssessment: {
           riskLevel: 'HIGH',
           primaryRisks: ['Fallo de comunicación con modelo Gemini'],
@@ -179,12 +221,33 @@ Responde obligatoriamente en JSON estricto.`;
         tokensPrompt: 0,
         tokensCompletion: 0,
         estimatedCostUsd: 0,
-        error: err.message,
+        error: errMsg,
+        availabilityStatus,
       };
     }
   }
 
   public getModel(): string {
     return this.model;
+  }
+
+  public getStatus(): {
+    provider: 'GEMINI';
+    configured: boolean;
+    model: string;
+    lastSuccessTimestamp: number | null;
+    lastError: string | null;
+    availabilityStatus: AiAvailabilityStatus;
+    role: string;
+  } {
+    return {
+      provider: 'GEMINI',
+      configured: !!this.apiKey,
+      model: this.model,
+      lastSuccessTimestamp: this.lastSuccessTimestamp,
+      lastError: this.lastError,
+      availabilityStatus: this.lastAvailabilityStatus,
+      role: 'Auditor Crítico de Riesgos e Invalidación',
+    };
   }
 }

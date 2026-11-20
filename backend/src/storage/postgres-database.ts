@@ -183,6 +183,7 @@ export class PostgresDatabaseService {
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS realized_net_r DOUBLE PRECISION;
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS realized_net_pnl_usdt DOUBLE PRECISION;
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS entry_mode VARCHAR(30) DEFAULT 'SIGNALS_ONLY';
+        ALTER TABLE signals ADD COLUMN IF NOT EXISTS evaluation_mode VARCHAR(30) DEFAULT 'DUAL_AI';
       `);
     } finally {
       client.release();
@@ -454,11 +455,12 @@ export class PostgresDatabaseService {
 
   public async saveSignal(signal: any): Promise<void> {
     const query = `
-      INSERT INTO signals (id, setup_id, timestamp, symbol, strategy, direction, timeframe, entry_price, stop_loss, take_profit, rr_net, consensus_verdict, openai_verdict, gemini_verdict, status, rejection_reason, snapshot_id, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      INSERT INTO signals (id, setup_id, timestamp, symbol, strategy, direction, timeframe, entry_price, stop_loss, take_profit, rr_net, consensus_verdict, openai_verdict, gemini_verdict, status, rejection_reason, snapshot_id, created_at, evaluation_mode)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
       ON CONFLICT (id) DO UPDATE SET
         status = EXCLUDED.status,
-        rejection_reason = EXCLUDED.rejection_reason
+        rejection_reason = EXCLUDED.rejection_reason,
+        evaluation_mode = COALESCE(EXCLUDED.evaluation_mode, signals.evaluation_mode)
     `;
     await this.pool.query(query, [
       signal.id,
@@ -479,6 +481,7 @@ export class PostgresDatabaseService {
       signal.rejectionReason || null,
       signal.snapshotId || null,
       signal.createdAt || Date.now(),
+      signal.evaluationMode || 'DUAL_AI',
     ]);
   }
 
@@ -504,6 +507,7 @@ export class PostgresDatabaseService {
       rejectionReason: r.rejection_reason,
       snapshotId: r.snapshot_id,
       createdAt: Number(r.created_at),
+      evaluationMode: r.evaluation_mode || 'DUAL_AI',
       simulatedEntryTime: r.simulated_entry_time ? Number(r.simulated_entry_time) : null,
       exitTime: r.exit_time ? Number(r.exit_time) : null,
       durationMs: r.duration_ms ? Number(r.duration_ms) : null,
@@ -721,6 +725,7 @@ export class PostgresDatabaseService {
       rejectionReason: r.rejection_reason,
       snapshotId: r.snapshot_id,
       createdAt: Number(r.created_at),
+      evaluationMode: r.evaluation_mode || 'DUAL_AI',
       simulatedEntryTime: r.simulated_entry_time ? Number(r.simulated_entry_time) : null,
       exitTime: r.exit_time ? Number(r.exit_time) : null,
       durationMs: r.duration_ms ? Number(r.duration_ms) : null,

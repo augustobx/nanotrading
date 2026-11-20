@@ -225,28 +225,40 @@ export class ApiServer {
   }
 
   private sendAiStatus(res: http.ServerResponse): void {
-    const costTracker = this.coordinator.getConsensusEngine().getCostTracker();
+    const consensusEngine = this.coordinator.getConsensusEngine();
+    const costTracker = consensusEngine.getCostTracker();
     const stats = costTracker.getStats();
+    const currentMode = consensusEngine.getCurrentEvaluationMode();
+    const lastMode = consensusEngine.getLastEvaluationMode();
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(
       JSON.stringify({
         success: true,
         data: {
+          currentMode,
+          lastEvaluationMode: lastMode,
           providers: {
-            openai: {
-              configured: !!process.env.OPENAI_API_KEY,
-              model: process.env.OPENAI_MODEL || 'gpt-4o',
-              role: 'Analista Cuantitativo y de Estructura de Mercado',
-            },
-            gemini: {
-              configured: !!process.env.GEMINI_API_KEY,
-              model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-              role: 'Auditor Crítico de Riesgo e Invalidación',
-            },
+            openai: consensusEngine.getOpenAiAdapter().getStatus(),
+            gemini: consensusEngine.getGeminiAdapter().getStatus(),
+          },
+          fallbackPolicy: {
+            activeMode: currentMode,
+            modes: ['DUAL_AI', 'SINGLE_AI_OPENAI', 'SINGLE_AI_GEMINI', 'AI_UNAVAILABLE'],
+            rejectionsEnforced: true,
+            minAiConfidence: 70,
+            strictNetRR: 4.0,
+            description:
+              currentMode === 'DUAL_AI'
+                ? 'Doble Consenso Activo (OpenAI + Gemini)'
+                : currentMode === 'SINGLE_AI_OPENAI'
+                ? 'Fallback Activo: Operando con OpenAI (Gemini no disponible)'
+                : currentMode === 'SINGLE_AI_GEMINI'
+                ? 'Fallback Activo: Operando con Gemini (OpenAI no disponible)'
+                : 'Sin IAs disponibles: Monitoreo técnico Bybit activo, esperando disponibilidad',
           },
           costTracker: stats,
-          consensusRule: 'DOBLE_VALIDACION_OBLIGATORIA (Ambas IAs deben APPROVE con confianza >= 70%)',
+          consensusRule: 'Consenso Multimodal con Fallback Inteligente y Rechazo Estricto Inviolable',
           executionMode: 'SIGNALS_ONLY',
         },
       })

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events';
 import { DatabaseService } from '../storage/database.js';
 import { SetupCandidate } from './strategy-a-trend.js';
-import { ConsensusResult } from '../ai/types.js';
+import { ConsensusResult, AiEvaluationMode } from '../ai/types.js';
 
 export type SignalState =
   | 'OBSERVING'
@@ -39,6 +39,7 @@ export interface SignalInstance {
   riskUsdt: number;
   state: SignalState;
   entryMode: EntryMode;
+  evaluationMode?: AiEvaluationMode;
   simulatedEntryTime?: number;
   exitTime?: number;
   durationMs?: number;
@@ -106,6 +107,7 @@ export class SignalStateMachine extends EventEmitter {
       riskUsdt,
       state: consensus.consensusVerdict === 'AUTHORIZED' ? 'ENTRY_VALIDATED' : 'WAITING_CONFIRMATION',
       entryMode: 'EMITTED_SIGNAL',
+      evaluationMode: consensus.evaluationMode || 'DUAL_AI',
       mfePrice: consensus.entryPrice,
       mfeR: 0,
       maePrice: consensus.entryPrice,
@@ -135,6 +137,7 @@ export class SignalStateMachine extends EventEmitter {
       status: instance.state,
       rejectionReason: consensus.rejectionReason,
       snapshotId: consensus.snapshotId,
+      evaluationMode: instance.evaluationMode,
       createdAt: instance.createdAt,
     });
 
@@ -329,6 +332,7 @@ export class SignalStateMachine extends EventEmitter {
             riskUsdt: 100,
             state: (row.status as SignalState) || 'ENTRY_VALIDATED',
             entryMode: (row.entryMode as EntryMode) || 'EMITTED_SIGNAL',
+            evaluationMode: (row.evaluationMode as AiEvaluationMode) || 'DUAL_AI',
             simulatedEntryTime: row.simulatedEntryTime,
             exitTime: row.exitTime,
             durationMs: row.durationMs,

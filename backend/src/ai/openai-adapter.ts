@@ -1,4 +1,4 @@
-import { MarketSnapshot, AiEvaluationResult } from './types.js';
+import { MarketSnapshot, AiEvaluationResult, AiAvailabilityStatus } from './types.js';
 import { calculateCallCost, getValidatedModel } from './models-catalog.js';
 
 export interface OpenAiAdapterOptions {
@@ -13,12 +13,19 @@ export class OpenAiAdapter {
   private model: string;
   private timeoutMs: number;
   private mockEvaluator?: (snapshot: MarketSnapshot) => Promise<Partial<AiEvaluationResult>>;
+  private lastSuccessTimestamp: number | null = null;
+  private lastError: string | null = null;
+  private lastAvailabilityStatus: AiAvailabilityStatus = 'AVAILABLE';
 
   constructor(options: OpenAiAdapterOptions = {}) {
     this.apiKey = options.apiKey || process.env.OPENAI_API_KEY || '';
     this.model = getValidatedModel(options.model || process.env.OPENAI_MODEL || 'gpt-4o', 'OPENAI');
     this.timeoutMs = options.timeoutMs || 8000;
     this.mockEvaluator = options.mockEvaluator;
+    if (!this.apiKey && !this.mockEvaluator) {
+      this.lastAvailabilityStatus = 'UNCONFIGURED';
+      this.lastError = 'OPENAI_API_KEY no configurada';
+    }
   }
 
   public setMockEvaluator(fn?: (snapshot: MarketSnapshot) => Promise<Partial<AiEvaluationResult>>): void {
@@ -35,6 +42,15 @@ export class OpenAiAdapter {
       const promptTokens = mockRes.tokensPrompt || 650;
       const completionTokens = mockRes.tokensCompletion || 280;
       const estimatedCostUsd = calculateCallCost(this.model, promptTokens, completionTokens);
+      const availabilityStatus: AiAvailabilityStatus = mockRes.availabilityStatus || (mockRes.error ? 'PROVIDER_ERROR' : 'AVAILABLE');
+
+      this.lastAvailabilityStatus = availabilityStatus;
+      if (availabilityStatus === 'AVAILABLE') {
+        this.lastSuccessTimestamp = Date.now();
+        this.lastError = null;
+      } else {
+        this.lastError = mockRes.error || 'Error simulado de OpenAI';
+      }
 
       return {
         provider: 'OPENAI',
@@ -56,10 +72,14 @@ export class OpenAiAdapter {
         tokensPrompt: promptTokens,
         tokensCompletion: completionTokens,
         estimatedCostUsd,
+        error: mockRes.error,
+        availabilityStatus,
       };
     }
 
     if (!this.apiKey) {
+      this.lastAvailabilityStatus = 'UNCONFIGURED';
+      this.lastError = 'OPENAI_API_KEY no configurada';
       return {
         provider: 'OPENAI',
         model: this.model,
@@ -81,6 +101,7 @@ export class OpenAiAdapter {
         tokensCompletion: 0,
         estimatedCostUsd: 0,
         error: 'API_KEY_MISSING',
+        availabilityStatus: 'UNCONFIGURED',
       };
     }
 
@@ -133,6 +154,10 @@ Reglas imperativas:
       const completionTokens = data.usage?.completion_tokens || 300;
       const estimatedCostUsd = calculateCallCost(this.model, promptTokens, completionTokens);
 
+      this.lastAvailabilityStatus = 'AVAILABLE';
+      this.lastSuccessTimestamp = Date.now();
+      this.lastError = null;
+
       return {
         provider: 'OPENAI',
         model: this.model,
@@ -154,22 +179,39 @@ Reglas imperativas:
         tokensCompletion: completionTokens,
         estimatedCostUsd,
         rawResponse: parsed,
+        availabilityStatus: 'AVAILABLE',
       };
     } catch (err: any) {
       clearTimeout(timeoutId);
       const latencyMs = Date.now() - startTime;
+
+      let availabilityStatus: AiAvailabilityStatus = 'PROVIDER_ERROR';
+      const errMsg = String(err?.message || err);
+      if (err.name === 'AbortError' || /abort|timeout/i.test(errMsg)) {
+        availabilityStatus = 'TIMEOUT';
+      } else if (/401|invalid_api_key|Incorrect API key|unauthorized/i.test(errMsg)) {
+        availabilityStatus = 'AUTH_ERROR';
+      } else if (/429|insufficient_quota|rate_limit|exceeded your current quota/i.test(errMsg)) {
+        availabilityStatus = 'RATE_LIMIT_EXCEEDED';
+      } else if (/json|syntaxerror|unexpected token/i.test(errMsg)) {
+        availabilityStatus = 'INVALID_RESPONSE';
+      }
+
+      this.lastAvailabilityStatus = availabilityStatus;
+      this.lastError = errMsg;
+
       return {
         provider: 'OPENAI',
         model: this.model,
         verdict: 'WAIT',
         confidence: 0,
-        reasoning: `Error al consultar OpenAI: ${err.message}`,
+        reasoning: `Error al consultar OpenAI: ${errMsg}`,
         argumentsFor: [],
-        argumentsAgainst: [`Fallo en la consulta: ${err.message}`],
+        argumentsAgainst: [`Fallo en la consulta: ${errMsg}`],
         riskAssessment: {
           riskLevel: 'HIGH',
           primaryRisks: ['Fallo de comunicación con modelo'],
-          invalidationTrigger: 'Reintentar consulta o verificar rate-limits',
+          invalidationTrigger: 'Reintentar consulta o verificar disponibilidad',
         },
         structuralTargetRealistic: false,
         alternativeScenario: 'N/A',
@@ -178,12 +220,33 @@ Reglas imperativas:
         tokensPrompt: 0,
         tokensCompletion: 0,
         estimatedCostUsd: 0,
-        error: err.message,
+        error: errMsg,
+        availabilityStatus,
       };
     }
   }
 
   public getModel(): string {
     return this.model;
+  }
+
+  public getStatus(): {
+    provider: 'OPENAI';
+    configured: boolean;
+    model: string;
+    lastSuccessTimestamp: number | null;
+    lastError: string | null;
+    availabilityStatus: AiAvailabilityStatus;
+    role: string;
+  } {
+    return {
+      provider: 'OPENAI',
+      configured: !!this.apiKey,
+      model: this.model,
+      lastSuccessTimestamp: this.lastSuccessTimestamp,
+      lastError: this.lastError,
+      availabilityStatus: this.lastAvailabilityStatus,
+      role: 'Analista Cuantitativo y de Estructura de Mercado',
+    };
   }
 }
