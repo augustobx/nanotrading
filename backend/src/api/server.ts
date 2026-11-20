@@ -652,6 +652,7 @@ export class ApiServer {
     try {
       const updates = await this.parseJsonBody<any>(req);
       const updated = this.coordinator.getRiskPolicyManager().updatePolicy(updates);
+      this.db.saveRiskPolicy(updated);
       this.db.logConfigAudit({
         category: 'RISK_POLICY',
         action: 'UPDATE',
@@ -701,16 +702,16 @@ export class ApiServer {
         res.end(JSON.stringify({ error: 'apiKey y apiSecret son requeridos' }));
         return;
       }
-      const result = await this.coordinator.getBybitCredentialsManager().saveCredentials(apiKey, apiSecret, environment || 'mainnet');
+      const result = await this.coordinator.getBybitCredentialsManager().saveCredentials(apiKey.trim(), apiSecret.trim(), environment || 'mainnet');
       this.db.saveBybitCredentials(result);
       this.db.logConfigAudit({
         category: 'BYBIT_CREDENTIALS',
         action: 'SAVE',
-        details: { environment: environment || 'mainnet', apiKeyMasked: maskSecret(apiKey), permissions: result.detectedPermissions },
+        details: { environment: result.environment, apiKeyMasked: maskSecret(apiKey.trim()), permissions: result.detectedPermissions, warning: result.verificationWarning },
         ipAddress: clientIp,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: true, data: result }));
+      res.end(JSON.stringify({ success: true, data: result, warning: result.verificationWarning }));
     } catch (err: any) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message || 'Error guardando credenciales Bybit' }));
@@ -750,7 +751,12 @@ export class ApiServer {
         res.end(JSON.stringify({ error: 'apiKey y apiSecret son requeridos' }));
         return;
       }
-      const result = await this.coordinator.getBybitCredentialsManager().verifyAndEnforceReadOnly(apiKey, apiSecret, environment || 'mainnet');
+      const result = await this.coordinator.getBybitCredentialsManager().verifyAndEnforceReadOnly(apiKey.trim(), apiSecret.trim(), environment || 'mainnet');
+      if (!result.valid) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: result.error, data: result }));
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: true, data: result }));
     } catch (err: any) {
@@ -777,6 +783,7 @@ export class ApiServer {
     try {
       const updates = await this.parseJsonBody<any>(req);
       const updated = this.coordinator.getAiRouter().updateConfig(updates);
+      this.db.saveRouterConfig(updated);
       this.db.logConfigAudit({
         category: 'AI_ROUTER',
         action: 'UPDATE',

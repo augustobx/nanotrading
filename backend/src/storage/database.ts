@@ -932,14 +932,22 @@ export class DatabaseService {
       this.db.exec('BEGIN TRANSACTION;');
       // Deactivate previous active policies
       this.db.prepare('UPDATE risk_policies SET is_active = 0').run();
-      const id = policy.id || `risk_pol_${Date.now()}`;
+      const versionId = `risk_pol_v${policy.version || 1}_${Date.now()}`;
       this.db.prepare(`
         INSERT INTO risk_policies (id, version, is_active, policy_json, created_at, created_by)
         VALUES (?, ?, 1, ?, ?, ?)
-      `).run(id, policy.version || 1, JSON.stringify(policy), policy.updatedAt || Date.now(), policy.updatedBy || 'admin');
+        ON CONFLICT(id) DO UPDATE SET
+          version = excluded.version,
+          is_active = 1,
+          policy_json = excluded.policy_json,
+          created_at = excluded.created_at,
+          created_by = excluded.created_by
+      `).run(versionId, policy.version || 1, JSON.stringify({ ...policy, id: versionId }), policy.updatedAt || Date.now(), policy.updatedBy || 'admin');
       this.db.exec('COMMIT;');
-    } catch (err) {
+    } catch (err: any) {
       try { this.db.exec('ROLLBACK;'); } catch {}
+      console.error('[DatabaseService] Error guardando política de riesgo:', err?.message || err);
+      throw err;
     }
   }
 
@@ -957,6 +965,7 @@ export class DatabaseService {
   public saveBybitCredentials(record: any): void {
     if (this.isClosed) return;
     try {
+      const id = record.id || 'primary_bybit_credentials';
       this.db.prepare(`
         INSERT INTO bybit_credentials (id, api_key, api_key_masked, encrypted_secret, environment, status, detected_permissions, fee_source, actual_maker_fee, actual_taker_fee, account_balance_usdt, last_verified_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -974,7 +983,7 @@ export class DatabaseService {
           last_verified_at = excluded.last_verified_at,
           updated_at = excluded.updated_at
       `).run(
-        record.id,
+        id,
         record.apiKey,
         record.apiKeyMasked,
         JSON.stringify(record.encryptedSecret),
@@ -989,7 +998,10 @@ export class DatabaseService {
         record.createdAt || Date.now(),
         record.updatedAt || Date.now()
       );
-    } catch {}
+    } catch (err: any) {
+      console.error('[DatabaseService] Error guardando credenciales Bybit:', err?.message || err);
+      throw err;
+    }
   }
 
   public getBybitCredentials(): any | null {

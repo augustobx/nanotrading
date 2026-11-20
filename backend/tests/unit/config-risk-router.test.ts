@@ -264,5 +264,48 @@ test('DatabaseService - AI Consumption logging, statistics aggregation and audit
   assert.equal(auditLogs[0].action, 'UPDATE');
   assert.equal(auditLogs[0].details.maxRiskPerTradeUsdt, 60);
 
+  // Risk Policy persistence across saves
+  const initialPolicy = { ...DEFAULT_RISK_POLICY, capitalUsdt: 15000, maxRiskPerTradeUsdt: 75 };
+  db.saveRiskPolicy(initialPolicy);
+  const activePol1 = db.getActiveRiskPolicy();
+  assert.ok(activePol1);
+  assert.equal(activePol1.capitalUsdt, 15000);
+  assert.equal(activePol1.maxRiskPerTradeUsdt, 75);
+
+  // Subsequent save updates active policy without primary key collision
+  const updatedPolicy = { ...activePol1, capitalUsdt: 20000, maxRiskPerTradeUsdt: 100, version: 2 };
+  db.saveRiskPolicy(updatedPolicy);
+  const activePol2 = db.getActiveRiskPolicy();
+  assert.ok(activePol2);
+  assert.equal(activePol2.capitalUsdt, 20000);
+  assert.equal(activePol2.maxRiskPerTradeUsdt, 100);
+  assert.equal(activePol2.version, 2);
+
+  // Router Config persistence
+  const routerCfg = { mode: 'MANUAL_GLOBAL', profile: 'CONSERVATIVE', dailyBudgetLimitUsd: 10.0 };
+  db.saveRouterConfig(routerCfg);
+  const loadedRouter = db.getRouterConfig();
+  assert.ok(loadedRouter);
+  assert.equal(loadedRouter.mode, 'MANUAL_GLOBAL');
+  assert.equal(loadedRouter.profile, 'CONSERVATIVE');
+
+  // Bybit credentials persistence
+  const bybitRecord = {
+    apiKey: 'test_key_123',
+    apiKeyMasked: 'test****_123',
+    encryptedSecret: { ciphertext: 'abc', iv: 'def', authTag: 'ghi' },
+    environment: 'testnet',
+    status: 'ACTIVE',
+    detectedPermissions: { ContractTrade: ['Order', 'Position'] },
+    hasTradePermissions: true,
+    feeSource: 'DEFAULT_BYBIT_LINEAR',
+  };
+  db.saveBybitCredentials(bybitRecord);
+  const loadedBybit = db.getBybitCredentials();
+  assert.ok(loadedBybit);
+  assert.equal(loadedBybit.apiKey, 'test_key_123');
+  assert.equal(loadedBybit.environment, 'testnet');
+  assert.equal(loadedBybit.status, 'ACTIVE');
+
   db.close();
 });

@@ -16,12 +16,15 @@ export interface BybitCredentialsRecord {
   actualTakerFeeRate?: number;
   feeSource: 'BYBIT_API_ACCOUNT_FEE_RATE' | 'DEFAULT_BYBIT_LINEAR';
   lastVerifiedAt?: number;
+  verificationWarning?: string;
   createdAt: number;
   updatedAt: number;
 }
 
 export class BybitCredentialsManager {
   private credentialsRecord: BybitCredentialsRecord | null = null;
+  private static cachedTimeOffset: number | null = null;
+  private static lastTimeSync: number = 0;
 
   constructor(savedRecord?: BybitCredentialsRecord | null) {
     if (savedRecord) {
@@ -31,6 +34,32 @@ export class BybitCredentialsManager {
 
   public getRecord(): BybitCredentialsRecord | null {
     return this.credentialsRecord;
+  }
+
+  /**
+   * Auto-sync clock with Bybit server time to eliminate clock drift (prevents error 10002/10003).
+   */
+  private async getSyncedTimeOffset(baseUrl: string): Promise<number> {
+    const now = Date.now();
+    if (BybitCredentialsManager.cachedTimeOffset !== null && now - BybitCredentialsManager.lastTimeSync < 60000) {
+      return BybitCredentialsManager.cachedTimeOffset;
+    }
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const res = await fetch(`${baseUrl}/v5/market/time`, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        const serverTime = data?.time ? parseInt(data.time, 10) : (data?.result?.timeSecond ? parseInt(data.result.timeSecond, 10) * 1000 : null);
+        if (serverTime) {
+          BybitCredentialsManager.cachedTimeOffset = serverTime - Date.now();
+          BybitCredentialsManager.lastTimeSync = Date.now();
+          return BybitCredentialsManager.cachedTimeOffset;
+        }
+      }
+    } catch {}
+    return BybitCredentialsManager.cachedTimeOffset ?? 0;
   }
 
   /**
@@ -52,6 +81,7 @@ export class BybitCredentialsManager {
       actualTakerFeeRate: this.credentialsRecord.actualTakerFeeRate,
       feeSource: this.credentialsRecord.feeSource,
       lastVerifiedAt: this.credentialsRecord.lastVerifiedAt,
+      verificationWarning: this.credentialsRecord.verificationWarning,
       createdAt: this.credentialsRecord.createdAt,
       updatedAt: this.credentialsRecord.updatedAt,
     };
@@ -80,134 +110,150 @@ export class BybitCredentialsManager {
     accountBalanceUsdt?: number;
     makerFeeRate?: number;
     takerFeeRate?: number;
+    detectedEnvironment?: 'mainnet' | 'testnet';
     error?: string;
   }> {
-    const baseUrl = environment === 'testnet' ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
-    
-    // Auto-sync clock with Bybit server time to eliminate clock drift (prevents error 10002/10003)
-    let timeOffset = 0;
+    const cleanApiKey = apiKey.trim();
+    const cleanApiSecret = apiSecret.trim();
+
+    const queryBybit = async (env: 'mainnet' | 'testnet') => {
+      const baseUrl = env === 'testnet' ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
+      const timeOffset = await this.getSyncedTimeOffset(baseUrl);
+      const recvWindow = 20000;
+      const timestamp = Date.now() + timeOffset;
+      const signature = this.generateSignature(cleanApiSecret, timestamp, cleanApiKey, recvWindow, '');
+
+      try {
+        const response = await fetch(`${baseUrl}/v5/user/query-api`, {
+          method: 'GET',
+          headers: {
+            'X-BAPI-API-KEY': cleanApiKey,
+            'X-BAPI-TIMESTAMP': timestamp.toString(),
+            'X-BAPI-SIGN': signature,
+            'X-BAPI-RECV-WINDOW': recvWindow.toString(),
+          },
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          return { ok: false, retCode: response.status, retMsg: `Error HTTP (${response.status}): ${errText}`, data: null, baseUrl, timeOffset };
+        }
+
+        const data = (await response.json()) as any;
+        return { ok: data.retCode === 0, retCode: data.retCode, retMsg: data.retMsg, data, baseUrl, timeOffset };
+      } catch (err: any) {
+        return { ok: false, retCode: -1, retMsg: err.message, data: null, baseUrl, timeOffset };
+      }
+    };
+
+    // Try primary environment first
+    let activeEnv = environment;
+    let queryResult = await queryBybit(activeEnv);
+
+    // If it failed with 10003 (API key is invalid) and user requested mainnet, attempt testnet fallback
+    // (or vice-versa) to assist with user environment misconfigurations seamlessly
+    if (!queryResult.ok && queryResult.retCode === 10003) {
+      const fallbackEnv = activeEnv === 'testnet' ? 'mainnet' : 'testnet';
+      const fallbackResult = await queryBybit(fallbackEnv);
+      if (fallbackResult.ok) {
+        activeEnv = fallbackEnv;
+        queryResult = fallbackResult;
+      }
+    }
+
+    if (!queryResult.ok) {
+      return { valid: false, permissions: {}, error: `Bybit API error (${queryResult.retCode}): ${queryResult.retMsg}` };
+    }
+
+    const result = queryResult.data?.result || {};
+    const permissions: Record<string, string[]> = result.permissions || {};
+
+    // Audit trade/write permissions for reporting and UI badges
+    const writePermissionKeywords = ['Order', 'Position', 'Trade', 'Withdraw', 'Transfer', 'Exchange'];
+    const detectedWritePermissions: string[] = [];
+
+    for (const [scope, perms] of Object.entries(permissions)) {
+      if (Array.isArray(perms)) {
+        for (const perm of perms) {
+          for (const writeKw of writePermissionKeywords) {
+            if (perm.toLowerCase().includes(writeKw.toLowerCase())) {
+              detectedWritePermissions.push(`${scope}:${perm}`);
+            }
+          }
+        }
+      }
+    }
+
+    const hasTradePermissions = detectedWritePermissions.length > 0;
+
+    // Fees & balance queries using synced timestamps
+    let makerFeeRate: number | undefined;
+    let takerFeeRate: number | undefined;
+    let accountBalanceUsdt: number | undefined;
+    const baseUrl = queryResult.baseUrl;
+    const timeOffset = queryResult.timeOffset;
+    const recvWindow = 20000;
+
     try {
-      const timeRes = await fetch(`${baseUrl}/v5/market/time`);
-      if (timeRes.ok) {
-        const timeData = (await timeRes.json()) as any;
-        if (timeData?.time) {
-          timeOffset = parseInt(timeData.time, 10) - Date.now();
+      const feeQuery = 'category=linear&symbol=BTCUSDT';
+      const feeTs = Date.now() + timeOffset;
+      const feeSign = this.generateSignature(cleanApiSecret, feeTs, cleanApiKey, recvWindow, feeQuery);
+      const feeRes = await fetch(`${baseUrl}/v5/account/fee-rate?${feeQuery}`, {
+        headers: {
+          'X-BAPI-API-KEY': cleanApiKey,
+          'X-BAPI-TIMESTAMP': feeTs.toString(),
+          'X-BAPI-SIGN': feeSign,
+          'X-BAPI-RECV-WINDOW': recvWindow.toString(),
+        },
+      });
+      if (feeRes.ok) {
+        const feeData = (await feeRes.json()) as any;
+        if (feeData.retCode === 0 && feeData.result?.list?.[0]) {
+          const item = feeData.result.list[0];
+          makerFeeRate = parseFloat(item.makerFeeRate);
+          takerFeeRate = parseFloat(item.takerFeeRate);
         }
       }
     } catch {}
 
-    const getSyncedTs = () => Date.now() + timeOffset;
-    const recvWindow = 20000;
-    const timestamp = getSyncedTs();
-    const signature = this.generateSignature(apiSecret, timestamp, apiKey, recvWindow, '');
-
     try {
-      const response = await fetch(`${baseUrl}/v5/user/query-api`, {
-        method: 'GET',
+      const balQuery = 'accountType=UNIFIED';
+      const balTs = Date.now() + timeOffset;
+      const balSign = this.generateSignature(cleanApiSecret, balTs, cleanApiKey, recvWindow, balQuery);
+      const balRes = await fetch(`${baseUrl}/v5/account/wallet-balance?${balQuery}`, {
         headers: {
-          'X-BAPI-API-KEY': apiKey,
-          'X-BAPI-TIMESTAMP': timestamp.toString(),
-          'X-BAPI-SIGN': signature,
+          'X-BAPI-API-KEY': cleanApiKey,
+          'X-BAPI-TIMESTAMP': balTs.toString(),
+          'X-BAPI-SIGN': balSign,
           'X-BAPI-RECV-WINDOW': recvWindow.toString(),
         },
       });
-
-      if (!response.ok) {
-        const errText = await response.text();
-        return { valid: false, permissions: {}, error: `Error HTTP (${response.status}): ${errText}` };
-      }
-
-      const data = (await response.json()) as any;
-      if (data.retCode !== 0) {
-        return { valid: false, permissions: {}, error: `Bybit API error (${data.retCode}): ${data.retMsg}` };
-      }
-
-      const result = data.result || {};
-      const permissions: Record<string, string[]> = result.permissions || {};
-
-      // Audit trade/write permissions for reporting and UI badges
-      const writePermissionKeywords = ['Order', 'Position', 'Trade', 'Withdraw', 'Transfer', 'Exchange'];
-      const detectedWritePermissions: string[] = [];
-
-      for (const [scope, perms] of Object.entries(permissions)) {
-        if (Array.isArray(perms)) {
-          for (const perm of perms) {
-            for (const writeKw of writePermissionKeywords) {
-              if (perm.toLowerCase().includes(writeKw.toLowerCase())) {
-                detectedWritePermissions.push(`${scope}:${perm}`);
-              }
-            }
+      if (balRes.ok) {
+        const balData = (await balRes.json()) as any;
+        if (balData.retCode === 0 && balData.result?.list?.[0]) {
+          const coin = balData.result.list[0].coin?.find((c: any) => c.coin === 'USDT');
+          if (coin) {
+            accountBalanceUsdt = parseFloat(coin.walletBalance || coin.equity || '0');
           }
         }
       }
+    } catch {}
 
-      const hasTradePermissions = detectedWritePermissions.length > 0;
-
-      // Fees & balance queries using synced timestamps
-      let makerFeeRate: number | undefined;
-      let takerFeeRate: number | undefined;
-      let accountBalanceUsdt: number | undefined;
-
-      try {
-        const feeQuery = 'category=linear&symbol=BTCUSDT';
-        const feeTs = getSyncedTs();
-        const feeSign = this.generateSignature(apiSecret, feeTs, apiKey, recvWindow, feeQuery);
-        const feeRes = await fetch(`${baseUrl}/v5/account/fee-rate?${feeQuery}`, {
-          headers: {
-            'X-BAPI-API-KEY': apiKey,
-            'X-BAPI-TIMESTAMP': feeTs.toString(),
-            'X-BAPI-SIGN': feeSign,
-            'X-BAPI-RECV-WINDOW': recvWindow.toString(),
-          },
-        });
-        if (feeRes.ok) {
-          const feeData = (await feeRes.json()) as any;
-          if (feeData.retCode === 0 && feeData.result?.list?.[0]) {
-            const item = feeData.result.list[0];
-            makerFeeRate = parseFloat(item.makerFeeRate);
-            takerFeeRate = parseFloat(item.takerFeeRate);
-          }
-        }
-      } catch {}
-
-      try {
-        const balQuery = 'accountType=UNIFIED';
-        const balTs = getSyncedTs();
-        const balSign = this.generateSignature(apiSecret, balTs, apiKey, recvWindow, balQuery);
-        const balRes = await fetch(`${baseUrl}/v5/account/wallet-balance?${balQuery}`, {
-          headers: {
-            'X-BAPI-API-KEY': apiKey,
-            'X-BAPI-TIMESTAMP': balTs.toString(),
-            'X-BAPI-SIGN': balSign,
-            'X-BAPI-RECV-WINDOW': recvWindow.toString(),
-          },
-        });
-        if (balRes.ok) {
-          const balData = (await balRes.json()) as any;
-          if (balData.retCode === 0 && balData.result?.list?.[0]) {
-            const coin = balData.result.list[0].coin?.find((c: any) => c.coin === 'USDT');
-            if (coin) {
-              accountBalanceUsdt = parseFloat(coin.walletBalance || coin.equity || '0');
-            }
-          }
-        }
-      } catch {}
-
-      return {
-        valid: true,
-        permissions,
-        hasTradePermissions,
-        accountBalanceUsdt,
-        makerFeeRate,
-        takerFeeRate,
-      };
-    } catch (err: any) {
-      return { valid: false, permissions: {}, error: `Fallo de conexión con Bybit: ${err.message}` };
-    }
+    return {
+      valid: true,
+      permissions,
+      hasTradePermissions,
+      accountBalanceUsdt,
+      makerFeeRate,
+      takerFeeRate,
+      detectedEnvironment: activeEnv,
+    };
   }
 
   /**
-   * Saves or updates credentials with encryption and permissions check.
+   * Saves or updates credentials with encryption and permissions audit.
+   * If Bybit verification has a transient issue, the credentials are still saved
+   * securely with status ACTIVE and a verificationWarning rather than blocking the user.
    */
   public async saveCredentials(
     apiKey: string,
@@ -215,37 +261,52 @@ export class BybitCredentialsManager {
     environment: 'mainnet' | 'testnet' = 'mainnet',
     bypassVerificationForTesting: boolean = false
   ): Promise<BybitCredentialsRecord> {
+    const cleanApiKey = apiKey.trim();
+    const cleanApiSecret = apiSecret.trim();
     let detectedPermissions: Record<string, string[]> = { ReadOnly: ['GetUserInfo', 'GetAccountInfo'] };
     let hasTradePermissions = false;
     let makerFeeRate: number | undefined;
     let takerFeeRate: number | undefined;
     let accountBalanceUsdt: number | undefined;
     let feeSource: 'BYBIT_API_ACCOUNT_FEE_RATE' | 'DEFAULT_BYBIT_LINEAR' = 'DEFAULT_BYBIT_LINEAR';
+    let resolvedEnv = environment;
+    let verificationWarning: string | undefined;
 
     if (!bypassVerificationForTesting) {
-      const verification = await this.verifyAndEnforceReadOnly(apiKey, apiSecret, environment);
+      let verification = await this.verifyAndEnforceReadOnly(cleanApiKey, cleanApiSecret, environment);
       if (!verification.valid) {
-        throw new Error(verification.error || 'Verificación de credenciales Bybit fallida.');
+        // Retry once after 500ms
+        await new Promise((r) => setTimeout(r, 500));
+        verification = await this.verifyAndEnforceReadOnly(cleanApiKey, cleanApiSecret, environment);
       }
-      detectedPermissions = verification.permissions;
-      hasTradePermissions = verification.hasTradePermissions || false;
-      makerFeeRate = verification.makerFeeRate;
-      takerFeeRate = verification.takerFeeRate;
-      accountBalanceUsdt = verification.accountBalanceUsdt;
-      if (makerFeeRate !== undefined && takerFeeRate !== undefined) {
-        feeSource = 'BYBIT_API_ACCOUNT_FEE_RATE';
+
+      if (verification.valid) {
+        detectedPermissions = verification.permissions;
+        hasTradePermissions = verification.hasTradePermissions || false;
+        makerFeeRate = verification.makerFeeRate;
+        takerFeeRate = verification.takerFeeRate;
+        accountBalanceUsdt = verification.accountBalanceUsdt;
+        if (verification.detectedEnvironment) {
+          resolvedEnv = verification.detectedEnvironment;
+        }
+        if (makerFeeRate !== undefined && takerFeeRate !== undefined) {
+          feeSource = 'BYBIT_API_ACCOUNT_FEE_RATE';
+        }
+      } else {
+        verificationWarning = verification.error || 'No se pudo verificar la API key con Bybit.';
+        console.warn(`[BybitCredentials] Advertencia al guardar credenciales: ${verificationWarning}`);
       }
     }
 
-    const encryptedSecret = encryptSecret(apiSecret);
+    const encryptedSecret = encryptSecret(cleanApiSecret);
     const now = Date.now();
 
     const record: BybitCredentialsRecord = {
-      id: `bybit_cred_${now}`,
-      apiKey,
-      apiKeyMasked: maskSecret(apiKey),
+      id: 'primary_bybit_credentials',
+      apiKey: cleanApiKey,
+      apiKeyMasked: maskSecret(cleanApiKey),
       encryptedSecret,
-      environment,
+      environment: resolvedEnv,
       status: 'ACTIVE',
       detectedPermissions,
       hasTradePermissions,
@@ -253,7 +314,8 @@ export class BybitCredentialsManager {
       accountBalanceUsdt,
       actualMakerFeeRate: makerFeeRate,
       actualTakerFeeRate: takerFeeRate,
-      lastVerifiedAt: now,
+      lastVerifiedAt: verificationWarning ? undefined : now,
+      verificationWarning,
       createdAt: this.credentialsRecord?.createdAt || now,
       updatedAt: now,
     };

@@ -934,6 +934,121 @@ export class PostgresDatabaseService {
     }));
   }
 
+  public async saveRouterConfig(config: any): Promise<void> {
+    const query = `
+      INSERT INTO ai_router_config (id, mode, profile, config_json, updated_at)
+      VALUES ('primary_router_config', $1, $2, $3, $4)
+      ON CONFLICT (id) DO UPDATE SET
+        mode = EXCLUDED.mode,
+        profile = EXCLUDED.profile,
+        config_json = EXCLUDED.config_json,
+        updated_at = EXCLUDED.updated_at
+    `;
+    await this.pool.query(query, [config.mode, config.profile, JSON.stringify(config), config.updatedAt || Date.now()]);
+  }
+
+  public async getRouterConfig(): Promise<any | null> {
+    const res = await this.pool.query("SELECT * FROM ai_router_config WHERE id = 'primary_router_config'");
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return typeof r.config_json === 'string' ? JSON.parse(r.config_json) : r.config_json;
+  }
+
+  public async saveAiCredentials(record: { provider: string; apiKeyMasked: string; encryptedSecret: any; model: string; status: string }): Promise<void> {
+    const query = `
+      INSERT INTO ai_provider_credentials (provider, api_key_masked, encrypted_secret, model, status, last_verified_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (provider) DO UPDATE SET
+        api_key_masked = EXCLUDED.api_key_masked,
+        encrypted_secret = EXCLUDED.encrypted_secret,
+        model = EXCLUDED.model,
+        status = EXCLUDED.status,
+        last_verified_at = EXCLUDED.last_verified_at,
+        updated_at = EXCLUDED.updated_at
+    `;
+    await this.pool.query(query, [
+      record.provider,
+      record.apiKeyMasked,
+      JSON.stringify(record.encryptedSecret),
+      record.model,
+      record.status,
+      Date.now(),
+      Date.now(),
+    ]);
+  }
+
+  public async getAiCredentials(provider: string): Promise<any | null> {
+    const res = await this.pool.query('SELECT * FROM ai_provider_credentials WHERE provider = $1', [provider]);
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      provider: r.provider,
+      apiKeyMasked: r.api_key_masked,
+      encryptedSecret: typeof r.encrypted_secret === 'string' ? JSON.parse(r.encrypted_secret) : r.encrypted_secret,
+      model: r.model,
+      status: r.status,
+      lastVerifiedAt: r.last_verified_at ? Number(r.last_verified_at) : undefined,
+      updatedAt: Number(r.updated_at),
+    };
+  }
+
+  public async deleteAiCredentials(provider: string): Promise<void> {
+    await this.pool.query('DELETE FROM ai_provider_credentials WHERE provider = $1', [provider]);
+  }
+
+  public async logAiConsumption(log: {
+    id?: string;
+    timestamp?: number;
+    provider: string;
+    model: string;
+    task: string;
+    tokensPrompt: number;
+    tokensCompletion: number;
+    tokensCached?: number;
+    costUsd: number;
+    latencyMs: number;
+    status: string;
+    analysisId?: string;
+  }): Promise<void> {
+    const id = log.id || `cons_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const query = `
+      INSERT INTO ai_consumption_logs (id, timestamp, provider, model, task, tokens_prompt, tokens_completion, tokens_cached, cost_usd, latency_ms, status, analysis_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+    `;
+    await this.pool.query(query, [
+      id,
+      log.timestamp || Date.now(),
+      log.provider,
+      log.model,
+      log.task,
+      log.tokensPrompt || 0,
+      log.tokensCompletion || 0,
+      log.tokensCached || 0,
+      log.costUsd || 0,
+      log.latencyMs || 0,
+      log.status || 'SUCCESS',
+      log.analysisId || null,
+    ]);
+  }
+
+  public async getAiConsumptionLogs(limit: number = 50): Promise<any[]> {
+    const res = await this.pool.query('SELECT * FROM ai_consumption_logs ORDER BY timestamp DESC LIMIT $1', [limit]);
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      timestamp: Number(r.timestamp),
+      provider: r.provider,
+      model: r.model,
+      task: r.task,
+      tokensPrompt: Number(r.tokens_prompt),
+      tokensCompletion: Number(r.tokens_completion),
+      tokensCached: Number(r.tokens_cached),
+      costUsd: Number(r.cost_usd),
+      latencyMs: Number(r.latency_ms),
+      status: r.status,
+      analysisId: r.analysis_id,
+    }));
+  }
+
   public async close(): Promise<void> {
     await this.pool.end();
   }

@@ -417,13 +417,18 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
         }),
       });
       const json = await res.json();
-      if (json.success) {
+      if (json.success && json.data?.valid) {
         setBybitTestResult(json.data);
-        setBybitMsg({ type: 'success', text: 'Verificación exitosa: conexión y permisos de Bybit validados correctamente.' });
+        if (json.data.detectedEnvironment && json.data.detectedEnvironment !== bybitEnv) {
+          setBybitEnv(json.data.detectedEnvironment);
+        }
+        setBybitMsg({ type: 'success', text: `Verificación exitosa: conexión y permisos de Bybit (${json.data.detectedEnvironment || bybitEnv}) validados correctamente.` });
       } else {
-        setBybitMsg({ type: 'error', text: json.error || 'Fallo en verificación Bybit' });
+        setBybitTestResult(null);
+        setBybitMsg({ type: 'error', text: json.data?.error || json.error || 'Fallo en verificación Bybit. Verifique API key, secret y entorno.' });
       }
     } catch (err: any) {
+      setBybitTestResult(null);
       setBybitMsg({ type: 'error', text: err.message || 'Error de conexión' });
     }
     setBybitTesting(false);
@@ -445,9 +450,14 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
       });
       const json = await res.json();
       if (json.success) {
-        setBybitMsg({ type: 'success', text: 'Credenciales Bybit cifradas y guardadas con éxito.' });
+        if (json.warning) {
+          setBybitMsg({ type: 'error', text: `Credenciales guardadas y cifradas. Aviso: ${json.warning}` });
+        } else {
+          setBybitMsg({ type: 'success', text: 'Credenciales Bybit cifradas y guardadas con éxito en base de datos.' });
+        }
         setBybitApiKey('');
         setBybitApiSecret('');
+        setBybitTestResult(null);
         fetchBybitConfig();
         fetchSummary();
         onConfigChanged?.();
@@ -1367,14 +1377,14 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                     <strong>Control de Ejecución Centralizado:</strong> Podés conectar claves API de Bybit con cualquier nivel de permisos. El sistema permite consultar balance y tarifas, y la ejecución de órdenes reales permanece estrictamente controlada desde la configuración del sistema (actualmente en modo protegido <strong>SIGNALS_ONLY</strong>).
                   </div>
 
-                  {bybitTestResult && (
+                  {bybitTestResult && bybitTestResult.valid && (
                     <div className="p-3.5 rounded-lg bg-[#0a0d14] border border-emerald-800/60 space-y-2 text-xs">
                       <div className="flex items-center justify-between text-emerald-400 font-bold">
                         <span className="flex items-center gap-1.5">
                           <CheckCircle2 className="w-4 h-4" /> Conexión verificada exitosamente
                         </span>
                         <span className="text-[11px] font-mono uppercase text-slate-400">
-                          {bybitEnv}
+                          {bybitTestResult.detectedEnvironment || bybitEnv}
                         </span>
                       </div>
                       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px] font-mono text-slate-300 pt-1">
