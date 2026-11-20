@@ -119,13 +119,32 @@ export class RiskCalculator {
       return this.invalidResult(direction, entryPrice, stopLossPrice, takeProfitPrice, 'La distancia de riesgo es cero');
     }
 
-    // Capital risk budget (e.g. 0.5% of $10,000 = $50)
+    // Capital risk budget (e.g. 1.0% of $10,000 = $100)
     const targetRiskUSDT = accountBalance * (riskPercent / 100);
 
-    // Position sizing quantized strictly by qtyStep
-    const rawQty = targetRiskUSDT / priceRiskPerUnit;
+    // Fee calculations based on order types
+    const entryRate = entryOrderType === 'MAKER' ? feeStructure.makerFeeRate : feeStructure.takerFeeRate;
+    const exitSLRate = exitOrderTypeSL === 'MAKER' ? feeStructure.makerFeeRate : feeStructure.takerFeeRate;
+    const exitTPRate = exitOrderTypeTP === 'MAKER' ? feeStructure.makerFeeRate : feeStructure.takerFeeRate;
+
+    // Unit loss per BTC if Stop Loss is hit (including price distance, entry taker fee, exit SL taker fee, spread, slippage)
+    const unitFeesSLPerBtc = (entryPrice * entryRate) + (stopLossPrice * exitSLRate);
+    const unitSpreadSLPerBtc = spread * 0.5;
+    const unitSlippageSLPerBtc = entryPrice * slippageRate;
+    const totalRiskPerUnit = priceRiskPerUnit + unitFeesSLPerBtc + unitSpreadSLPerBtc + unitSlippageSLPerBtc;
+
+    // Position sizing quantized strictly by qtyStep, solving so total loss at SL does not exceed targetRiskUSDT
+    const rawQty = totalRiskPerUnit > 0 ? targetRiskUSDT / totalRiskPerUnit : 0;
     const steps = Math.floor(rawQty / qtyStep);
     let positionSizeBTC = parseFloat((steps * qtyStep).toFixed(4));
+
+    // Cap by maximum allowable leverage (5.0x max leverage) to avoid liquidation risks and unrealistic margin exposure
+    const maxLeverage = 5.0;
+    const maxNotional = accountBalance * maxLeverage;
+    const maxAllowedQty = Math.floor((maxNotional / entryPrice) / qtyStep) * qtyStep;
+    if (positionSizeBTC > maxAllowedQty) {
+      positionSizeBTC = parseFloat(maxAllowedQty.toFixed(4));
+    }
 
     if (positionSizeBTC < minOrderQty) {
       positionSizeBTC = minOrderQty;
@@ -135,11 +154,6 @@ export class RiskCalculator {
     const grossRiskUSDT = parseFloat((positionSizeBTC * priceRiskPerUnit).toFixed(2));
     const grossRewardUSDT = parseFloat((positionSizeBTC * priceRewardPerUnit).toFixed(2));
     const grossRR = parseFloat((grossRewardUSDT / grossRiskUSDT).toFixed(2));
-
-    // Fee calculations based on order types
-    const entryRate = entryOrderType === 'MAKER' ? feeStructure.makerFeeRate : feeStructure.takerFeeRate;
-    const exitSLRate = exitOrderTypeSL === 'MAKER' ? feeStructure.makerFeeRate : feeStructure.takerFeeRate;
-    const exitTPRate = exitOrderTypeTP === 'MAKER' ? feeStructure.makerFeeRate : feeStructure.takerFeeRate;
 
     const entryFeeUSDT = parseFloat((notionalValueUSDT * entryRate).toFixed(3));
     const exitFeeTPUSDT = parseFloat(((positionSizeBTC * takeProfitPrice) * exitTPRate).toFixed(3));

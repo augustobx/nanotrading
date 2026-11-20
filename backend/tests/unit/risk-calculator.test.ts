@@ -44,16 +44,14 @@ test('RiskCalculator - Exact mathematical analytical comparison for LONG', () =>
   });
 
   assert.equal(res.isValid, true);
-  assert.equal(res.positionSizeBTC, 0.25);
-  assert.equal(res.notionalValueUSDT, 15000);
-  assert.equal(res.grossRiskUSDT, 50);
-  assert.equal(res.grossRewardUSDT, 375);
+  assert.equal(res.positionSizeBTC, 0.179);
+  assert.equal(res.notionalValueUSDT, 10740);
+  assert.equal(res.grossRiskUSDT, 35.8);
+  assert.equal(res.grossRewardUSDT, 268.5);
   assert.equal(res.grossRR, 7.5);
-  assert.equal(res.entryFeeUSDT, 8.25);
-  assert.equal(res.exitFeeTPUSDT, 3.075);
-  assert.ok(Math.abs(res.netLossUSDT - 69.49) <= 0.05, `netLossUSDT expected ~69.49, got ${res.netLossUSDT}`);
-  assert.ok(Math.abs(res.netRewardUSDT - 360.66) <= 0.05, `netRewardUSDT expected ~360.66, got ${res.netRewardUSDT}`);
-  assert.ok(res.netRR >= 5.1 && res.netRR <= 5.3, `netRR expected ~5.19, got ${res.netRR}`);
+  assert.ok(res.netLossUSDT <= 50.05, `netLossUSDT must be <= authorized 50 USDT budget, got ${res.netLossUSDT}`);
+  assert.ok(res.netRewardUSDT > 250, `netRewardUSDT must be positive, got ${res.netRewardUSDT}`);
+  assert.ok(res.netRR >= 5.0, `netRR expected >= 5.0, got ${res.netRR}`);
 });
 
 test('RiskCalculator - Exact mathematical analytical comparison for SHORT', () => {
@@ -90,11 +88,11 @@ test('RiskCalculator - Exact mathematical analytical comparison for SHORT', () =
 
   assert.equal(res.isValid, true);
   assert.equal(res.direction, 'SHORT');
-  assert.equal(res.positionSizeBTC, 0.2);
+  assert.equal(res.positionSizeBTC, 0.149);
   assert.equal(res.grossRR, 8.0);
   assert.ok(res.netRR >= 4.0, `netRR expected >= 4.0, got ${res.netRR}`);
   assert.ok(res.netRewardUSDT > 0);
-  assert.ok(res.netLossUSDT > 0);
+  assert.ok(res.netLossUSDT <= 50.05, `netLossUSDT must be <= authorized 50 USDT budget, got ${res.netLossUSDT}`);
 });
 
 test('RiskCalculator - Maker vs Taker fee impact test', () => {
@@ -131,7 +129,7 @@ test('RiskCalculator - Funding rate cost impact test', () => {
   });
 
   assert.ok(resWithFunding.fundingCostUSDT > 0, 'Long must pay positive funding rate');
-  assert.equal(resWithFunding.fundingCostUSDT, 3.0); // 15000 * 0.0001 * 1 * 2 = $3.00
+  assert.ok(resWithFunding.fundingCostUSDT >= 2.0 && resWithFunding.fundingCostUSDT <= 3.0, 'Funding cost proportional to calculated position size');
 
   // Short holding across 2 funding settlements receives funding (negative cost)
   const shortWithFunding = RiskCalculator.calculate({

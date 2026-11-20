@@ -92,6 +92,9 @@ interface Trade {
   durationMs: number;
   isInSample: boolean;
   feesUsdt: number;
+  expectedNetRR?: number;
+  structuralJustification?: string;
+  exclusionReason?: string;
 }
 
 export default function TradingLaboratory() {
@@ -753,6 +756,8 @@ export default function TradingLaboratory() {
                   <th className="py-3 px-3 text-right">Entrada</th>
                   <th className="py-3 px-3 text-right">Stop Loss</th>
                   <th className="py-3 px-3 text-right">Take Profit</th>
+                  <th className="py-3 px-3 text-right">R:R Esp.</th>
+                  <th className="py-3 px-3 text-left">Justificación Estructural</th>
                   <th className="py-3 px-3 text-right">Salida</th>
                   <th className="py-3 px-3 text-center">Resultado</th>
                   <th className="py-3 px-3 text-right">PnL Neto ($)</th>
@@ -792,6 +797,12 @@ export default function TradingLaboratory() {
                     <td className="py-2.5 px-3 text-right text-slate-200">${t.entryPrice.toFixed(1)}</td>
                     <td className="py-2.5 px-3 text-right text-rose-400/80">${t.stopLossPrice.toFixed(1)}</td>
                     <td className="py-2.5 px-3 text-right text-emerald-400/80">${t.takeProfitPrice.toFixed(1)}</td>
+                    <td className="py-2.5 px-3 text-right text-amber-400 font-bold font-mono text-xs">
+                      {t.expectedNetRR ? `+${t.expectedNetRR.toFixed(1)}R` : '-'}
+                    </td>
+                    <td className="py-2.5 px-3 text-left text-slate-300 font-sans text-[11px] truncate max-w-[200px]" title={t.structuralJustification}>
+                      {t.structuralJustification || 'Nivel SMC'}
+                    </td>
                     <td className="py-2.5 px-3 text-right text-slate-300">${t.exitPrice.toFixed(1)}</td>
                     <td className="py-2.5 px-3 text-center">
                       <span

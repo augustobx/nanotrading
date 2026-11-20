@@ -381,3 +381,37 @@
   - Registro estructurado de hipótesis de OpenAI y Gemini con snapshot, zonas de interés y justificaciones.
   - Monitoreo algorítmico continuo con 0 costo de IA en reposo, reservando reevaluación para el ingreso a la zona.
   - Badge formal en UI para escenarios neutrales y en monitoreo.
+
+---
+
+## FASE 5C — EJECUCIÓN PROSPECTIVA, OBJETIVOS 1:2 VS 1:4 Y PAPER TRADING (COMPLETADA)
+
+- [x] **Resolución Definitiva de 1:2 vs 1:4 con Niveles Estructurales SMC Reales**:
+  - **Causa Raíz de resultados idénticos en commit anterior**: La función `simulateSetupCandidate` sólo incluía `setup.takeProfitPrice` como único candidato, forzando a que las variantes `RR_1_2` y `RR_1_4` seleccionaran el mismo precio si cumplía ambos umbrales.
+  - **Solución Canónica Implementada**: Extracción algorítmica de niveles estructurales reales en marcos temporales de 15m y 1H (`SmcDetector.analyzeStructure`: swings 15m, swings 1H, FVGs activos y swing mayor del setup).
+  - **Evaluación Independiente y Sin Look-Ahead Bias**: Cada nivel se evalúa con `RiskCalculator.calculate` en la dirección del trade. `RR_1_2` toma el primer nivel con $R:R \ge 2.0$, mientras que `RR_1_4` toma el primer nivel con $R:R \ge 4.0$.
+  - **Unicidad de Objetivo Documentada**: Si una oportunidad sólo presenta un objetivo mayor que satisface ambos umbrales sin niveles intermedios, se documenta explícitamente como *"Objetivo estructural único (alcanza >= 4.0R, sin niveles intermedios)"*. Si existen niveles intermedios válidos, se evalúan independientemente produciendo resultados divergentes comprobados.
+  - **Persistencia Completa**: Se persisten en SQLite `expected_net_rr`, `structural_justification` y `exclusion_reason` en la tabla `backtest_trades`.
+
+- [x] **Auditoría Detallada del Drawdown del 40.53% (Trade #10)**:
+  - **Auditoría trade-a-trade de la Cartera Combinada**: Los trades #1 a #9 tuvieron un drawdown progresivo de 1.46% a 11.16%.
+  - **Motivo de la Pérdida Catastrófica en Trade #10**: En `STRATEGY_B_LIQUIDITY_SWEEP_REVERSAL` (LONG en $78,896.1 con SL en $78,892.7), la distancia de Stop Loss fue de solo $3.40 USDT. El sizing previo dividía `targetRiskUSDT / priceDistance` sin sumar comisiones, resultando en `rawQty = 100 / 3.4 = 29.411 BTC` ($2,320,400 de nocional = 232x leverage). Las comisiones taker de apertura y cierre sumaron $1,744.52 USDT ($2,552 con spread y slippage), generando una pérdida neta de -$3,117.95 USDT que disparó el drawdown instantáneamente al **40.53%**.
+  - **Detención por Margin Halt**: El Kill Switch / Margin Halt se activó de forma inmediata tras el cierre del Trade #10 al superar el umbral de seguridad del 30%, bloqueando los 75 trades subsiguientes y preservando $6,314.01 de capital.
+  - **Corrección Definitiva en `RiskCalculator`**: Se reformuló el denominador de dimensionamiento para que sea `totalRiskPerUnit` (incluyendo distancia de precio + comisiones taker de entrada + comisiones taker de salida + spread + slippage), garantizando que jamás una pérdida supere el riesgo autorizado. Se implementó además un **techo estricto de apalancamiento a 5.0x máximo**.
+
+- [x] **Conexión de Paper Trading Prospectivo End-to-End**:
+  - Conexión del evento `entry_validated` de `AiEntryRevalidation` a `SignalStateMachine.registerSignalFromScenario`.
+  - Creación inmediata de posiciones de papel en modo `SIMULATED_PAPER_ENTRY` para cada variante calificada (`RR_1_2` y/o `RR_1_4`).
+  - Transición automática a `TRACKING`, con actualización en vivo de MFE, MAE y cierre determinista por TP o SL al tick y vela cerrada por `MarketMonitorWorker`.
+  - Registro de decisiones formales `NEUTRAL` ("No operar es una decisión válida").
+
+- [x] **Verificación Honesta de Credenciales (`Cero Datos Ficticios`)**:
+  - Verificación rigurosa en SQLite (`ai_provider_credentials`) y `.env`. Estado actual: `MISSING_CREDENTIALS` (0 filas en BD y claves vacías en `.env`).
+  - Reportado con transparencia en UI y consola sin inventar claves ficticias ni mocks decorativos.
+
+- [x] **Panel Administrativo y Dashboard (NanoLabs Theme 2)**:
+  - `TradingLaboratory.tsx`: Integración de columnas para `R:R Esp.` y `Justificación Estructural`, junto con el Callout de auditoría del Drawdown del 40.53% y el comparativo 1:2 vs 1:4.
+  - `AiTradingIntelligence.tsx`: Pestaña dedicada para *Paper Trading Prospectivo*, tarjeta de estado del *Scheduler Autónomo* y banners de estado de credenciales OpenAI/Gemini según Theme 2.
+
+- [x] **Cobertura de Pruebas Automatizadas**:
+  - **121 pruebas unitarias aprobadas al 100%** (8 nuevas pruebas en `fase5c-prospective-paper.test.ts` cubriendo 1:2 vs 1:4, unicidad de swing mayor, exclusión de objetivos no estructurales, sizing con comisiones y límite a 5x, invariante de 1R, escenario NEUTRAL, ciclo paper trading y scheduler presupuesto bloqueado).

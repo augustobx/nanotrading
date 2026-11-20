@@ -274,7 +274,30 @@ export class MarketCoordinator extends EventEmitter {
     this.scenarioRegistry.on('scenario_status_changed', (evt) => this.emit('scenario_status_changed', evt));
     this.scenarioRegistry.on('scenario_updated', (sc) => this.emit('scenario_updated', sc));
     this.algorithmicWatcher.on('scenario_approaching', (evt) => this.emit('scenario_approaching', evt));
-    this.aiRevalidation.on('entry_validated', (evt) => this.emit('scenario_entry_validated', evt));
+    this.aiRevalidation.on('entry_validated', (evt: any) => {
+      this.emit('scenario_entry_validated', evt);
+      const { scenario, currentPrice, riskCalc } = evt;
+      if (scenario && scenario.direction !== 'NEUTRAL') {
+        if (scenario.target12Price && riskCalc?.calculation12?.isValid) {
+          this.signalStateMachine.registerSignalFromScenario(
+            scenario,
+            currentPrice,
+            'RR_1_2',
+            scenario.target12Price,
+            riskCalc.calculation12.netRR
+          );
+        }
+        if (scenario.target14Price && riskCalc?.calculation14?.isValid) {
+          this.signalStateMachine.registerSignalFromScenario(
+            scenario,
+            currentPrice,
+            'RR_1_4',
+            scenario.target14Price,
+            riskCalc.calculation14.netRR
+          );
+        }
+      }
+    });
     this.aiDiscoveryEngine.on('discovery_completed', (evt) => this.emit('discovery_completed', evt));
   }
 

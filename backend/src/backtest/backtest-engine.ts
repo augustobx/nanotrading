@@ -5,6 +5,7 @@ import { Candle, Timeframe } from '../types/market.js';
 import { StrategyATrendContinuation, SetupCandidate } from '../engine/strategy-a-trend.js';
 import { StrategyBLiquiditySweep } from '../engine/strategy-b-sweep.js';
 import { RiskCalculator, RiskCalculationResult } from '../engine/risk-calculator.js';
+import { SmcDetector } from '../engine/smc-detector.js';
 
 export interface BacktestConfig {
   symbol?: string;
@@ -54,6 +55,9 @@ export interface BacktestTradeResult {
   capitalBeforeUsdt?: number;
   capitalAfterUsdt?: number;
   isExecutedInPortfolio?: boolean;
+  expectedNetRR?: number;
+  structuralJustification?: string;
+  exclusionReason?: string;
 }
 
 export interface MetricGroup {
@@ -195,6 +199,8 @@ export class BacktestEngine {
           this.simulateSetupCandidate({
             setup: setupA,
             candles5m,
+            window1h,
+            window15m,
             start5mIdx: idx5m,
             runId,
             symbol,
@@ -224,6 +230,8 @@ export class BacktestEngine {
           this.simulateSetupCandidate({
             setup: setupB,
             candles5m,
+            window1h,
+            window15m,
             start5mIdx: idx5m,
             runId,
             symbol,
@@ -311,6 +319,17 @@ export class BacktestEngine {
       createdAt: report.createdAt,
     });
 
+    // Synchronize executed portfolio fields back to simulatedTrades
+    const executedMap = new Map(combinedTrades.map((t) => [t.id, t]));
+    for (const t of simulatedTrades) {
+      const match = executedMap.get(t.id);
+      if (match) {
+        t.isExecutedInPortfolio = true;
+        t.capitalBeforeUsdt = match.capitalBeforeUsdt;
+        t.capitalAfterUsdt = match.capitalAfterUsdt;
+      }
+    }
+
     this.db.saveBacktestTrades(simulatedTrades);
 
     if (onProgress) onProgress('Backtest finalizado con éxito.', 100);
@@ -321,6 +340,8 @@ export class BacktestEngine {
   private simulateSetupCandidate(params: {
     setup: SetupCandidate;
     candles5m: Candle[];
+    window1h: Candle[];
+    window15m: Candle[];
     start5mIdx: number;
     runId: string;
     symbol: string;
@@ -334,53 +355,110 @@ export class BacktestEngine {
     configRatio?: string;
     simulatedTrades: BacktestTradeResult[];
   }): void {
-    const { setup, candles5m, start5mIdx, runId, symbol, inSampleEndTimestamp, accountBalance, riskPercent, makerFee, takerFee, spread, slippageRate, configRatio, simulatedTrades } = params;
+    const { setup, candles5m, window1h, window15m, start5mIdx, runId, symbol, inSampleEndTimestamp, accountBalance, riskPercent, makerFee, takerFee, spread, slippageRate, configRatio, simulatedTrades } = params;
 
     const entryPrice = setup.entryPrice;
     const stopLoss = setup.stopLossPrice;
     const riskDistance = Math.abs(entryPrice - stopLoss);
     if (riskDistance <= 0) return;
 
-    // Real structural candidate targets only — NEVER invent prices in the air with synthetic solvers
-    const candidateTargets: number[] = [];
-    if (setup.takeProfitPrice && setup.takeProfitPrice > 0) {
-      candidateTargets.push(setup.takeProfitPrice);
+    const isLong = setup.direction === 'LONG';
+
+    // Extract real structural candidate targets from 15m and 1h windows (swings, FVGs, and setup TP)
+    // NEVER invent arbitrary prices in the air to force a target
+    const struct1h = SmcDetector.analyzeStructure(window1h.slice(-50), '1h');
+    const struct15m = SmcDetector.analyzeStructure(window15m.slice(-50), '15m');
+
+    const rawCandidates: Array<{ price: number; justification: string }> = [];
+    if (isLong) {
+      struct15m.swings.filter((s) => s.type === 'HIGH' && s.price > entryPrice).forEach((s) => rawCandidates.push({ price: s.price, justification: `Swing High 15m ($${s.price})` }));
+      struct1h.swings.filter((s) => s.type === 'HIGH' && s.price > entryPrice).forEach((s) => rawCandidates.push({ price: s.price, justification: `Swing High 1H ($${s.price})` }));
+      struct15m.fvgs.filter((f) => f.bottom > entryPrice).forEach((f) => rawCandidates.push({ price: f.bottom, justification: `FVG 15m ($${f.bottom})` }));
+      if (setup.takeProfitPrice && setup.takeProfitPrice > entryPrice) {
+        rawCandidates.push({ price: setup.takeProfitPrice, justification: `Swing High Mayor ($${setup.takeProfitPrice})` });
+      }
+    } else {
+      struct15m.swings.filter((s) => s.type === 'LOW' && s.price < entryPrice).forEach((s) => rawCandidates.push({ price: s.price, justification: `Swing Low 15m ($${s.price})` }));
+      struct1h.swings.filter((s) => s.type === 'LOW' && s.price < entryPrice).forEach((s) => rawCandidates.push({ price: s.price, justification: `Swing Low 1H ($${s.price})` }));
+      struct15m.fvgs.filter((f) => f.top < entryPrice).forEach((f) => rawCandidates.push({ price: f.top, justification: `FVG 15m ($${f.top})` }));
+      if (setup.takeProfitPrice && setup.takeProfitPrice < entryPrice) {
+        rawCandidates.push({ price: setup.takeProfitPrice, justification: `Swing Low Mayor ($${setup.takeProfitPrice})` });
+      }
     }
 
-    const dualCalc = RiskCalculator.calculateDualTargets({
-      direction: setup.direction,
-      entryPrice,
-      stopLossPrice: stopLoss,
-      candidateTargets,
-      accountBalance,
-      riskPercent,
-      feeStructure: {
-        makerFeeRate: makerFee,
-        takerFeeRate: takerFee,
-      },
-      minRRShort: 2.0,
-      minRRExtended: 4.0,
-    });
-
-    const ratiosToTest: Array<'RR_1_2' | 'RR_1_4'> = [];
-    if (!configRatio || configRatio === 'ALL') {
-      if (dualCalc.calculation12?.isValid) ratiosToTest.push('RR_1_2');
-      if (dualCalc.calculation14?.isValid) ratiosToTest.push('RR_1_4');
-    } else if (configRatio === 'RR_1_2' && dualCalc.calculation12?.isValid) {
-      ratiosToTest.push('RR_1_2');
-    } else if (configRatio === 'RR_1_4' && dualCalc.calculation14?.isValid) {
-      ratiosToTest.push('RR_1_4');
+    // Deduplicate and evaluate each structural target with exact canonical risk calculator
+    const evaluated: Array<{ price: number; justification: string; netRR: number; calc: RiskCalculationResult }> = [];
+    const seenPrices = new Set<number>();
+    for (const cand of rawCandidates) {
+      const p = RiskCalculator.roundToTick(cand.price, 0.1);
+      if (seenPrices.has(p)) continue;
+      seenPrices.add(p);
+      const calc = RiskCalculator.calculate({
+        direction: setup.direction,
+        entryPrice,
+        stopLossPrice: stopLoss,
+        takeProfitPrice: p,
+        accountBalance,
+        riskPercent,
+        feeStructure: {
+          makerFeeRate: makerFee,
+          takerFeeRate: takerFee,
+        },
+        spread,
+        slippageRate,
+        minRequiredRR: 0.1,
+      });
+      if (calc.isValid) {
+        evaluated.push({ price: p, justification: cand.justification, netRR: calc.netRR, calc });
+      }
     }
 
-    for (const ratioTarget of ratiosToTest) {
-      const takeProfitPrice = ratioTarget === 'RR_1_2' ? dualCalc.target12Price! : dualCalc.target14Price!;
-      const calc = ratioTarget === 'RR_1_2' ? dualCalc.calculation12! : dualCalc.calculation14!;
+    if (isLong) {
+      evaluated.sort((a, b) => a.price - b.price);
+    } else {
+      evaluated.sort((a, b) => b.price - a.price);
+    }
 
+    // Identify genuine 1:2 and 1:4 structural targets
+    const m12 = evaluated.find((e) => e.netRR >= 2.0);
+    const m14 = evaluated.find((e) => e.netRR >= 4.0);
+
+    const variantsToSimulate: Array<{
+      ratioTarget: 'RR_1_2' | 'RR_1_4';
+      takeProfitPrice: number;
+      calc: RiskCalculationResult;
+      justification: string;
+      expectedNetRR: number;
+    }> = [];
+
+    if (m12 && (!configRatio || configRatio === 'ALL' || configRatio === 'RR_1_2')) {
+      const isUniqueSingle = m14 && m12.price === m14.price;
+      variantsToSimulate.push({
+        ratioTarget: 'RR_1_2',
+        takeProfitPrice: m12.price,
+        calc: m12.calc,
+        justification: isUniqueSingle ? `${m12.justification} (Objetivo estructural único, alcanza >= 4.0R)` : m12.justification,
+        expectedNetRR: m12.netRR,
+      });
+    }
+
+    if (m14 && (!configRatio || configRatio === 'ALL' || configRatio === 'RR_1_4')) {
+      const isUniqueSingle = m12 && m12.price === m14.price;
+      variantsToSimulate.push({
+        ratioTarget: 'RR_1_4',
+        takeProfitPrice: m14.price,
+        calc: m14.calc,
+        justification: isUniqueSingle ? `${m14.justification} (Objetivo estructural único, alcanza >= 4.0R)` : m14.justification,
+        expectedNetRR: m14.netRR,
+      });
+    }
+
+    for (const v of variantsToSimulate) {
       const trade = this.evaluateSimulatedTradeExecution({
         setup,
-        takeProfitPrice,
-        calc,
-        ratioTarget,
+        takeProfitPrice: v.takeProfitPrice,
+        calc: v.calc,
+        ratioTarget: v.ratioTarget,
         candles5m,
         start5mIdx,
         runId,
@@ -388,6 +466,8 @@ export class BacktestEngine {
         inSampleEndTimestamp,
         spread,
         slippageRate,
+        expectedNetRR: v.expectedNetRR,
+        structuralJustification: v.justification,
       });
 
       if (trade) {
@@ -408,8 +488,11 @@ export class BacktestEngine {
     inSampleEndTimestamp: number;
     spread: number;
     slippageRate: number;
+    expectedNetRR?: number;
+    structuralJustification?: string;
+    exclusionReason?: string;
   }): BacktestTradeResult | null {
-    const { setup, takeProfitPrice, calc, ratioTarget, candles5m, start5mIdx, runId, symbol, inSampleEndTimestamp, spread, slippageRate } = params;
+    const { setup, takeProfitPrice, calc, ratioTarget, candles5m, start5mIdx, runId, symbol, inSampleEndTimestamp, spread, slippageRate, expectedNetRR, structuralJustification, exclusionReason } = params;
 
     const entryPrice = setup.entryPrice;
     const stopLossPrice = setup.stopLossPrice;
@@ -539,6 +622,9 @@ export class BacktestEngine {
       initialRiskUsdt: unitRisk,
       positionSizeBtc: positionSize,
       grossPnlUsdt,
+      expectedNetRR,
+      structuralJustification,
+      exclusionReason,
     };
   }
 

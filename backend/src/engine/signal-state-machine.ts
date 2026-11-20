@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { DatabaseService } from '../storage/database.js';
 import { SetupCandidate } from './strategy-a-trend.js';
 import { ConsensusResult, AiEvaluationMode } from '../ai/types.js';
+import { Scenario } from '../ai/scenario-types.js';
 
 export type SignalState =
   | 'OBSERVING'
@@ -149,6 +150,80 @@ export class SignalStateMachine extends EventEmitter {
       reason: `Consenso de IA: ${consensus.consensusVerdict}`,
       metadata: { verdict: consensus.consensusVerdict, confidence: consensus.confidenceScore },
     });
+
+    this.emit('signal_created', instance);
+    return instance;
+  }
+
+  public registerSignalFromScenario(
+    scenario: Scenario,
+    currentPrice: number,
+    ratioTarget: 'RR_1_2' | 'RR_1_4',
+    takeProfitPrice: number,
+    netRR: number
+  ): SignalInstance {
+    const id = `sig_${scenario.id}_${ratioTarget}`;
+    const existing = this.signals.get(id);
+    if (existing) return existing;
+
+    const riskUsdt = 100; // Standard 100 USDT reference risk for paper tracking
+    const instance: SignalInstance = {
+      id,
+      setupId: scenario.id,
+      symbol: scenario.symbol,
+      strategy: `AI_DISCOVERY_${scenario.structureType}`,
+      direction: scenario.direction as 'LONG' | 'SHORT',
+      timeframe: scenario.timeframe,
+      entryPrice: currentPrice,
+      stopLossPrice: scenario.stopLossPrice,
+      takeProfitPrice,
+      grossRR: netRR,
+      netRR,
+      riskUsdt,
+      state: 'ENTRY_TRIGGERED',
+      entryMode: 'SIMULATED_PAPER_ENTRY',
+      evaluationMode: 'DUAL_AI',
+      simulatedEntryTime: Date.now(),
+      mfePrice: currentPrice,
+      mfeR: 0,
+      maePrice: currentPrice,
+      maeR: 0,
+      createdAt: Date.now(),
+      lastStateChangeTimestamp: Date.now(),
+      reason: `Entrada validada por IA y motor cuantitativo para ${ratioTarget}`,
+    };
+
+    this.signals.set(instance.id, instance);
+
+    this.db.saveSignal({
+      id: instance.id,
+      setupId: instance.setupId,
+      timestamp: instance.createdAt,
+      symbol: instance.symbol,
+      strategy: instance.strategy,
+      direction: instance.direction,
+      timeframe: instance.timeframe,
+      entryPrice: instance.entryPrice,
+      stopLoss: instance.stopLossPrice,
+      takeProfit: instance.takeProfitPrice,
+      rrNet: instance.netRR,
+      consensusVerdict: 'AUTHORIZED',
+      status: instance.state,
+      evaluationMode: instance.evaluationMode,
+      createdAt: instance.createdAt,
+    });
+
+    this.db.recordSignalTransition({
+      signalId: instance.id,
+      fromState: 'ENTRY_VALIDATED',
+      toState: 'ENTRY_TRIGGERED',
+      timestamp: instance.lastStateChangeTimestamp,
+      reason: `Ejecución paper trading iniciada (${ratioTarget})`,
+      metadata: { scenarioId: scenario.id, ratioTarget, currentPrice, netRR },
+    });
+
+    // Automatically transition to TRACKING
+    this.transition(instance.id, 'TRACKING', `Paper trading tracking en curso para ${ratioTarget}`);
 
     this.emit('signal_created', instance);
     return instance;

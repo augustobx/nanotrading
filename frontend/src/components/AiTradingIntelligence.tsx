@@ -94,9 +94,12 @@ interface ScenarioDetail {
 }
 
 export function AiTradingIntelligence() {
-  const [activeTab, setActiveTab] = useState<'scenarios' | 'market_intelligence' | 'watcher_stats'>('scenarios');
+  const [activeTab, setActiveTab] = useState<'scenarios' | 'market_intelligence' | 'watcher_stats' | 'paper_trading'>('scenarios');
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [marketIntel, setMarketIntel] = useState<MarketIntelligence | null>(null);
+  const [schedulerStatus, setSchedulerStatus] = useState<any>(null);
+  const [configSummary, setConfigSummary] = useState<any>(null);
+  const [activeSignals, setActiveSignals] = useState<any[]>([]);
   const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
   const [scenarioDetail, setScenarioDetail] = useState<ScenarioDetail | null>(null);
   const [filterRR, setFilterRR] = useState<'ALL' | 'RR_BOTH' | 'RR_1_2' | 'RR_1_4'>('ALL');
@@ -127,6 +130,36 @@ export function AiTradingIntelligence() {
     } catch {}
   };
 
+  const fetchSchedulerStatus = async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/v1/discovery/scheduler/status`);
+      if (res.ok) {
+        const data = await res.json();
+        setSchedulerStatus(data.data || null);
+      }
+    } catch {}
+  };
+
+  const fetchConfigSummary = async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/v1/config/summary`);
+      if (res.ok) {
+        const data = await res.json();
+        setConfigSummary(data.data || null);
+      }
+    } catch {}
+  };
+
+  const fetchActiveSignals = async () => {
+    try {
+      const res = await fetch(`${apiBase}/api/v1/signals/active`);
+      if (res.ok) {
+        const data = await res.json();
+        setActiveSignals(data.data || []);
+      }
+    } catch {}
+  };
+
   const fetchDetail = async (id: string) => {
     try {
       const res = await fetch(`${apiBase}/api/v1/discovery/scenarios/${id}`);
@@ -140,9 +173,15 @@ export function AiTradingIntelligence() {
   useEffect(() => {
     fetchScenarios();
     fetchMarketIntel();
+    fetchSchedulerStatus();
+    fetchConfigSummary();
+    fetchActiveSignals();
     const timer = setInterval(() => {
       fetchScenarios();
       fetchMarketIntel();
+      fetchSchedulerStatus();
+      fetchConfigSummary();
+      fetchActiveSignals();
     }, 15000);
     return () => clearInterval(timer);
   }, []);
@@ -265,14 +304,14 @@ export function AiTradingIntelligence() {
                 AI Trading Intelligence
               </h2>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-orange-500/15 text-orange-400 border border-orange-500/30">
-                FASE 5A
+                FASE 5C
               </span>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 SIGNALS_ONLY
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Descubrimiento autónomo de escenarios multitemporales por OpenAI & Gemini con vigilancia algorítmica continua y objetivos 1:2 / 1:4.
+              Descubrimiento autónomo de escenarios multitemporales por OpenAI & Gemini con vigilancia algorítmica continua, objetivos 1:2 / 1:4 y paper trading 24/7.
             </p>
           </div>
         </div>
@@ -306,6 +345,40 @@ export function AiTradingIntelligence() {
             <Sparkles className={`w-3.5 h-3.5 ${isDiscovering ? 'animate-spin' : ''}`} />
             {isDiscovering ? 'Analizando...' : 'Ejecutar Descubrimiento IA'}
           </button>
+        </div>
+      </div>
+
+      {/* Provider & Scheduler Live Status Banner */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs font-mono">
+        <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+          <span className="text-slate-400">OpenAI Provider:</span>
+          {configSummary?.openaiConfigured ? (
+            <span className="text-emerald-400 font-bold flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> CONECTADO</span>
+          ) : (
+            <span className="text-amber-400/90 font-bold flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" /> PENDIENTE</span>
+          )}
+        </div>
+        <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+          <span className="text-slate-400">Gemini Provider:</span>
+          {configSummary?.geminiConfigured ? (
+            <span className="text-emerald-400 font-bold flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> CONECTADO</span>
+          ) : (
+            <span className="text-amber-400/90 font-bold flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" /> PENDIENTE</span>
+          )}
+        </div>
+        <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+          <span className="text-slate-400">Scheduler Autónomo:</span>
+          {schedulerStatus?.isRunning ? (
+            <span className="text-emerald-400 font-bold flex items-center gap-1"><Activity className="w-3.5 h-3.5 text-emerald-400 animate-pulse" /> ACTIVO</span>
+          ) : (
+            <span className="text-slate-400 font-bold">EN ESPERA</span>
+          )}
+        </div>
+        <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+          <span className="text-slate-400">Presupuesto Hoy:</span>
+          <span className="text-slate-200 font-bold">
+            ${configSummary?.spentTodayUsd !== undefined ? Number(configSummary.spentTodayUsd).toFixed(3) : '0.000'} / ${configSummary?.dailyBudgetUsd || '5.00'}
+          </span>
         </div>
       </div>
 
@@ -404,6 +477,18 @@ export function AiTradingIntelligence() {
           >
             <Radar className="w-3.5 h-3.5" />
             Monitor Algorítmico 24/7
+          </button>
+
+          <button
+            onClick={() => setActiveTab('paper_trading')}
+            className={`px-3 py-1.5 rounded-t-lg text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'paper_trading'
+                ? 'bg-slate-800 text-orange-400 border-t-2 border-orange-500'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            Paper Trading ({activeSignals.length})
           </button>
         </div>
 
@@ -757,6 +842,77 @@ export function AiTradingIntelligence() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* TAB 4: PAPER TRADING PROSPECTIVO */}
+      {activeTab === 'paper_trading' && (
+        <div className="space-y-4">
+          <div className="p-3.5 rounded-xl bg-slate-900/70 border border-slate-800 flex items-center justify-between">
+            <div>
+              <h4 className="text-sm font-bold text-slate-100 flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                Seguimiento Prospectivo de Papel (Paper Trading 24/7)
+              </h4>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Las hipótesis validadas por IA en zona inician seguimiento en vivo con saldo virtual de referencia ($100 USDT de riesgo). Modo SIGNALS_ONLY. Cero órdenes reales en Bybit.
+              </p>
+            </div>
+            <button
+              onClick={fetchActiveSignals}
+              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+              title="Actualizar posiciones"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {activeSignals.length === 0 ? (
+            <div className="p-8 text-center text-slate-500 font-mono text-xs border border-dashed border-slate-800 rounded-xl bg-slate-950/40">
+              No hay posiciones activas en seguimiento en este momento. Las posiciones se inician automáticamente al validar una hipótesis en zona.
+            </div>
+          ) : (
+            <div className="overflow-x-auto custom-scrollbar">
+              <table className="w-full text-left text-xs font-mono text-slate-300">
+                <thead className="bg-[#0b0e17] text-slate-400 text-[11px] uppercase tracking-wider border-b border-slate-800">
+                  <tr>
+                    <th className="py-2.5 px-3">ID Señal</th>
+                    <th className="py-2.5 px-2">Dir</th>
+                    <th className="py-2.5 px-3 text-right">Entrada</th>
+                    <th className="py-2.5 px-3 text-right">Stop Loss</th>
+                    <th className="py-2.5 px-3 text-right">Take Profit</th>
+                    <th className="py-2.5 px-3 text-right">R:R Neto</th>
+                    <th className="py-2.5 px-3 text-right">MFE (R)</th>
+                    <th className="py-2.5 px-3 text-right">MAE (R)</th>
+                    <th className="py-2.5 px-3 text-center">Estado</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {activeSignals.map((sig: any) => (
+                    <tr key={sig.id} className="hover:bg-slate-900/60 transition-colors">
+                      <td className="py-2.5 px-3 text-slate-300 font-sans text-xs">{sig.id}</td>
+                      <td className="py-2.5 px-2">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${sig.direction === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                          {sig.direction}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right text-slate-100">${sig.entryPrice?.toFixed(1)}</td>
+                      <td className="py-2.5 px-3 text-right text-rose-400/80">${sig.stopLossPrice?.toFixed(1)}</td>
+                      <td className="py-2.5 px-3 text-right text-emerald-400/80">${sig.takeProfitPrice?.toFixed(1)}</td>
+                      <td className="py-2.5 px-3 text-right text-amber-400 font-bold">+{sig.netRR?.toFixed(2)}R</td>
+                      <td className="py-2.5 px-3 text-right text-slate-300">+{sig.mfeR?.toFixed(2)}R</td>
+                      <td className="py-2.5 px-3 text-right text-slate-400">-{sig.maeR?.toFixed(2)}R</td>
+                      <td className="py-2.5 px-3 text-center">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
+                          {sig.state}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>

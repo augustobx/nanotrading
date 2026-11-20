@@ -514,6 +514,9 @@ export class DatabaseService {
       'capital_before_usdt REAL DEFAULT 0',
       'capital_after_usdt REAL DEFAULT 0',
       'is_executed_in_portfolio INTEGER DEFAULT 0',
+      'expected_net_rr REAL DEFAULT 0',
+      'structural_justification TEXT DEFAULT ""',
+      'exclusion_reason TEXT DEFAULT ""',
     ];
     for (const col of tradeAuditCols) {
       try {
@@ -2306,8 +2309,9 @@ export class DatabaseService {
         exit_price, outcome, realized_net_pnl_usdt, realized_net_r,
         mfe_price, mfe_r, mae_price, mae_r, duration_ms, is_in_sample,
         fees_usdt, spread_cost_usdt, slippage_cost_usdt,
-        initial_risk_usdt, position_size_btc, gross_pnl_usdt, capital_before_usdt, capital_after_usdt, is_executed_in_portfolio
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        initial_risk_usdt, position_size_btc, gross_pnl_usdt, capital_before_usdt, capital_after_usdt, is_executed_in_portfolio,
+        expected_net_rr, structural_justification, exclusion_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let count = 0;
@@ -2345,7 +2349,10 @@ export class DatabaseService {
           t.grossPnlUsdt || 0,
           t.capitalBeforeUsdt || 0,
           t.capitalAfterUsdt || 0,
-          t.isExecutedInPortfolio ? 1 : 0
+          t.isExecutedInPortfolio ? 1 : 0,
+          t.expectedNetRR || 0,
+          t.structuralJustification || '',
+          t.exclusionReason || ''
         );
         count++;
       }
@@ -2394,6 +2401,9 @@ export class DatabaseService {
         capitalBeforeUsdt: Number(r.capital_before_usdt || 0),
         capitalAfterUsdt: Number(r.capital_after_usdt || 0),
         isExecutedInPortfolio: Boolean(r.is_executed_in_portfolio),
+        expectedNetRR: Number(r.expected_net_rr || 0),
+        structuralJustification: r.structural_justification || '',
+        exclusionReason: r.exclusion_reason || '',
       }));
     } catch {
       return [];
