@@ -22,7 +22,8 @@ export type AiEvaluationMode =
   | 'DUAL_AI'
   | 'SINGLE_AI_OPENAI'
   | 'SINGLE_AI_GEMINI'
-  | 'AI_UNAVAILABLE';
+  | 'AI_UNAVAILABLE'
+  | 'AI_BUDGET_EXCEEDED';
 
 export interface MarketSnapshotOrderBookLevel {
   price: number;

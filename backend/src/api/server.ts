@@ -147,6 +147,12 @@ export class ApiServer {
         this.handleDeleteBybitConfig(req, res);
       } else if (pathname === '/api/v1/config/bybit/test' && req.method === 'POST') {
         this.handleTestBybitConfig(req, res);
+      } else if (pathname === '/api/v1/config/budget' && req.method === 'GET') {
+        this.sendBudgetConfig(res);
+      } else if (pathname === '/api/v1/config/budget' && req.method === 'POST') {
+        this.handleUpdateBudgetConfig(req, res);
+      } else if (pathname === '/api/v1/config/budget/reactivate' && req.method === 'POST') {
+        this.handleReactivateBudget(req, res);
       } else if (pathname === '/api/v1/config/ai/router' && req.method === 'GET') {
         this.sendAiRouterConfig(res);
       } else if (pathname === '/api/v1/config/ai/router' && req.method === 'POST') {
@@ -278,6 +284,8 @@ export class ApiServer {
     const stats = costTracker.getStats();
     const currentMode = consensusEngine.getCurrentEvaluationMode();
     const lastMode = consensusEngine.getLastEvaluationMode();
+    const hardBudgetManager = consensusEngine.getHardBudgetManager();
+    const hardBudgetSummary = hardBudgetManager.getSummary();
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(
@@ -286,13 +294,17 @@ export class ApiServer {
         data: {
           currentMode,
           lastEvaluationMode: lastMode,
+          isBudgetBlocked: hardBudgetSummary.isBlocked || hardBudgetSummary.status === 'AI_BUDGET_EXCEEDED',
+          budgetStatus: hardBudgetSummary.status,
+          blockedReason: hardBudgetSummary.blockedReason,
+          hardBudgetSummary,
           providers: {
             openai: consensusEngine.getOpenAiAdapter().getStatus(),
             gemini: consensusEngine.getGeminiAdapter().getStatus(),
           },
           fallbackPolicy: {
             activeMode: currentMode,
-            modes: ['DUAL_AI', 'SINGLE_AI_OPENAI', 'SINGLE_AI_GEMINI', 'AI_UNAVAILABLE'],
+            modes: ['DUAL_AI', 'SINGLE_AI_OPENAI', 'SINGLE_AI_GEMINI', 'AI_UNAVAILABLE', 'AI_BUDGET_EXCEEDED'],
             rejectionsEnforced: true,
             minAiConfidence: 70,
             strictNetRR: 4.0,
@@ -303,6 +315,8 @@ export class ApiServer {
                 ? 'Fallback Activo: Operando con OpenAI (Gemini no disponible)'
                 : currentMode === 'SINGLE_AI_GEMINI'
                 ? 'Fallback Activo: Operando con Gemini (OpenAI no disponible)'
+                : currentMode === 'AI_BUDGET_EXCEEDED'
+                ? 'Límite Presupuestario de IA Excedido: Evaluaciones de IA suspendidas para proteger capital económico. Monitoreo Bybit activo.'
                 : 'Sin IAs disponibles: Monitoreo técnico Bybit activo, esperando disponibilidad',
           },
           costTracker: stats,
@@ -847,6 +861,13 @@ export class ApiServer {
         model: model || (providerNorm === 'openai' ? 'gpt-4o' : 'gemini-2.5-flash'),
         status: 'CONFIGURED',
       });
+      // Dynamically update adapter credentials in memory immediately
+      this.coordinator.getConsensusEngine().updateAiCredentials(
+        providerNorm as 'openai' | 'gemini',
+        apiKey.trim(),
+        model,
+        payload.reasoningEffort
+      );
       this.db.logConfigAudit({
         category: 'AI_CREDENTIALS',
         action: 'SAVE',
@@ -870,6 +891,11 @@ export class ApiServer {
     }
     const providerNorm = provider.toLowerCase();
     this.db.deleteAiCredentials(providerNorm);
+    this.coordinator.getConsensusEngine().updateAiCredentials(
+      providerNorm as 'openai' | 'gemini',
+      '',
+      ''
+    );
     this.db.logConfigAudit({
       category: 'AI_CREDENTIALS',
       action: 'DELETE',
@@ -878,6 +904,72 @@ export class ApiServer {
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, message: `Credenciales de ${providerNorm} eliminadas correctamente` }));
+  }
+
+  // --- Hard Budget Handlers ---
+
+  private sendBudgetConfig(res: http.ServerResponse): void {
+    const hardBudgetManager = this.coordinator.getConsensusEngine().getHardBudgetManager();
+    const summary = hardBudgetManager.getSummary();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: summary }));
+  }
+
+  private async handleUpdateBudgetConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+    try {
+      const updates = await this.parseJsonBody<any>(req);
+      const hardBudgetManager = this.coordinator.getConsensusEngine().getHardBudgetManager();
+      const updated = hardBudgetManager.updateConfig(updates);
+      this.db.saveHardBudgetConfig(updated);
+      this.db.logConfigAudit({
+        category: 'HARD_BUDGET',
+        action: 'UPDATE',
+        details: updates,
+        ipAddress: clientIp,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: hardBudgetManager.getSummary() }));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Error actualizando presupuesto duro' }));
+    }
+  }
+
+  private handleReactivateBudget(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+    try {
+      const hardBudgetManager = this.coordinator.getConsensusEngine().getHardBudgetManager();
+      hardBudgetManager.reactivateBudget();
+      this.db.saveHardBudgetConfig(hardBudgetManager.getConfig());
+      this.db.logConfigAudit({
+        category: 'HARD_BUDGET',
+        action: 'REACTIVATE',
+        details: { reactivatedBy: 'admin', ipAddress: clientIp },
+        ipAddress: clientIp,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          success: true,
+          message: 'Presupuesto de IA reactivado correctamente. Evaluaciones habilitadas.',
+          data: hardBudgetManager.getSummary(),
+        })
+      );
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Error reactivando presupuesto' }));
+    }
   }
 
   private sendAiConsumption(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -938,15 +1030,21 @@ export class ApiServer {
     const stats = this.db.getAiConsumptionStats();
     const openai = this.db.getAiCredentials('openai');
     const gemini = this.db.getAiCredentials('gemini');
+    const hardBudgetSummary = this.coordinator.getConsensusEngine().getHardBudgetManager().getSummary();
 
     const summary = {
       routerMode: routerCfg.mode,
       activeProfile: routerCfg.profile,
       openaiConfigured: !!openai || !!config.ai.openaiApiKey,
       geminiConfigured: !!gemini || !!config.ai.geminiApiKey,
-      dailyBudgetUsd: routerCfg.dailyBudgetLimitUsd || 5.0,
-      spentTodayUsd: stats.todaySpendUsd || 0,
-      budgetRemainingUsd: Math.max(0, (routerCfg.dailyBudgetLimitUsd || 5.0) - (stats.todaySpendUsd || 0)),
+      dailyBudgetUsd: hardBudgetSummary.dailyBudgetLimitUsd,
+      monthlyBudgetUsd: hardBudgetSummary.monthlyBudgetLimitUsd,
+      spentTodayUsd: hardBudgetSummary.todaySpendUsd,
+      spentMonthUsd: hardBudgetSummary.monthSpendUsd,
+      budgetRemainingUsd: hardBudgetSummary.remainingDailyUsd,
+      hardBudgetStatus: hardBudgetSummary.status,
+      isBudgetBlocked: hardBudgetSummary.isBlocked,
+      hardBudgetSummary,
       capitalUsdt: riskPolicy.capitalUsdt,
       maxRiskPerTradePercentage: riskPolicy.maxRiskPerTradePercent,
       maxRiskPerTradeUsdt: riskPolicy.maxRiskPerTradeUsdt,

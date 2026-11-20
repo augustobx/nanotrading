@@ -31,6 +31,10 @@ interface AiAnalystsCardProps {
   aiStatus?: {
     currentMode?: string;
     lastEvaluationMode?: string;
+    isBudgetBlocked?: boolean;
+    budgetStatus?: string;
+    blockedReason?: string | null;
+    hardBudgetSummary?: any;
     providers?: {
       openai?: ProviderStatus;
       gemini?: ProviderStatus;
@@ -89,6 +93,13 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
           <span className="text-[10px] font-mono bg-purple-500/10 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded font-semibold flex items-center gap-1">
             <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
             FALLBACK: SINGLE_AI_GEMINI
+          </span>
+        );
+      case 'AI_BUDGET_EXCEEDED':
+        return (
+          <span className="text-[10px] font-mono bg-rose-500/15 text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded font-bold flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse" />
+            AI_BUDGET_EXCEEDED (Límite Económico)
           </span>
         );
       default:

@@ -22,6 +22,8 @@ import { MarketMonitorWorker } from '../engine/market-monitor-worker.js';
 import { RiskPolicyManager } from '../engine/risk-policy.js';
 import { BybitCredentialsManager } from '../bybit/bybit-credentials.js';
 import { AiModelRouter } from '../ai/router/ai-router.js';
+import { HardBudgetManager } from '../ai/hard-budget-manager.js';
+import { decryptSecret } from '../security/encryption.js';
 import { config } from '../config/index.js';
 
 export class MarketCoordinator extends EventEmitter {
@@ -62,13 +64,51 @@ export class MarketCoordinator extends EventEmitter {
     this.db = db;
     this.symbol = symbol;
     this.setupEngine = new SetupEngine(this.candleManager, this.db);
-    this.consensusEngine = new ConsensusEngine({
-      coordinator: this,
-      db: this.db,
-    });
     this.signalStateMachine = new SignalStateMachine(this.db);
     this.telegramNotifier = new TelegramNotifier(this.db);
     this.webPushNotifier = new WebPushNotifier(this.db);
+
+    const savedBudget = this.db.getHardBudgetConfig();
+    const hardBudgetManager = new HardBudgetManager(savedBudget || undefined, {
+      sendTelegramAlert: async (title, msg) => {
+        await this.telegramNotifier.sendMessage(`🚨 *${title}*\n\n${msg}`, 'BUDGET_ALERT');
+      },
+      sendWebPushAlert: async (title, msg) => {
+        await this.webPushNotifier.broadcast({ title, body: msg });
+      },
+      logAudit: (cat, act, det) => this.db.logConfigAudit({ category: cat, action: act, details: det }),
+    });
+
+    this.consensusEngine = new ConsensusEngine({
+      coordinator: this,
+      db: this.db,
+      hardBudgetManager,
+    });
+
+    // Load persisted AI credentials from DB into ConsensusEngine adapters
+    const savedOpenAi = this.db.getAiCredentials('openai');
+    if (savedOpenAi?.encryptedSecret) {
+      try {
+        const decryptedKey = decryptSecret(savedOpenAi.encryptedSecret);
+        if (decryptedKey) {
+          this.consensusEngine.updateAiCredentials('openai', decryptedKey, savedOpenAi.model);
+        }
+      } catch (err) {
+        console.warn('[Coordinator] No se pudo descifrar la clave OpenAI guardada');
+      }
+    }
+    const savedGemini = this.db.getAiCredentials('gemini');
+    if (savedGemini?.encryptedSecret) {
+      try {
+        const decryptedKey = decryptSecret(savedGemini.encryptedSecret);
+        if (decryptedKey) {
+          this.consensusEngine.updateAiCredentials('gemini', decryptedKey, savedGemini.model);
+        }
+      } catch (err) {
+        console.warn('[Coordinator] No se pudo descifrar la clave Gemini guardada');
+      }
+    }
+
     this.riskPolicyManager = new RiskPolicyManager(this.db.getActiveRiskPolicy() || undefined);
     this.bybitCredentialsManager = new BybitCredentialsManager(this.db.getBybitCredentials() || undefined);
     this.aiRouter = new AiModelRouter(this.db.getRouterConfig() || undefined);
@@ -386,6 +426,10 @@ export class MarketCoordinator extends EventEmitter {
 
   public getAiRouter(): AiModelRouter {
     return this.aiRouter;
+  }
+
+  public getHardBudgetManager(): HardBudgetManager {
+    return this.consensusEngine.getHardBudgetManager();
   }
 
   public setKillSwitch(active: boolean, reason?: string): void {

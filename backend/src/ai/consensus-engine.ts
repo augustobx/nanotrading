@@ -5,6 +5,7 @@ import { SnapshotBuilder } from './snapshot-builder.js';
 import { OpenAiAdapter } from './openai-adapter.js';
 import { GeminiAdapter } from './gemini-adapter.js';
 import { CostTracker } from './cost-tracker.js';
+import { HardBudgetManager } from './hard-budget-manager.js';
 import { DatabaseService } from '../storage/database.js';
 import {
   ConsensusResult,
@@ -20,6 +21,7 @@ export interface ConsensusEngineOptions {
   openaiAdapter?: OpenAiAdapter;
   geminiAdapter?: GeminiAdapter;
   costTracker?: CostTracker;
+  hardBudgetManager?: HardBudgetManager;
   minAiConfidence?: number; // default 70
   maxPriceDriftPcnt?: number; // default 0.15% (0.0015)
   maxSnapshotAgeMs?: number; // default 10000ms
@@ -31,6 +33,7 @@ export class ConsensusEngine extends EventEmitter {
   private openaiAdapter: OpenAiAdapter;
   private geminiAdapter: GeminiAdapter;
   private costTracker: CostTracker;
+  private hardBudgetManager: HardBudgetManager;
   private minAiConfidence: number;
   private maxPriceDriftPcnt: number;
   private maxSnapshotAgeMs: number;
@@ -44,6 +47,7 @@ export class ConsensusEngine extends EventEmitter {
     this.openaiAdapter = options.openaiAdapter || new OpenAiAdapter();
     this.geminiAdapter = options.geminiAdapter || new GeminiAdapter();
     this.costTracker = options.costTracker || new CostTracker();
+    this.hardBudgetManager = options.hardBudgetManager || new HardBudgetManager();
     this.minAiConfidence = options.minAiConfidence || 70;
     this.maxPriceDriftPcnt = options.maxPriceDriftPcnt || 0.0015;
     this.maxSnapshotAgeMs = options.maxSnapshotAgeMs || 10000;
@@ -118,9 +122,22 @@ export class ConsensusEngine extends EventEmitter {
       return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'SPREAD_TOO_HIGH');
     }
 
-    // Step 8: Budget / Rate limit check & Concurrency Reservation
+    // Step 8: Hard Budget Limit check & Atomic Reservation (Fase 4.6)
+    if (this.hardBudgetManager.isBlocked()) {
+      const reason = this.hardBudgetManager.getBlockedReason() || 'Límite de presupuesto diario de IA alcanzado (AI_BUDGET_EXCEEDED)';
+      ruleViolations.push(reason);
+      return this.rejectDecision(
+        signalId,
+        setup,
+        snapshot.snapshotId,
+        evaluatedAt,
+        ruleViolations,
+        'AI_BUDGET_EXCEEDED'
+      );
+    }
+
     if (!this.costTracker.canMakeCalls(2)) {
-      ruleViolations.push('Límite de presupuesto diario de IA alcanzado');
+      ruleViolations.push('Presupuesto diario o mensual de IA agotado en CostTracker');
       return this.waitDecision(
         signalId,
         setup,
@@ -131,8 +148,52 @@ export class ConsensusEngine extends EventEmitter {
       );
     }
 
+    const openaiModel = this.openaiAdapter.getModel();
+    const geminiModel = this.geminiAdapter.getModel();
+
+    const openaiResv = this.hardBudgetManager.reserveBudget({
+      provider: 'OPENAI',
+      model: openaiModel,
+      task: 'SETUP_EVALUATION',
+    });
+
+    if (!openaiResv.allowed) {
+      ruleViolations.push(openaiResv.reason || 'Límite presupuestario de IA alcanzado');
+      return this.rejectDecision(
+        signalId,
+        setup,
+        snapshot.snapshotId,
+        evaluatedAt,
+        ruleViolations,
+        'AI_BUDGET_EXCEEDED'
+      );
+    }
+
+    const geminiResv = this.hardBudgetManager.reserveBudget({
+      provider: 'GEMINI',
+      model: geminiModel,
+      task: 'SETUP_EVALUATION',
+    });
+
+    if (!geminiResv.allowed) {
+      if (openaiResv.reservationId) {
+        this.hardBudgetManager.releaseReservation(openaiResv.reservationId);
+      }
+      ruleViolations.push(geminiResv.reason || 'Límite presupuestario de IA alcanzado');
+      return this.rejectDecision(
+        signalId,
+        setup,
+        snapshot.snapshotId,
+        evaluatedAt,
+        ruleViolations,
+        'AI_BUDGET_EXCEEDED'
+      );
+    }
+
     const budgetReserved = this.costTracker.reserveBudget(2);
     if (!budgetReserved) {
+      if (openaiResv.reservationId) this.hardBudgetManager.releaseReservation(openaiResv.reservationId);
+      if (geminiResv.reservationId) this.hardBudgetManager.releaseReservation(geminiResv.reservationId);
       ruleViolations.push('Presupuesto de IA temporalmente bloqueado por concurrencia');
       return this.waitDecision(
         signalId,
@@ -145,8 +206,8 @@ export class ConsensusEngine extends EventEmitter {
     }
 
     // Step 8: Concurrent Dual AI Consultation
-    let openaiRes: AiEvaluationResult;
-    let geminiRes: AiEvaluationResult;
+    let openaiRes: AiEvaluationResult | undefined = undefined;
+    let geminiRes: AiEvaluationResult | undefined = undefined;
     try {
       [openaiRes, geminiRes] = await Promise.all([
         this.openaiAdapter.evaluate(snapshot),
@@ -154,13 +215,33 @@ export class ConsensusEngine extends EventEmitter {
       ]);
     } finally {
       this.costTracker.releaseReservation(2);
+      if (openaiResv.reservationId) {
+        this.hardBudgetManager.reconcileReservation(openaiResv.reservationId, {
+          provider: 'OPENAI',
+          model: openaiRes?.model || openaiModel,
+          task: 'SETUP_EVALUATION',
+          promptTokens: openaiRes?.tokensPrompt || 0,
+          completionTokens: openaiRes?.tokensCompletion || 0,
+          costUsd: openaiRes?.estimatedCostUsd,
+        });
+      }
+      if (geminiResv.reservationId) {
+        this.hardBudgetManager.reconcileReservation(geminiResv.reservationId, {
+          provider: 'GEMINI',
+          model: geminiRes?.model || geminiModel,
+          task: 'SETUP_EVALUATION',
+          promptTokens: geminiRes?.tokensPrompt || 0,
+          completionTokens: geminiRes?.tokensCompletion || 0,
+          costUsd: geminiRes?.estimatedCostUsd,
+        });
+      }
     }
 
     // Record usage
-    if (openaiRes.tokensPrompt > 0) {
+    if (openaiRes && openaiRes.tokensPrompt > 0) {
       this.costTracker.recordUsage('OPENAI', openaiRes.model, openaiRes.tokensPrompt, openaiRes.tokensCompletion);
     }
-    if (geminiRes.tokensPrompt > 0) {
+    if (geminiRes && geminiRes.tokensPrompt > 0) {
       this.costTracker.recordUsage('GEMINI', geminiRes.model, geminiRes.tokensPrompt, geminiRes.tokensCompletion);
     }
 
@@ -596,6 +677,10 @@ export class ConsensusEngine extends EventEmitter {
     return this.costTracker;
   }
 
+  public getHardBudgetManager(): HardBudgetManager {
+    return this.hardBudgetManager;
+  }
+
   public getOpenAiAdapter(): OpenAiAdapter {
     return this.openaiAdapter;
   }
@@ -604,7 +689,20 @@ export class ConsensusEngine extends EventEmitter {
     return this.geminiAdapter;
   }
 
+  public updateAiCredentials(provider: 'openai' | 'gemini', apiKey: string, model?: string, reasoningEffort?: 'low' | 'medium' | 'high'): void {
+    if (provider === 'openai') {
+      this.openaiAdapter.updateCredentials(apiKey, model, reasoningEffort);
+    } else if (provider === 'gemini') {
+      this.geminiAdapter.updateCredentials(apiKey, model);
+    }
+    this.lastEvaluationMode = this.getCurrentEvaluationMode();
+  }
+
   public getCurrentEvaluationMode(): AiEvaluationMode {
+    if (this.hardBudgetManager.isBlocked() || this.hardBudgetManager.getTodaySpendUsd() >= this.hardBudgetManager.getConfig().dailyBudgetLimitUsd) {
+      return 'AI_BUDGET_EXCEEDED';
+    }
+
     const openaiStatus = this.openaiAdapter.getStatus();
     const geminiStatus = this.geminiAdapter.getStatus();
     const isOpenAiConfigured = openaiStatus.configured;

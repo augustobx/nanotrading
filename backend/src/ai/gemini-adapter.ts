@@ -18,7 +18,7 @@ export class GeminiAdapter {
   private lastAvailabilityStatus: AiAvailabilityStatus = 'AVAILABLE';
 
   constructor(options: GeminiAdapterOptions = {}) {
-    this.apiKey = options.apiKey || process.env.GEMINI_API_KEY || '';
+    this.apiKey = options.apiKey !== undefined ? options.apiKey : (process.env.GEMINI_API_KEY || '');
     this.model = getValidatedModel(options.model || process.env.GEMINI_MODEL || 'gemini-2.0-flash', 'GEMINI');
     this.timeoutMs = options.timeoutMs || 8000;
     this.mockEvaluator = options.mockEvaluator;
@@ -30,6 +30,20 @@ export class GeminiAdapter {
 
   public setMockEvaluator(fn?: (snapshot: MarketSnapshot) => Promise<Partial<AiEvaluationResult>>): void {
     this.mockEvaluator = fn;
+  }
+
+  public updateCredentials(apiKey: string, model?: string): void {
+    this.apiKey = apiKey ? apiKey.trim() : '';
+    if (model) {
+      this.model = getValidatedModel(model, 'GEMINI');
+    }
+    if (this.apiKey) {
+      this.lastAvailabilityStatus = 'AVAILABLE';
+      this.lastError = null;
+    } else {
+      this.lastAvailabilityStatus = 'UNCONFIGURED';
+      this.lastError = 'GEMINI_API_KEY no configurada';
+    }
   }
 
   public async evaluate(snapshot: MarketSnapshot): Promise<AiEvaluationResult> {

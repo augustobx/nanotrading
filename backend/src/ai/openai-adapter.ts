@@ -4,6 +4,7 @@ import { calculateCallCost, getValidatedModel } from './models-catalog.js';
 export interface OpenAiAdapterOptions {
   apiKey?: string;
   model?: string;
+  reasoningEffort?: 'low' | 'medium' | 'high';
   timeoutMs?: number;
   mockEvaluator?: (snapshot: MarketSnapshot) => Promise<Partial<AiEvaluationResult>>;
 }
@@ -11,6 +12,7 @@ export interface OpenAiAdapterOptions {
 export class OpenAiAdapter {
   private apiKey: string;
   private model: string;
+  private reasoningEffort: 'low' | 'medium' | 'high';
   private timeoutMs: number;
   private mockEvaluator?: (snapshot: MarketSnapshot) => Promise<Partial<AiEvaluationResult>>;
   private lastSuccessTimestamp: number | null = null;
@@ -18,8 +20,9 @@ export class OpenAiAdapter {
   private lastAvailabilityStatus: AiAvailabilityStatus = 'AVAILABLE';
 
   constructor(options: OpenAiAdapterOptions = {}) {
-    this.apiKey = options.apiKey || process.env.OPENAI_API_KEY || '';
+    this.apiKey = options.apiKey !== undefined ? options.apiKey : (process.env.OPENAI_API_KEY || '');
     this.model = getValidatedModel(options.model || process.env.OPENAI_MODEL || 'gpt-4o', 'OPENAI');
+    this.reasoningEffort = options.reasoningEffort || 'medium';
     this.timeoutMs = options.timeoutMs || 8000;
     this.mockEvaluator = options.mockEvaluator;
     if (!this.apiKey && !this.mockEvaluator) {
@@ -30,6 +33,23 @@ export class OpenAiAdapter {
 
   public setMockEvaluator(fn?: (snapshot: MarketSnapshot) => Promise<Partial<AiEvaluationResult>>): void {
     this.mockEvaluator = fn;
+  }
+
+  public updateCredentials(apiKey: string, model?: string, reasoningEffort?: 'low' | 'medium' | 'high'): void {
+    this.apiKey = apiKey ? apiKey.trim() : '';
+    if (model) {
+      this.model = getValidatedModel(model, 'OPENAI');
+    }
+    if (reasoningEffort) {
+      this.reasoningEffort = reasoningEffort;
+    }
+    if (this.apiKey) {
+      this.lastAvailabilityStatus = 'AVAILABLE';
+      this.lastError = null;
+    } else {
+      this.lastAvailabilityStatus = 'UNCONFIGURED';
+      this.lastError = 'OPENAI_API_KEY no configurada';
+    }
   }
 
   public async evaluate(snapshot: MarketSnapshot): Promise<AiEvaluationResult> {
@@ -120,21 +140,27 @@ Reglas imperativas:
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
+      const isLuna = this.model === 'gpt-6-luna';
+      const requestBody: any = {
+        model: this.model,
+        temperature: isLuna ? 0.2 : 0.1,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      };
+      if (isLuna) {
+        requestBody.reasoning_effort = this.reasoningEffort;
+      }
+
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.apiKey}`,
         },
-        body: JSON.stringify({
-          model: this.model,
-          temperature: 0.1,
-          response_format: { type: 'json_object' },
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-        }),
+        body: JSON.stringify(requestBody),
         signal: controller.signal,
       });
 
@@ -152,7 +178,14 @@ Reglas imperativas:
 
       const promptTokens = data.usage?.prompt_tokens || 800;
       const completionTokens = data.usage?.completion_tokens || 300;
-      const estimatedCostUsd = calculateCallCost(this.model, promptTokens, completionTokens);
+      const cachedTokens = data.usage?.prompt_tokens_details?.cached_tokens || 0;
+      const reasoningTokens = data.usage?.completion_tokens_details?.reasoning_tokens || 0;
+      const estimatedCostUsd = calculateCallCost(this.model, {
+        promptTokens,
+        completionTokens,
+        cachedTokens,
+        reasoningTokens,
+      });
 
       this.lastAvailabilityStatus = 'AVAILABLE';
       this.lastSuccessTimestamp = Date.now();
@@ -234,6 +267,7 @@ Reglas imperativas:
     provider: 'OPENAI';
     configured: boolean;
     model: string;
+    reasoningEffort?: 'low' | 'medium' | 'high';
     lastSuccessTimestamp: number | null;
     lastError: string | null;
     availabilityStatus: AiAvailabilityStatus;
@@ -243,6 +277,7 @@ Reglas imperativas:
       provider: 'OPENAI',
       configured: !!this.apiKey,
       model: this.model,
+      reasoningEffort: this.model === 'gpt-6-luna' ? this.reasoningEffort : undefined,
       lastSuccessTimestamp: this.lastSuccessTimestamp,
       lastError: this.lastError,
       availabilityStatus: this.lastAvailabilityStatus,

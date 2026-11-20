@@ -521,7 +521,12 @@ export default function DashboardPage() {
           <div className="hidden xl:flex items-center gap-1.5 text-slate-300">
             <span className="text-slate-500">Presupuesto IA:</span>
             <span className="text-white font-mono">${(configSummary?.spentTodayUsd || 0).toFixed(3)}</span>
-            <span className="text-slate-500">/ ${configSummary?.dailyBudgetUsd || 5.0}</span>
+            <span className="text-slate-500">/ ${configSummary?.dailyBudgetUsd || 0.50}</span>
+            {(configSummary?.isBudgetBlocked || aiStatus?.isBudgetBlocked) && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-950 text-red-300 border border-red-700 font-bold animate-pulse">
+                AGOTADO
+              </span>
+            )}
           </div>
           <span className="text-slate-600 hidden xl:inline">|</span>
           <span>Riesgo Máx: <strong className="text-slate-200">{configSummary?.maxRiskPerTradePercentage || 0.5}% (${configSummary?.maxRiskPerTradeUsdt || 50} USDT)</strong></span>
@@ -534,6 +539,23 @@ export default function DashboardPage() {
 
       {/* Main Content Area */}
       <main className="flex-1 p-4 sm:p-6 space-y-5 max-w-[1700px] w-full mx-auto">
+        {/* Hard Budget Limit Suspension Banner (Fase 4.6) */}
+        {(configSummary?.isBudgetBlocked || aiStatus?.isBudgetBlocked || aiStatus?.currentMode === 'AI_BUDGET_EXCEEDED') && (
+          <div className="p-3.5 rounded-2xl bg-red-950/40 border border-red-700/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-red-200 shadow-md">
+            <div className="flex items-center gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 animate-pulse" />
+              <span>
+                <strong>Límite Presupuestario de IA Alcanzado:</strong> Las llamadas a OpenAI/Gemini están detenidas preventivamente (Fase 4.6). El motor de Bybit, gráficos, detección técnica de setups y gestión de riesgo permanecen 100% operativos.
+              </span>
+            </div>
+            <button
+              onClick={() => setIsConfigModalOpen(true)}
+              className="px-3 py-1 rounded bg-red-900 hover:bg-red-800 text-white font-bold text-xs shrink-0 cursor-pointer"
+            >
+              Ajustar / Reactivar Presupuesto
+            </button>
+          </div>
+        )}
         {/* Ticker Ribbon */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">

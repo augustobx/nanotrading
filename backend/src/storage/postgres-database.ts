@@ -216,6 +216,21 @@ export class PostgresDatabaseService {
           updated_at BIGINT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS hard_budget_config (
+          id VARCHAR(64) PRIMARY KEY,
+          daily_budget_limit_usd NUMERIC(10,4) NOT NULL,
+          monthly_budget_limit_usd NUMERIC(10,4) NOT NULL,
+          max_cost_per_request_usd NUMERIC(10,4) NOT NULL,
+          provider_limits_json JSONB,
+          model_limits_json JSONB,
+          task_limits_json JSONB,
+          alert_thresholds_json JSONB,
+          auto_reset_period INTEGER NOT NULL,
+          is_blocked INTEGER NOT NULL,
+          blocked_reason TEXT,
+          updated_at BIGINT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS ai_consumption_logs (
           id VARCHAR(64) PRIMARY KEY,
           timestamp BIGINT NOT NULL,
@@ -952,6 +967,57 @@ export class PostgresDatabaseService {
     if (res.rows.length === 0) return null;
     const r = res.rows[0];
     return typeof r.config_json === 'string' ? JSON.parse(r.config_json) : r.config_json;
+  }
+
+  public async saveHardBudgetConfig(config: any): Promise<void> {
+    const query = `
+      INSERT INTO hard_budget_config (id, daily_budget_limit_usd, monthly_budget_limit_usd, max_cost_per_request_usd, provider_limits_json, model_limits_json, task_limits_json, alert_thresholds_json, auto_reset_period, is_blocked, blocked_reason, updated_at)
+      VALUES ('primary_hard_budget', $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT (id) DO UPDATE SET
+        daily_budget_limit_usd = EXCLUDED.daily_budget_limit_usd,
+        monthly_budget_limit_usd = EXCLUDED.monthly_budget_limit_usd,
+        max_cost_per_request_usd = EXCLUDED.max_cost_per_request_usd,
+        provider_limits_json = EXCLUDED.provider_limits_json,
+        model_limits_json = EXCLUDED.model_limits_json,
+        task_limits_json = EXCLUDED.task_limits_json,
+        alert_thresholds_json = EXCLUDED.alert_thresholds_json,
+        auto_reset_period = EXCLUDED.auto_reset_period,
+        is_blocked = EXCLUDED.is_blocked,
+        blocked_reason = EXCLUDED.blocked_reason,
+        updated_at = EXCLUDED.updated_at
+    `;
+    await this.pool.query(query, [
+      config.dailyBudgetLimitUsd,
+      config.monthlyBudgetLimitUsd,
+      config.maxCostPerRequestUsd,
+      JSON.stringify(config.providerLimitsUsd || {}),
+      JSON.stringify(config.modelLimitsUsd || {}),
+      JSON.stringify(config.taskLimitsUsd || {}),
+      JSON.stringify(config.alertThresholdsPercent || [50, 80, 95, 100]),
+      config.autoResetPeriod ? 1 : 0,
+      config.isBlocked ? 1 : 0,
+      config.blockedReason || null,
+      config.updatedAt || Date.now(),
+    ]);
+  }
+
+  public async getHardBudgetConfig(): Promise<any | null> {
+    const res = await this.pool.query("SELECT * FROM hard_budget_config WHERE id = 'primary_hard_budget'");
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      dailyBudgetLimitUsd: Number(r.daily_budget_limit_usd),
+      monthlyBudgetLimitUsd: Number(r.monthly_budget_limit_usd),
+      maxCostPerRequestUsd: Number(r.max_cost_per_request_usd),
+      providerLimitsUsd: typeof r.provider_limits_json === 'string' ? JSON.parse(r.provider_limits_json) : r.provider_limits_json || {},
+      modelLimitsUsd: typeof r.model_limits_json === 'string' ? JSON.parse(r.model_limits_json) : r.model_limits_json || {},
+      taskLimitsUsd: typeof r.task_limits_json === 'string' ? JSON.parse(r.task_limits_json) : r.task_limits_json || {},
+      alertThresholdsPercent: typeof r.alert_thresholds_json === 'string' ? JSON.parse(r.alert_thresholds_json) : r.alert_thresholds_json || [50, 80, 95, 100],
+      autoResetPeriod: r.auto_reset_period === 1,
+      isBlocked: r.is_blocked === 1,
+      blockedReason: r.blocked_reason,
+      updatedAt: Number(r.updated_at),
+    };
   }
 
   public async saveAiCredentials(record: { provider: string; apiKeyMasked: string; encryptedSecret: any; model: string; status: string }): Promise<void> {

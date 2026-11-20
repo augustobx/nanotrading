@@ -9,18 +9,42 @@ export interface ModelMetadata {
   status: ModelLifecycleStatus;
   pricingEffectiveDate: string; // ISO date format YYYY-MM-DD
   estimatedInputCostPerMillion: number;
+  estimatedCachedInputCostPerMillion?: number;
+  estimatedCacheWriteCostPerMillion?: number;
   estimatedOutputCostPerMillion: number;
   costNote: string;
   maxTokens: number;
   temperature: number;
   supportsStructuredJson: boolean;
+  supportsReasoningEffort?: boolean;
+  reasoningEffortDefault?: 'low' | 'medium' | 'high';
+  supportsResponsesApi?: boolean;
   isDefault: boolean;
 }
 
 export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
   // ---------------------------------------------------------------------------
-  // OpenAI Models (Official OpenAI API - Verified as of 2025)
+  // OpenAI Models (Official OpenAI API - Verified as of 2026)
   // ---------------------------------------------------------------------------
+  'gpt-6-luna': {
+    id: 'gpt-6-luna',
+    provider: 'OPENAI',
+    displayName: 'OpenAI GPT-6 Luna',
+    status: 'ACTIVE',
+    pricingEffectiveDate: '2026-03-01',
+    estimatedInputCostPerMillion: 0.10,        // US$0,10 por millón de tokens entrada
+    estimatedCachedInputCostPerMillion: 0.01,  // US$0,01 por millón entrada cacheada
+    estimatedCacheWriteCostPerMillion: 0.125,  // US$0,125 por millón escritura de caché
+    estimatedOutputCostPerMillion: 0.50,       // US$0,50 por millón salida (incluye razonamiento)
+    costNote: 'Tarifa oficial OpenAI GPT-6 Luna. Entrada: $0.10/1M, Caché: $0.01/1M, Escritura Caché: $0.125/1M, Salida: $0.50/1M. Soporta Responses API y reasoning effort.',
+    maxTokens: 16384,
+    temperature: 0.2,
+    supportsStructuredJson: true,
+    supportsReasoningEffort: true,
+    reasoningEffortDefault: 'medium',
+    supportsResponsesApi: true,
+    isDefault: false,
+  },
   'gpt-4o': {
     id: 'gpt-4o',
     provider: 'OPENAI',
@@ -212,13 +236,52 @@ export function getModelMetadata(modelId: string): ModelMetadata {
   );
 }
 
+export interface DetailedTokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens?: number;
+  cachedPromptTokens?: number;
+  reasoningTokens?: number;
+  cacheWriteTokens?: number;
+}
+
 /**
  * Calculates estimated USD cost for a model call.
- * Note: Costs are estimates based on published token prices.
+ * Accurately bills cached input tokens and internal reasoning tokens according to provider specs.
  */
-export function calculateCallCost(modelId: string, promptTokens: number, completionTokens: number): number {
+export function calculateCallCost(
+  modelId: string,
+  promptTokensOrUsage: number | DetailedTokenUsage,
+  completionTokens: number = 0
+): number {
   const meta = getModelMetadata(modelId);
-  const inputCost = (promptTokens / 1_000_000) * meta.estimatedInputCostPerMillion;
-  const outputCost = (completionTokens / 1_000_000) * meta.estimatedOutputCostPerMillion;
-  return parseFloat((inputCost + outputCost).toFixed(6));
+  let prompt = 0;
+  let completion = 0;
+  let cached = 0;
+  let reasoning = 0;
+  let cacheWrite = 0;
+
+  if (typeof promptTokensOrUsage === 'object') {
+    prompt = promptTokensOrUsage.promptTokens || 0;
+    completion = promptTokensOrUsage.completionTokens || 0;
+    cached = promptTokensOrUsage.cachedTokens ?? promptTokensOrUsage.cachedPromptTokens ?? 0;
+    reasoning = promptTokensOrUsage.reasoningTokens || 0;
+    cacheWrite = promptTokensOrUsage.cacheWriteTokens || 0;
+  } else {
+    prompt = promptTokensOrUsage || 0;
+    completion = completionTokens || 0;
+  }
+
+  // Internal reasoning tokens are billed as output tokens according to OpenAI specifications
+  const effectiveCompletionTokens = completion + reasoning;
+
+  // Uncached prompt tokens
+  const uncachedPromptTokens = Math.max(0, prompt - cached);
+
+  const inputCost = (uncachedPromptTokens / 1_000_000) * meta.estimatedInputCostPerMillion;
+  const cachedCost = (cached / 1_000_000) * (meta.estimatedCachedInputCostPerMillion ?? (meta.estimatedInputCostPerMillion * 0.5));
+  const cacheWriteCost = (cacheWrite / 1_000_000) * (meta.estimatedCacheWriteCostPerMillion ?? 0);
+  const outputCost = (effectiveCompletionTokens / 1_000_000) * meta.estimatedOutputCostPerMillion;
+
+  return parseFloat((inputCost + cachedCost + cacheWriteCost + outputCost).toFixed(6));
 }

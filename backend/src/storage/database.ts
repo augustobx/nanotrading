@@ -250,6 +250,21 @@ export class DatabaseService {
         updated_at INTEGER NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS hard_budget_config (
+        id TEXT PRIMARY KEY,
+        daily_budget_limit_usd REAL NOT NULL,
+        monthly_budget_limit_usd REAL NOT NULL,
+        max_cost_per_request_usd REAL NOT NULL,
+        provider_limits_json TEXT,
+        model_limits_json TEXT,
+        task_limits_json TEXT,
+        alert_thresholds_json TEXT,
+        auto_reset_period INTEGER NOT NULL,
+        is_blocked INTEGER NOT NULL,
+        blocked_reason TEXT,
+        updated_at INTEGER NOT NULL
+      );
+
       CREATE TABLE IF NOT EXISTS ai_consumption_logs (
         id TEXT PRIMARY KEY,
         timestamp INTEGER NOT NULL,
@@ -1109,6 +1124,66 @@ export class DatabaseService {
       const row = this.db.prepare("SELECT * FROM ai_router_config WHERE id = 'primary_router_config'").get() as any;
       if (!row) return null;
       return JSON.parse(row.config_json);
+    } catch {
+      return null;
+    }
+  }
+
+  public saveHardBudgetConfig(config: any): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO hard_budget_config (id, daily_budget_limit_usd, monthly_budget_limit_usd, max_cost_per_request_usd, provider_limits_json, model_limits_json, task_limits_json, alert_thresholds_json, auto_reset_period, is_blocked, blocked_reason, updated_at)
+        VALUES ('primary_hard_budget', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          daily_budget_limit_usd = excluded.daily_budget_limit_usd,
+          monthly_budget_limit_usd = excluded.monthly_budget_limit_usd,
+          max_cost_per_request_usd = excluded.max_cost_per_request_usd,
+          provider_limits_json = excluded.provider_limits_json,
+          model_limits_json = excluded.model_limits_json,
+          task_limits_json = excluded.task_limits_json,
+          alert_thresholds_json = excluded.alert_thresholds_json,
+          auto_reset_period = excluded.auto_reset_period,
+          is_blocked = excluded.is_blocked,
+          blocked_reason = excluded.blocked_reason,
+          updated_at = excluded.updated_at
+      `).run(
+        config.dailyBudgetLimitUsd,
+        config.monthlyBudgetLimitUsd,
+        config.maxCostPerRequestUsd,
+        JSON.stringify(config.providerLimitsUsd || {}),
+        JSON.stringify(config.modelLimitsUsd || {}),
+        JSON.stringify(config.taskLimitsUsd || {}),
+        JSON.stringify(config.alertThresholdsPercent || [50, 80, 95, 100]),
+        config.autoResetPeriod ? 1 : 0,
+        config.isBlocked ? 1 : 0,
+        config.blockedReason || null,
+        config.updatedAt || Date.now()
+      );
+    } catch (err: any) {
+      console.error('[DatabaseService] Error guardando hard_budget_config:', err?.message || err);
+      throw err;
+    }
+  }
+
+  public getHardBudgetConfig(): any | null {
+    if (this.isClosed) return null;
+    try {
+      const row = this.db.prepare("SELECT * FROM hard_budget_config WHERE id = 'primary_hard_budget'").get() as any;
+      if (!row) return null;
+      return {
+        dailyBudgetLimitUsd: Number(row.daily_budget_limit_usd),
+        monthlyBudgetLimitUsd: Number(row.monthly_budget_limit_usd),
+        maxCostPerRequestUsd: Number(row.max_cost_per_request_usd),
+        providerLimitsUsd: JSON.parse(row.provider_limits_json || '{}'),
+        modelLimitsUsd: JSON.parse(row.model_limits_json || '{}'),
+        taskLimitsUsd: JSON.parse(row.task_limits_json || '{}'),
+        alertThresholdsPercent: JSON.parse(row.alert_thresholds_json || '[50, 80, 95, 100]'),
+        autoResetPeriod: row.auto_reset_period === 1,
+        isBlocked: row.is_blocked === 1,
+        blockedReason: row.blocked_reason,
+        updatedAt: Number(row.updated_at),
+      };
     } catch {
       return null;
     }

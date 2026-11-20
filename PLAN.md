@@ -165,3 +165,32 @@
   - Barra superior de resumen en tiempo real: Modo de Router, Presupuesto consumido/límite, Riesgo máximo, Techo de SL y estado del Kill Switch.
 - [x] **Cobertura de Pruebas Automatizadas**:
   - 72 pruebas unitarias pasando al 100% (incluyendo 8 pruebas exhaustivas de cifrado, login timing-safe, rate limiting, techos de SL, calculadora interactiva, rechazo de permisos de trading en Bybit, routing multimodelo y agregación de consumo).
+
+---
+
+## [Fase 4.6] — Hard Budget Limit Estricto & GPT-6 Luna [COMPLETADA]
+- [x] **Modelo Oficial OpenAI GPT-6 Luna (`models-catalog.ts`, `openai-adapter.ts`)**:
+  - Incorporado al catálogo con status `ACTIVE` y tarifas oficiales: Entrada: US\$0,10/1M, Caché entrada: US\$0,01/1M, Escritura de caché: US\$0,125/1M, Salida: US\$0,50/1M.
+  - Soporte para selector de esfuerzo de razonamiento (`low`, `medium`, `high`).
+  - Cómputo exacto de tokens internos de razonamiento dentro de los tokens facturables de salida.
+  - Compatibilidad confirmada con Responses API y JSON estructurado para consenso.
+- [x] **Sistema de Control de Presupuesto Duro (`HardBudgetManager`)**:
+  - Límites económicos estrictos persistentes: Presupuesto diario global (\$0,50 USD por defecto), Presupuesto mensual global (\$10,00 USD por defecto), Costo máximo individual por petición (\$0,05 USD).
+  - Reservas presupuestarias atómicas previas a la inferencia (`preCallReservation`) con cálculo del peor escenario.
+  - Conciliación atómica posterior (`reconcileReservation`) con recálculo exacto del gasto real y liberación de remanentes.
+  - Recuperación y expiración automática de reservas huérfanas en reinicio.
+  - Alertas automáticas y deduplicadas enviadas sin consumo de tokens de IA en umbrales de 50%, 80%, 95% y 100% (Telegram, Web Push y Dashboard).
+- [x] **Mecanismo de Hard Stop Inviolable (`AI_BUDGET_EXCEEDED`)**:
+  - Transición inmediata del motor de consenso al estado `AI_BUDGET_EXCEEDED` ante agotamiento del presupuesto.
+  - Separación total entre límite económico y fallas técnicas.
+  - Las llamadas pagas se bloquean al 100%, preservando sin interrupción la captura de Bybit WebSocket, klines, libro de órdenes, indicadores técnicos, detección de setups y monitoreo de señales activas.
+  - Reactivación administrativa manual mediante endpoint seguro `POST /api/v1/config/budget/reactivate`.
+- [x] **Persistencia en Base de Datos & Endpoints REST**:
+  - Tabla `hard_budget_config` en SQLite y PostgreSQL con soporte versionado y auditoría.
+  - Endpoints implementados: `GET /api/v1/config/budget`, `POST /api/v1/config/budget`, `POST /api/v1/config/budget/reactivate`.
+- [x] **Corrección de Conexión en Memoria de Adaptadores IA**:
+  - Métodos `updateCredentials` en `OpenAiAdapter` y `GeminiAdapter` y `updateAiCredentials` en `ConsensusEngine`.
+  - Carga automática y descifrado de claves guardadas en arranque y aplicación en caliente al guardar en Centro de Configuración.
+  - Dashboard muestra estado `DUAL_AI` (`AVAILABLE` / `DISPONIBLE`) en OpenAI y Gemini en tiempo real.
+- [x] **Pruebas Automatizadas**:
+  - 79 pruebas unitarias pasando al 100% (7 nuevas pruebas dedicadas a GPT-6 Luna, reservas atómicas, hard stop y reactivación).
