@@ -8,7 +8,12 @@ export type AiTaskType =
   | 'RISK_AUDIT'
   | 'CONSENSUS_REVIEW'
   | 'ALERT_EXPLANATION'
-  | 'POST_TRADE_ANALYSIS';
+  | 'POST_TRADE_ANALYSIS'
+  | 'MARKET_DISCOVERY'
+  | 'SCENARIO_GENERATION'
+  | 'SCENARIO_REVALIDATION'
+  | 'ENTRY_CONFIRMATION'
+  | 'POST_SIGNAL_REVIEW';
 
 export type RouterSelectionMode = 'AUTOMATIC' | 'MANUAL_GLOBAL' | 'MANUAL_BY_TASK' | 'HYBRID';
 
@@ -84,6 +89,11 @@ export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
     MARKET_SUMMARY: { openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.0-flash' },
     TECHNICAL_CONTEXT: { openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.0-flash' },
     POST_TRADE_ANALYSIS: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.5-pro' },
+    MARKET_DISCOVERY: { openaiModel: 'gpt-6-luna', geminiModel: 'gemini-2.0-flash' },
+    SCENARIO_GENERATION: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.0-flash' },
+    SCENARIO_REVALIDATION: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.5-flash' },
+    ENTRY_CONFIRMATION: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.0-flash' },
+    POST_SIGNAL_REVIEW: { openaiModel: 'gpt-5.4-mini', geminiModel: 'gemini-2.0-flash' },
   },
   dailyBudgetLimitUsd: 5.0,
   monthlyBudgetLimitUsd: 50.0,
@@ -217,9 +227,15 @@ export class AiModelRouter {
     catalog: any[],
     freeTier?: FreeTierRouterContext
   ): { model: string; reason: string } {
-    // High reasoning tasks: SETUP_EVALUATION, RISK_AUDIT, CONSENSUS_REVIEW
+    // High reasoning tasks: SETUP_EVALUATION, RISK_AUDIT, CONSENSUS_REVIEW, MARKET_DISCOVERY, SCENARIO_REVALIDATION
     const isCriticalEvaluation =
-      task === 'SETUP_EVALUATION' || task === 'RISK_AUDIT' || task === 'CONSENSUS_REVIEW' || task === 'POST_TRADE_ANALYSIS';
+      task === 'SETUP_EVALUATION' ||
+      task === 'RISK_AUDIT' ||
+      task === 'CONSENSUS_REVIEW' ||
+      task === 'POST_TRADE_ANALYSIS' ||
+      task === 'MARKET_DISCOVERY' ||
+      task === 'SCENARIO_REVALIDATION' ||
+      task === 'ENTRY_CONFIRMATION';
 
     // Fast/lightweight tasks: ALERT_EXPLANATION, MARKET_SUMMARY, TECHNICAL_CONTEXT
     const isLightweight =

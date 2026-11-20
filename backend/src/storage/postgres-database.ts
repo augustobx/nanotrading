@@ -1,6 +1,7 @@
 import pg from 'pg';
 import { Candle, Timeframe } from '../types/market.js';
 import { config } from '../config/index.js';
+import { Scenario, ScenarioLifecycleEvent, ScenarioRevalidationRecord, ScenarioStatus } from '../ai/scenario-types.js';
 
 const { Pool } = pg;
 
@@ -281,6 +282,65 @@ export class PostgresDatabaseService {
 
         CREATE INDEX IF NOT EXISTS idx_pg_sessions_expires 
         ON admin_sessions(expires_at);
+
+        CREATE TABLE IF NOT EXISTS scenarios (
+          id VARCHAR(64) PRIMARY KEY,
+          symbol VARCHAR(20) NOT NULL,
+          direction VARCHAR(10) NOT NULL,
+          timeframe VARCHAR(10) NOT NULL,
+          structure_type VARCHAR(50) NOT NULL,
+          proposed_by VARCHAR(30) NOT NULL,
+          models_used JSONB NOT NULL,
+          snapshot_id VARCHAR(64) NOT NULL,
+          discovery_timestamp BIGINT NOT NULL,
+          entry_zone_min DOUBLE PRECISION NOT NULL,
+          entry_zone_max DOUBLE PRECISION NOT NULL,
+          target_entry DOUBLE PRECISION NOT NULL,
+          stop_loss_price DOUBLE PRECISION NOT NULL,
+          target_12_price DOUBLE PRECISION,
+          target_14_price DOUBLE PRECISION,
+          net_rr_12 DOUBLE PRECISION,
+          net_rr_14 DOUBLE PRECISION,
+          rr_mode_available VARCHAR(20) NOT NULL,
+          uncertainty_level VARCHAR(20) NOT NULL,
+          status VARCHAR(30) NOT NULL,
+          rejection_reason TEXT,
+          valid_until_timestamp BIGINT NOT NULL,
+          ai_cost_usd DOUBLE PRECISION DEFAULT 0,
+          payload_json JSONB NOT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pg_scenarios_status 
+        ON scenarios(status, discovery_timestamp DESC);
+
+        CREATE TABLE IF NOT EXISTS scenario_lifecycle (
+          id SERIAL PRIMARY KEY,
+          scenario_id VARCHAR(64) NOT NULL,
+          from_status VARCHAR(30) NOT NULL,
+          to_status VARCHAR(30) NOT NULL,
+          timestamp BIGINT NOT NULL,
+          reason TEXT,
+          metadata_json JSONB
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pg_scen_life_id 
+        ON scenario_lifecycle(scenario_id, timestamp ASC);
+
+        CREATE TABLE IF NOT EXISTS scenario_revalidations (
+          id VARCHAR(64) PRIMARY KEY,
+          scenario_id VARCHAR(64) NOT NULL,
+          timestamp BIGINT NOT NULL,
+          openai_verdict VARCHAR(20),
+          gemini_verdict VARCHAR(20),
+          consensus_verdict VARCHAR(30) NOT NULL,
+          price_at_revalidation DOUBLE PRECISION NOT NULL,
+          details_json JSONB NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pg_scen_reval_id 
+        ON scenario_revalidations(scenario_id, timestamp DESC);
 
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS simulated_entry_time BIGINT;
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS exit_time BIGINT;
@@ -1248,6 +1308,237 @@ export class PostgresDatabaseService {
 
   public async deleteAdminSession(token: string): Promise<void> {
     await this.pool.query('DELETE FROM admin_sessions WHERE token = $1', [token]);
+  }
+
+  public async saveScenario(scenario: Scenario): Promise<void> {
+    const now = Date.now();
+    const payload = {
+      activationConditions: scenario.activationConditions || [],
+      invalidationTriggers: scenario.invalidationTriggers || [],
+      argumentsFor: scenario.argumentsFor || [],
+      argumentsAgainst: scenario.argumentsAgainst || [],
+      openaiInterpretation: scenario.openaiInterpretation,
+      geminiInterpretation: scenario.geminiInterpretation,
+      distanceToZonePct: scenario.distanceToZonePct,
+      currentPrice: scenario.currentPrice,
+      lastCheckedTimestamp: scenario.lastCheckedTimestamp,
+      isSimulated: scenario.isSimulated,
+    };
+    const query = `
+      INSERT INTO scenarios (
+        id, symbol, direction, timeframe, structure_type, proposed_by, models_used,
+        snapshot_id, discovery_timestamp, entry_zone_min, entry_zone_max, target_entry,
+        stop_loss_price, target_12_price, target_14_price, net_rr_12, net_rr_14,
+        rr_mode_available, uncertainty_level, status, rejection_reason,
+        valid_until_timestamp, ai_cost_usd, payload_json, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+      ON CONFLICT(id) DO UPDATE SET
+        status = EXCLUDED.status,
+        rejection_reason = EXCLUDED.rejection_reason,
+        target_12_price = EXCLUDED.target_12_price,
+        target_14_price = EXCLUDED.target_14_price,
+        net_rr_12 = EXCLUDED.net_rr_12,
+        net_rr_14 = EXCLUDED.net_rr_14,
+        rr_mode_available = EXCLUDED.rr_mode_available,
+        ai_cost_usd = EXCLUDED.ai_cost_usd,
+        payload_json = EXCLUDED.payload_json,
+        updated_at = EXCLUDED.updated_at
+    `;
+    await this.pool.query(query, [
+      scenario.id,
+      scenario.symbol,
+      scenario.direction,
+      scenario.timeframe,
+      scenario.structureType,
+      scenario.proposedBy,
+      JSON.stringify(scenario.modelsUsed || []),
+      scenario.snapshotId,
+      scenario.discoveryTimestamp,
+      scenario.entryZoneMin,
+      scenario.entryZoneMax,
+      scenario.targetEntry,
+      scenario.stopLossPrice,
+      scenario.target12Price ?? null,
+      scenario.target14Price ?? null,
+      scenario.netRR12 ?? null,
+      scenario.netRR14 ?? null,
+      scenario.rrModeAvailable,
+      scenario.uncertaintyLevel,
+      scenario.status,
+      scenario.rejectionReason ?? null,
+      scenario.validUntilTimestamp,
+      scenario.aiCostUsd ?? 0,
+      JSON.stringify(payload),
+      scenario.createdAt || now,
+      scenario.updatedAt || now,
+    ]);
+  }
+
+  public async getScenarios(options?: { status?: ScenarioStatus | ScenarioStatus[]; limit?: number }): Promise<Scenario[]> {
+    try {
+      let query = 'SELECT * FROM scenarios';
+      const params: any[] = [];
+      if (options?.status) {
+        if (Array.isArray(options.status)) {
+          const placeholders = options.status.map((_, i) => `$${i + 1}`).join(',');
+          query += ` WHERE status IN (${placeholders})`;
+          params.push(...options.status);
+        } else {
+          query += ' WHERE status = $1';
+          params.push(options.status);
+        }
+      }
+      query += ' ORDER BY discovery_timestamp DESC';
+      if (options?.limit) {
+        query += ` LIMIT $${params.length + 1}`;
+        params.push(options.limit);
+      }
+      const res = await this.pool.query(query, params);
+      return res.rows.map((r) => this.mapScenarioRow(r));
+    } catch {
+      return [];
+    }
+  }
+
+  public async getScenarioById(id: string): Promise<Scenario | null> {
+    try {
+      const res = await this.pool.query('SELECT * FROM scenarios WHERE id = $1', [id]);
+      if (res.rows.length === 0) return null;
+      return this.mapScenarioRow(res.rows[0]);
+    } catch {
+      return null;
+    }
+  }
+
+  public async updateScenarioStatus(id: string, status: ScenarioStatus, reason?: string, updates?: Partial<Scenario>): Promise<void> {
+    try {
+      const existing = await this.getScenarioById(id);
+      if (!existing) return;
+      const merged: Scenario = {
+        ...existing,
+        ...updates,
+        status,
+        rejectionReason: reason ?? updates?.rejectionReason ?? existing.rejectionReason,
+        updatedAt: Date.now(),
+      };
+      await this.saveScenario(merged);
+    } catch {}
+  }
+
+  public async logScenarioLifecycle(event: ScenarioLifecycleEvent): Promise<void> {
+    try {
+      await this.pool.query(`
+        INSERT INTO scenario_lifecycle (scenario_id, from_status, to_status, timestamp, reason, metadata_json)
+        VALUES ($1, $2, $3, $4, $5, $6)
+      `, [
+        event.scenarioId,
+        event.fromStatus,
+        event.toStatus,
+        event.timestamp || Date.now(),
+        event.reason ?? null,
+        event.metadata ? JSON.stringify(event.metadata) : null,
+      ]);
+    } catch {}
+  }
+
+  public async getScenarioLifecycle(scenarioId: string): Promise<ScenarioLifecycleEvent[]> {
+    try {
+      const res = await this.pool.query('SELECT * FROM scenario_lifecycle WHERE scenario_id = $1 ORDER BY timestamp ASC', [scenarioId]);
+      return res.rows.map((r) => ({
+        id: Number(r.id),
+        scenarioId: r.scenario_id,
+        fromStatus: r.from_status,
+        toStatus: r.to_status,
+        timestamp: Number(r.timestamp),
+        reason: r.reason,
+        metadata: typeof r.metadata_json === 'string' ? JSON.parse(r.metadata_json) : r.metadata_json,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  public async saveScenarioRevalidation(record: ScenarioRevalidationRecord): Promise<void> {
+    try {
+      await this.pool.query(`
+        INSERT INTO scenario_revalidations (id, scenario_id, timestamp, openai_verdict, gemini_verdict, consensus_verdict, price_at_revalidation, details_json)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        ON CONFLICT(id) DO UPDATE SET
+          consensus_verdict = EXCLUDED.consensus_verdict,
+          price_at_revalidation = EXCLUDED.price_at_revalidation,
+          details_json = EXCLUDED.details_json
+      `, [
+        record.id,
+        record.scenarioId,
+        record.timestamp,
+        record.openaiVerdict ?? null,
+        record.geminiVerdict ?? null,
+        record.consensusVerdict,
+        record.priceAtRevalidation,
+        JSON.stringify(record.details || {}),
+      ]);
+    } catch {}
+  }
+
+  public async getScenarioRevalidations(scenarioId: string): Promise<ScenarioRevalidationRecord[]> {
+    try {
+      const res = await this.pool.query('SELECT * FROM scenario_revalidations WHERE scenario_id = $1 ORDER BY timestamp DESC', [scenarioId]);
+      return res.rows.map((r) => ({
+        id: r.id,
+        scenarioId: r.scenario_id,
+        timestamp: Number(r.timestamp),
+        openaiVerdict: r.openai_verdict,
+        geminiVerdict: r.gemini_verdict,
+        consensusVerdict: r.consensus_verdict,
+        priceAtRevalidation: Number(r.price_at_revalidation),
+        details: typeof r.details_json === 'string' ? JSON.parse(r.details_json) : r.details_json,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  private mapScenarioRow(r: any): Scenario {
+    const payload = typeof r.payload_json === 'string' ? JSON.parse(r.payload_json) : (r.payload_json || {});
+    const modelsUsed = typeof r.models_used === 'string' ? JSON.parse(r.models_used) : (r.models_used || []);
+
+    return {
+      id: r.id,
+      symbol: r.symbol,
+      direction: r.direction,
+      timeframe: r.timeframe,
+      structureType: r.structure_type,
+      proposedBy: r.proposed_by,
+      modelsUsed,
+      snapshotId: r.snapshot_id,
+      discoveryTimestamp: Number(r.discovery_timestamp),
+      entryZoneMin: Number(r.entry_zone_min),
+      entryZoneMax: Number(r.entry_zone_max),
+      targetEntry: Number(r.target_entry),
+      stopLossPrice: Number(r.stop_loss_price),
+      target12Price: r.target_12_price !== null && r.target_12_price !== undefined ? Number(r.target_12_price) : undefined,
+      target14Price: r.target_14_price !== null && r.target_14_price !== undefined ? Number(r.target_14_price) : undefined,
+      netRR12: r.net_rr_12 !== null && r.net_rr_12 !== undefined ? Number(r.net_rr_12) : undefined,
+      netRR14: r.net_rr_14 !== null && r.net_rr_14 !== undefined ? Number(r.net_rr_14) : undefined,
+      rrModeAvailable: r.rr_mode_available,
+      uncertaintyLevel: r.uncertainty_level,
+      status: r.status,
+      rejectionReason: r.rejection_reason || undefined,
+      validUntilTimestamp: Number(r.valid_until_timestamp),
+      aiCostUsd: Number(r.ai_cost_usd || 0),
+      activationConditions: payload.activationConditions || [],
+      invalidationTriggers: payload.invalidationTriggers || [],
+      argumentsFor: payload.argumentsFor || [],
+      argumentsAgainst: payload.argumentsAgainst || [],
+      openaiInterpretation: payload.openaiInterpretation,
+      geminiInterpretation: payload.geminiInterpretation,
+      distanceToZonePct: payload.distanceToZonePct,
+      currentPrice: payload.currentPrice,
+      lastCheckedTimestamp: payload.lastCheckedTimestamp,
+      isSimulated: payload.isSimulated,
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+    };
   }
 
   public async close(): Promise<void> {

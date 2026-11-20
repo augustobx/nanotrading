@@ -25,6 +25,10 @@ import { AiModelRouter } from '../ai/router/ai-router.js';
 import { HardBudgetManager } from '../ai/hard-budget-manager.js';
 import { decryptSecret } from '../security/encryption.js';
 import { config } from '../config/index.js';
+import { ScenarioRegistry } from '../engine/scenario-registry.js';
+import { AiMarketDiscoveryEngine } from '../ai/ai-market-discovery.js';
+import { AlgorithmicWatcher } from '../engine/algorithmic-watcher.js';
+import { AiEntryRevalidation } from '../ai/ai-revalidation.js';
 
 export class MarketCoordinator extends EventEmitter {
   private restClient: BybitRestClient;
@@ -40,6 +44,10 @@ export class MarketCoordinator extends EventEmitter {
   private riskPolicyManager: RiskPolicyManager;
   private bybitCredentialsManager: BybitCredentialsManager;
   private aiRouter: AiModelRouter;
+  private scenarioRegistry: ScenarioRegistry;
+  private aiDiscoveryEngine: AiMarketDiscoveryEngine;
+  private algorithmicWatcher: AlgorithmicWatcher;
+  private aiRevalidation: AiEntryRevalidation;
   private db: DatabaseService;
   private symbol: string;
   private instrumentInfo: InstrumentInfo | null = null;
@@ -118,6 +126,32 @@ export class MarketCoordinator extends EventEmitter {
       telegramNotifier: this.telegramNotifier,
       webPushNotifier: this.webPushNotifier,
       db: this.db,
+    });
+
+    this.scenarioRegistry = new ScenarioRegistry(this.db);
+    this.aiDiscoveryEngine = new AiMarketDiscoveryEngine({
+      coordinator: this,
+      openaiAdapter: this.consensusEngine.getOpenAiAdapter(),
+      geminiAdapter: this.consensusEngine.getGeminiAdapter(),
+      hardBudgetManager,
+      scenarioRegistry: this.scenarioRegistry,
+      db: this.db,
+    });
+    this.algorithmicWatcher = new AlgorithmicWatcher(
+      this,
+      this.scenarioRegistry,
+      this.telegramNotifier,
+      this.webPushNotifier
+    );
+    this.aiRevalidation = new AiEntryRevalidation({
+      coordinator: this,
+      openaiAdapter: this.consensusEngine.getOpenAiAdapter(),
+      geminiAdapter: this.consensusEngine.getGeminiAdapter(),
+      hardBudgetManager,
+      scenarioRegistry: this.scenarioRegistry,
+      db: this.db,
+      telegramNotifier: this.telegramNotifier,
+      webPushNotifier: this.webPushNotifier,
     });
 
     this.setupListeners();
@@ -216,6 +250,24 @@ export class MarketCoordinator extends EventEmitter {
     this.signalStateMachine.on('metrics_updated', (signal) => {
       this.emit('signal_metrics_updated', signal);
     });
+
+    // Wire Algorithmic Watcher & Scenario Events
+    this.algorithmicWatcher.on('revalidation_requested', async ({ scenario, currentPrice }) => {
+      try {
+        await this.aiRevalidation.revalidate(scenario, currentPrice);
+      } catch (err: any) {
+        if (!this.isStopped) {
+          this.db.logEvent('ERROR', 'AIRevalidation', err.message);
+        }
+      }
+    });
+
+    this.scenarioRegistry.on('scenario_registered', (sc) => this.emit('scenario_registered', sc));
+    this.scenarioRegistry.on('scenario_status_changed', (evt) => this.emit('scenario_status_changed', evt));
+    this.scenarioRegistry.on('scenario_updated', (sc) => this.emit('scenario_updated', sc));
+    this.algorithmicWatcher.on('scenario_approaching', (evt) => this.emit('scenario_approaching', evt));
+    this.aiRevalidation.on('entry_validated', (evt) => this.emit('scenario_entry_validated', evt));
+    this.aiDiscoveryEngine.on('discovery_completed', (evt) => this.emit('discovery_completed', evt));
   }
 
   public async bootstrap(): Promise<void> {
@@ -256,8 +308,9 @@ export class MarketCoordinator extends EventEmitter {
       // 6. Run quantitative setup engine analysis across loaded candles
       this.setupEngine.runFullAnalysis(this.currentTicker?.spread || 0.1);
 
-      // 7. Start 24/7 background monitor worker
+      // 7. Start 24/7 background monitor worker & Algorithmic Watcher
       this.marketMonitorWorker.start();
+      this.algorithmicWatcher.start();
 
       // 8. Start periodic audit snapshot timer (every 60s)
       this.startSnapshotTimer();
@@ -384,6 +437,14 @@ export class MarketCoordinator extends EventEmitter {
     return this.candleManager.getCandles(timeframe, count);
   }
 
+  public getCandleManager(): CandleManager {
+    return this.candleManager;
+  }
+
+  public getSetupEngine(): SetupEngine {
+    return this.setupEngine;
+  }
+
   public getInstrumentInfo(): InstrumentInfo | null {
     return this.instrumentInfo;
   }
@@ -432,6 +493,22 @@ export class MarketCoordinator extends EventEmitter {
     return this.consensusEngine.getHardBudgetManager();
   }
 
+  public getScenarioRegistry(): ScenarioRegistry {
+    return this.scenarioRegistry;
+  }
+
+  public getAiDiscoveryEngine(): AiMarketDiscoveryEngine {
+    return this.aiDiscoveryEngine;
+  }
+
+  public getAlgorithmicWatcher(): AlgorithmicWatcher {
+    return this.algorithmicWatcher;
+  }
+
+  public getAiRevalidation(): AiEntryRevalidation {
+    return this.aiRevalidation;
+  }
+
   public setKillSwitch(active: boolean, reason?: string): void {
     config.security.killSwitchActive = active;
     this.db.logEvent('WARN', 'Security', `Kill Switch ${active ? 'ACTIVATED' : 'DEACTIVATED'}: ${reason || 'Acción administrativa'}`);
@@ -447,6 +524,7 @@ export class MarketCoordinator extends EventEmitter {
   public stop(): void {
     this.isStopped = true;
     this.marketMonitorWorker.stop();
+    this.algorithmicWatcher.stop();
     if (this.snapshotIntervalTimer) {
       clearInterval(this.snapshotIntervalTimer);
       this.snapshotIntervalTimer = null;

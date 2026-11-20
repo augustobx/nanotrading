@@ -952,6 +952,10 @@ export class HardBudgetManager {
     }
   }
 
+  public blockBudget(reason: string): void {
+    this.triggerBlock(reason);
+  }
+
   private triggerBlock(reason: string): void {
     this.config.isBlocked = true;
     this.config.blockedReason = reason;

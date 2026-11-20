@@ -49,6 +49,19 @@ export interface RiskCalculationResult {
   rejectionReason?: string;
 }
 
+export interface DualRiskRewardResult {
+  direction: 'LONG' | 'SHORT';
+  entryPrice: number;
+  stopLossPrice: number;
+  target12Price?: number;
+  target14Price?: number;
+  calculation12?: RiskCalculationResult;
+  calculation14?: RiskCalculationResult;
+  qualifiedMode: 'RR_1_2' | 'RR_1_4' | 'RR_BOTH' | 'NONE';
+  rejectionReason?: string;
+  notes: string[];
+}
+
 export class RiskCalculator {
   public static roundToTick(price: number, tickSize: number = 0.1): number {
     return parseFloat((Math.round(price / tickSize) * tickSize).toFixed(2));
@@ -246,6 +259,170 @@ export class RiskCalculator {
       ...baseResult,
       slDistanceUsdt: parseFloat(slDistanceUsdt.toFixed(2)),
       slDistancePercent: parseFloat(slDistancePercent.toFixed(2)),
+    };
+  }
+
+  /**
+   * Evaluates a setup against both 1:2 and 1:4 Risk/Reward targets using real structural levels.
+   * "La distancia del objetivo NO debe calcularse arbitrariamente para obtener un ratio deseado.
+   *  Primero:
+   *  1. Encontrar entrada válida.
+   *  2. Determinar Stop Loss estructural.
+   *  3. Identificar objetivos técnicos reales.
+   *  4. Calcular costos.
+   *  5. Verificar el R:R neto.
+   *  6. Clasificar la oportunidad."
+   */
+  public static calculateDualTargets(params: {
+    direction: 'LONG' | 'SHORT';
+    entryPrice: number;
+    stopLossPrice: number;
+    candidateTargets: number[];
+    explicit12Price?: number;
+    explicit14Price?: number;
+    accountBalance?: number;
+    riskPercent?: number;
+    tickSize?: number;
+    qtyStep?: number;
+    spread?: number;
+    slippageRate?: number;
+    feeStructure?: FeeStructure;
+    minRRShort?: number; // default 2.0
+    minRRExtended?: number; // default 4.0
+  }): DualRiskRewardResult {
+    const {
+      direction,
+      entryPrice,
+      stopLossPrice,
+      candidateTargets,
+      explicit12Price,
+      explicit14Price,
+      accountBalance = 10000,
+      riskPercent = 0.5,
+      tickSize = 0.1,
+      qtyStep = 0.001,
+      spread = 0.1,
+      slippageRate = 0.0002,
+      feeStructure,
+      minRRShort = 2.0,
+      minRRExtended = 4.0,
+    } = params;
+
+    const notes: string[] = [];
+
+    // Filter candidate targets by direction
+    const validTargets = (candidateTargets || []).filter((tp) =>
+      direction === 'LONG' ? tp > entryPrice : tp < entryPrice
+    );
+
+    // Calculate all possible targets with exact net R:R
+    const evaluatedTargets = validTargets.map((tp) => {
+      const res = this.calculate({
+        direction,
+        entryPrice,
+        stopLossPrice,
+        takeProfitPrice: tp,
+        accountBalance,
+        riskPercent,
+        tickSize,
+        qtyStep,
+        spread,
+        slippageRate,
+        feeStructure,
+        minRequiredRR: 0, // calculate raw net RR
+      });
+      return { price: tp, result: res };
+    });
+
+    // Check 1:2 target
+    let target12Price = explicit12Price;
+    let calculation12: RiskCalculationResult | undefined;
+
+    if (target12Price) {
+      calculation12 = this.calculate({
+        direction,
+        entryPrice,
+        stopLossPrice,
+        takeProfitPrice: target12Price,
+        accountBalance,
+        riskPercent,
+        tickSize,
+        qtyStep,
+        spread,
+        slippageRate,
+        feeStructure,
+        minRequiredRR: minRRShort,
+      });
+    } else {
+      // Find the closest structural level that achieves at least minRRShort
+      const match12 = evaluatedTargets
+        .filter((t) => t.result.isValid && t.result.netRR >= minRRShort)
+        .sort((a, b) => a.result.netRR - b.result.netRR)[0];
+      if (match12) {
+        target12Price = match12.price;
+        calculation12 = match12.result;
+      }
+    }
+
+    // Check 1:4 target
+    let target14Price = explicit14Price;
+    let calculation14: RiskCalculationResult | undefined;
+
+    if (target14Price) {
+      calculation14 = this.calculate({
+        direction,
+        entryPrice,
+        stopLossPrice,
+        takeProfitPrice: target14Price,
+        accountBalance,
+        riskPercent,
+        tickSize,
+        qtyStep,
+        spread,
+        slippageRate,
+        feeStructure,
+        minRequiredRR: minRRExtended,
+      });
+    } else {
+      // Find the structural level that achieves at least minRRExtended
+      const match14 = evaluatedTargets
+        .filter((t) => t.result.isValid && t.result.netRR >= minRRExtended)
+        .sort((a, b) => a.result.netRR - b.result.netRR)[0];
+      if (match14) {
+        target14Price = match14.price;
+        calculation14 = match14.result;
+      }
+    }
+
+    const is12Qualified = !!calculation12 && calculation12.isValid && calculation12.netRR >= minRRShort;
+    const is14Qualified = !!calculation14 && calculation14.isValid && calculation14.netRR >= minRRExtended;
+
+    let qualifiedMode: 'RR_1_2' | 'RR_1_4' | 'RR_BOTH' | 'NONE' = 'NONE';
+    if (is12Qualified && is14Qualified) {
+      qualifiedMode = 'RR_BOTH';
+      notes.push(`Oportunidad con recorrido estructural amplio: califica para 1:2 (Net R:R ${calculation12?.netRR.toFixed(2)}) y 1:4 (Net R:R ${calculation14?.netRR.toFixed(2)})`);
+    } else if (is14Qualified) {
+      qualifiedMode = 'RR_1_4';
+      notes.push(`Califica para 1:4 extendido (Net R:R ${calculation14?.netRR.toFixed(2)})`);
+    } else if (is12Qualified) {
+      qualifiedMode = 'RR_1_2';
+      notes.push(`Califica exclusivamente para 1:2 corto (Net R:R ${calculation12?.netRR.toFixed(2)}), sin recorrido verificado hasta 1:4`);
+    } else {
+      qualifiedMode = 'NONE';
+      notes.push('No califica: ningún nivel estructural técnico alcanza el ratio beneficio/riesgo neto mínimo');
+    }
+
+    return {
+      direction,
+      entryPrice,
+      stopLossPrice,
+      target12Price,
+      target14Price,
+      calculation12,
+      calculation14,
+      qualifiedMode,
+      rejectionReason: qualifiedMode === 'NONE' ? notes[0] : undefined,
+      notes,
     };
   }
 

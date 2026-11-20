@@ -241,6 +241,45 @@ Responde obligatoriamente en JSON estricto.`;
     }
   }
 
+  public async evaluateWithCustomPrompt(prompt: string): Promise<any> {
+    if (!this.apiKey) return null;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: 'application/json',
+          },
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) return null;
+      const data: any = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) return null;
+      const parsed = JSON.parse(text);
+      const usage = data.usageMetadata || {};
+      const promptTokens = usage.promptTokenCount || 0;
+      const completionTokens = usage.candidatesTokenCount || 0;
+      const costUsd = calculateCallCost(this.model, promptTokens, completionTokens);
+      return { ...parsed, costUsd, promptTokens, completionTokens };
+    } catch {
+      clearTimeout(timeoutId);
+      return null;
+    }
+  }
+
+  public isConfigured(): boolean {
+    return !!this.apiKey;
+  }
+
   public getModel(): string {
     return this.model;
   }

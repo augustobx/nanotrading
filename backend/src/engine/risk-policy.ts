@@ -7,6 +7,8 @@ export interface SlCeilingOption {
   value: number;
 }
 
+export type RiskRewardTargetMode = 'RR_1_2' | 'RR_1_4' | 'RR_BOTH' | 'RR_PARTIAL';
+
 export interface RiskPolicyConfig {
   id?: string;
   version: number;
@@ -22,6 +24,10 @@ export interface RiskPolicyConfig {
   maxDailyEntries: number;
   maxConsecutiveLosses: number;
   minNetRR: number;
+  rrTargetMode: RiskRewardTargetMode;
+  minRRShort: number;
+  minRRExtended: number;
+  partialClosePercent: number;
   stopLossCeilings: {
     maxSlDistancePercent: SlCeilingOption;
     maxSlDistanceUsdt: SlCeilingOption;
@@ -54,6 +60,10 @@ export const DEFAULT_RISK_POLICY: RiskPolicyConfig = {
   maxDailyEntries: 5,
   maxConsecutiveLosses: 3,
   minNetRR: 4.0,
+  rrTargetMode: 'RR_BOTH',
+  minRRShort: 2.0,
+  minRRExtended: 4.0,
+  partialClosePercent: 50,
   stopLossCeilings: {
     maxSlDistancePercent: { enabled: true, value: 1.5 },
     maxSlDistanceUsdt: { enabled: true, value: 1000 },

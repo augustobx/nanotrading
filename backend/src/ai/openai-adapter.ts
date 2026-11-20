@@ -259,6 +259,49 @@ Reglas imperativas:
     }
   }
 
+  public async evaluateWithCustomPrompt(prompt: string): Promise<any> {
+    if (!this.apiKey) return null;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          messages: [
+            { role: 'system', content: 'Eres un analista de trading cuantitativo para NanoLabs. Responde estrictamente en JSON válido.' },
+            { role: 'user', content: prompt },
+          ],
+          response_format: { type: 'json_object' },
+          temperature: 0.1,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!response.ok) return null;
+      const data: any = await response.json();
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) return null;
+      const parsed = JSON.parse(content);
+      const usage = data.usage || {};
+      const promptTokens = usage.prompt_tokens || 0;
+      const completionTokens = usage.completion_tokens || 0;
+      const costUsd = calculateCallCost(this.model, promptTokens, completionTokens);
+      return { ...parsed, costUsd, promptTokens, completionTokens };
+    } catch {
+      clearTimeout(timeoutId);
+      return null;
+    }
+  }
+
+  public isConfigured(): boolean {
+    return !!this.apiKey;
+  }
+
   public getModel(): string {
     return this.model;
   }

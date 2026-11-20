@@ -3,6 +3,7 @@ import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import { Candle, Timeframe } from '../types/market.js';
 import { config } from '../config/index.js';
+import { Scenario, ScenarioLifecycleEvent, ScenarioRevalidationRecord, ScenarioStatus } from '../ai/scenario-types.js';
 
 export class DatabaseService {
   private db: DatabaseSync;
@@ -323,6 +324,65 @@ export class DatabaseService {
 
       CREATE INDEX IF NOT EXISTS idx_sessions_expires 
       ON admin_sessions(expires_at);
+
+      CREATE TABLE IF NOT EXISTS scenarios (
+        id TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        structure_type TEXT NOT NULL,
+        proposed_by TEXT NOT NULL,
+        models_used TEXT NOT NULL,
+        snapshot_id TEXT NOT NULL,
+        discovery_timestamp INTEGER NOT NULL,
+        entry_zone_min REAL NOT NULL,
+        entry_zone_max REAL NOT NULL,
+        target_entry REAL NOT NULL,
+        stop_loss_price REAL NOT NULL,
+        target_12_price REAL,
+        target_14_price REAL,
+        net_rr_12 REAL,
+        net_rr_14 REAL,
+        rr_mode_available TEXT NOT NULL,
+        uncertainty_level TEXT NOT NULL,
+        status TEXT NOT NULL,
+        rejection_reason TEXT,
+        valid_until_timestamp INTEGER NOT NULL,
+        ai_cost_usd REAL DEFAULT 0,
+        payload_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scenarios_status 
+      ON scenarios(status, discovery_timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS scenario_lifecycle (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        scenario_id TEXT NOT NULL,
+        from_status TEXT NOT NULL,
+        to_status TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        reason TEXT,
+        metadata_json TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scen_life_id 
+      ON scenario_lifecycle(scenario_id, timestamp ASC);
+
+      CREATE TABLE IF NOT EXISTS scenario_revalidations (
+        id TEXT PRIMARY KEY,
+        scenario_id TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        openai_verdict TEXT,
+        gemini_verdict TEXT,
+        consensus_verdict TEXT NOT NULL,
+        price_at_revalidation REAL NOT NULL,
+        details_json TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_scen_reval_id 
+      ON scenario_revalidations(scenario_id, timestamp DESC);
     `);
 
     // Signal columns migration for tracking metrics
@@ -1566,6 +1626,249 @@ export class DatabaseService {
     try {
       this.db.prepare('DELETE FROM admin_sessions WHERE expires_at < ?').run(Date.now());
     } catch {}
+  }
+
+  public saveScenario(scenario: Scenario): void {
+    if (this.isClosed) return;
+    const now = Date.now();
+    const payload = {
+      activationConditions: scenario.activationConditions || [],
+      invalidationTriggers: scenario.invalidationTriggers || [],
+      argumentsFor: scenario.argumentsFor || [],
+      argumentsAgainst: scenario.argumentsAgainst || [],
+      openaiInterpretation: scenario.openaiInterpretation,
+      geminiInterpretation: scenario.geminiInterpretation,
+      distanceToZonePct: scenario.distanceToZonePct,
+      currentPrice: scenario.currentPrice,
+      lastCheckedTimestamp: scenario.lastCheckedTimestamp,
+      isSimulated: scenario.isSimulated,
+    };
+    this.db.prepare(`
+      INSERT INTO scenarios (
+        id, symbol, direction, timeframe, structure_type, proposed_by, models_used,
+        snapshot_id, discovery_timestamp, entry_zone_min, entry_zone_max, target_entry,
+        stop_loss_price, target_12_price, target_14_price, net_rr_12, net_rr_14,
+        rr_mode_available, uncertainty_level, status, rejection_reason,
+        valid_until_timestamp, ai_cost_usd, payload_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        rejection_reason = excluded.rejection_reason,
+        target_12_price = excluded.target_12_price,
+        target_14_price = excluded.target_14_price,
+        net_rr_12 = excluded.net_rr_12,
+        net_rr_14 = excluded.net_rr_14,
+        rr_mode_available = excluded.rr_mode_available,
+        ai_cost_usd = excluded.ai_cost_usd,
+        payload_json = excluded.payload_json,
+        updated_at = excluded.updated_at
+    `).run(
+      scenario.id,
+      scenario.symbol,
+      scenario.direction,
+      scenario.timeframe,
+      scenario.structureType,
+      scenario.proposedBy,
+      JSON.stringify(scenario.modelsUsed || []),
+      scenario.snapshotId,
+      scenario.discoveryTimestamp,
+      scenario.entryZoneMin,
+      scenario.entryZoneMax,
+      scenario.targetEntry,
+      scenario.stopLossPrice,
+      scenario.target12Price ?? null,
+      scenario.target14Price ?? null,
+      scenario.netRR12 ?? null,
+      scenario.netRR14 ?? null,
+      scenario.rrModeAvailable,
+      scenario.uncertaintyLevel,
+      scenario.status,
+      scenario.rejectionReason ?? null,
+      scenario.validUntilTimestamp,
+      scenario.aiCostUsd ?? 0,
+      JSON.stringify(payload),
+      scenario.createdAt || now,
+      scenario.updatedAt || now
+    );
+  }
+
+  public getScenarios(options?: { status?: ScenarioStatus | ScenarioStatus[]; limit?: number }): Scenario[] {
+    if (this.isClosed) return [];
+    try {
+      let query = 'SELECT * FROM scenarios';
+      const params: any[] = [];
+      if (options?.status) {
+        if (Array.isArray(options.status)) {
+          query += ` WHERE status IN (${options.status.map(() => '?').join(',')})`;
+          params.push(...options.status);
+        } else {
+          query += ' WHERE status = ?';
+          params.push(options.status);
+        }
+      }
+      query += ' ORDER BY discovery_timestamp DESC';
+      if (options?.limit) {
+        query += ' LIMIT ?';
+        params.push(options.limit);
+      }
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map((r) => this.mapScenarioRow(r));
+    } catch {
+      return [];
+    }
+  }
+
+  public getScenarioById(id: string): Scenario | null {
+    if (this.isClosed) return null;
+    try {
+      const row = this.db.prepare('SELECT * FROM scenarios WHERE id = ?').get(id) as any;
+      if (!row) return null;
+      return this.mapScenarioRow(row);
+    } catch {
+      return null;
+    }
+  }
+
+  public updateScenarioStatus(id: string, status: ScenarioStatus, reason?: string, updates?: Partial<Scenario>): void {
+    if (this.isClosed) return;
+    try {
+      const existing = this.getScenarioById(id);
+      if (!existing) return;
+      const merged: Scenario = {
+        ...existing,
+        ...updates,
+        status,
+        rejectionReason: reason ?? updates?.rejectionReason ?? existing.rejectionReason,
+        updatedAt: Date.now(),
+      };
+      this.saveScenario(merged);
+    } catch {}
+  }
+
+  public logScenarioLifecycle(event: ScenarioLifecycleEvent): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO scenario_lifecycle (scenario_id, from_status, to_status, timestamp, reason, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        event.scenarioId,
+        event.fromStatus,
+        event.toStatus,
+        event.timestamp || Date.now(),
+        event.reason ?? null,
+        event.metadata ? JSON.stringify(event.metadata) : null
+      );
+    } catch {}
+  }
+
+  public getScenarioLifecycle(scenarioId: string): ScenarioLifecycleEvent[] {
+    if (this.isClosed) return [];
+    try {
+      const rows = this.db.prepare('SELECT * FROM scenario_lifecycle WHERE scenario_id = ? ORDER BY timestamp ASC').all(scenarioId) as any[];
+      return rows.map((r) => ({
+        id: Number(r.id),
+        scenarioId: r.scenario_id,
+        fromStatus: r.from_status,
+        toStatus: r.to_status,
+        timestamp: Number(r.timestamp),
+        reason: r.reason,
+        metadata: r.metadata_json ? JSON.parse(r.metadata_json) : undefined,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  public saveScenarioRevalidation(record: ScenarioRevalidationRecord): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO scenario_revalidations (id, scenario_id, timestamp, openai_verdict, gemini_verdict, consensus_verdict, price_at_revalidation, details_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          consensus_verdict = excluded.consensus_verdict,
+          price_at_revalidation = excluded.price_at_revalidation,
+          details_json = excluded.details_json
+      `).run(
+        record.id,
+        record.scenarioId,
+        record.timestamp,
+        record.openaiVerdict ?? null,
+        record.geminiVerdict ?? null,
+        record.consensusVerdict,
+        record.priceAtRevalidation,
+        JSON.stringify(record.details || {})
+      );
+    } catch {}
+  }
+
+  public getScenarioRevalidations(scenarioId: string): ScenarioRevalidationRecord[] {
+    if (this.isClosed) return [];
+    try {
+      const rows = this.db.prepare('SELECT * FROM scenario_revalidations WHERE scenario_id = ? ORDER BY timestamp DESC').all(scenarioId) as any[];
+      return rows.map((r) => ({
+        id: r.id,
+        scenarioId: r.scenario_id,
+        timestamp: Number(r.timestamp),
+        openaiVerdict: r.openai_verdict,
+        geminiVerdict: r.gemini_verdict,
+        consensusVerdict: r.consensus_verdict,
+        priceAtRevalidation: Number(r.price_at_revalidation),
+        details: r.details_json ? JSON.parse(r.details_json) : {},
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  private mapScenarioRow(r: any): Scenario {
+    let payload: any = {};
+    try {
+      payload = r.payload_json ? JSON.parse(r.payload_json) : {};
+    } catch {}
+    let modelsUsed: string[] = [];
+    try {
+      modelsUsed = r.models_used ? JSON.parse(r.models_used) : [];
+    } catch {}
+
+    return {
+      id: r.id,
+      symbol: r.symbol,
+      direction: r.direction,
+      timeframe: r.timeframe,
+      structureType: r.structure_type,
+      proposedBy: r.proposed_by,
+      modelsUsed,
+      snapshotId: r.snapshot_id,
+      discoveryTimestamp: Number(r.discovery_timestamp),
+      entryZoneMin: Number(r.entry_zone_min),
+      entryZoneMax: Number(r.entry_zone_max),
+      targetEntry: Number(r.target_entry),
+      stopLossPrice: Number(r.stop_loss_price),
+      target12Price: r.target_12_price !== null && r.target_12_price !== undefined ? Number(r.target_12_price) : undefined,
+      target14Price: r.target_14_price !== null && r.target_14_price !== undefined ? Number(r.target_14_price) : undefined,
+      netRR12: r.net_rr_12 !== null && r.net_rr_12 !== undefined ? Number(r.net_rr_12) : undefined,
+      netRR14: r.net_rr_14 !== null && r.net_rr_14 !== undefined ? Number(r.net_rr_14) : undefined,
+      rrModeAvailable: r.rr_mode_available,
+      uncertaintyLevel: r.uncertainty_level,
+      status: r.status,
+      rejectionReason: r.rejection_reason || undefined,
+      validUntilTimestamp: Number(r.valid_until_timestamp),
+      aiCostUsd: Number(r.ai_cost_usd || 0),
+      activationConditions: payload.activationConditions || [],
+      invalidationTriggers: payload.invalidationTriggers || [],
+      argumentsFor: payload.argumentsFor || [],
+      argumentsAgainst: payload.argumentsAgainst || [],
+      openaiInterpretation: payload.openaiInterpretation,
+      geminiInterpretation: payload.geminiInterpretation,
+      distanceToZonePct: payload.distanceToZonePct,
+      currentPrice: payload.currentPrice,
+      lastCheckedTimestamp: payload.lastCheckedTimestamp,
+      isSimulated: payload.isSimulated,
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+    };
   }
 
   public close(): void {

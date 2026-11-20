@@ -10,6 +10,7 @@ import { AiAnalystsCard } from '../components/AiAnalystsCard';
 import { SignalLifecycleMonitor } from '../components/SignalLifecycleMonitor';
 import { NotificationsModal } from '../components/NotificationsModal';
 import { ConfigCenterModal } from '../components/config/ConfigCenterModal';
+import { AiTradingIntelligence } from '../components/AiTradingIntelligence';
 import {
   Activity,
   Shield,
@@ -743,6 +744,9 @@ export default function DashboardPage() {
           activeTimeframe={timeframe}
           onSelectTimeframe={setTimeframe}
         />
+
+        {/* AI Trading Intelligence · Autonomous Discovery, Watcher & Dual 1:2 / 1:4 Targets (Phase 5A) */}
+        <AiTradingIntelligence />
 
         {/* Signal Lifecycle 24/7 Monitor (Phase 4) */}
         <SignalLifecycleMonitor

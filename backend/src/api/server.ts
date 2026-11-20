@@ -175,6 +175,20 @@ export class ApiServer {
         this.sendConfigAudit(req, res);
       } else if (pathname === '/api/v1/config/summary' && req.method === 'GET') {
         this.sendConfigSummary(res);
+      } else if (pathname === '/api/v1/discovery/market-intelligence' && req.method === 'GET') {
+        this.sendMarketIntelligence(res);
+      } else if (pathname === '/api/v1/discovery/scenarios' && req.method === 'GET') {
+        this.sendScenarios(req, res, url);
+      } else if (pathname.startsWith('/api/v1/discovery/scenarios/') && pathname.endsWith('/revalidate') && req.method === 'POST') {
+        const parts = pathname.split('/');
+        const scenarioId = parts[5];
+        this.handleManualRevalidate(req, res, scenarioId);
+      } else if (pathname.startsWith('/api/v1/discovery/scenarios/') && req.method === 'GET') {
+        const parts = pathname.split('/');
+        const scenarioId = parts[5];
+        this.sendScenarioDetail(res, scenarioId);
+      } else if (pathname === '/api/v1/discovery/trigger' && req.method === 'POST') {
+        this.handleTriggerDiscovery(req, res);
       } else if (pathname === '/api/v1/events' && req.method === 'GET') {
         const limit = parseInt(url.searchParams.get('limit') || '50', 10);
         this.sendEvents(res, limit);
@@ -1684,6 +1698,117 @@ export class ApiServer {
     this.coordinator.on('signal_metrics_updated', (signal) => {
       this.broadcast({ type: 'signal_metrics_updated', data: signal });
     });
+
+    // Broadcast discovery and scenario events
+    this.coordinator.on('scenario_registered', (sc) => {
+      this.broadcast({ type: 'scenario_registered', data: sc });
+    });
+    this.coordinator.on('scenario_status_changed', (evt) => {
+      this.broadcast({ type: 'scenario_status_changed', data: evt });
+    });
+    this.coordinator.on('scenario_updated', (sc) => {
+      this.broadcast({ type: 'scenario_updated', data: sc });
+    });
+    this.coordinator.on('scenario_approaching', (evt) => {
+      this.broadcast({ type: 'scenario_approaching', data: evt });
+    });
+    this.coordinator.on('scenario_entry_validated', (evt) => {
+      this.broadcast({ type: 'scenario_entry_validated', data: evt });
+    });
+    this.coordinator.on('discovery_completed', (evt) => {
+      this.broadcast({ type: 'discovery_completed', data: evt });
+    });
+  }
+
+  private sendMarketIntelligence(res: http.ServerResponse): void {
+    const summary = this.coordinator.getAiDiscoveryEngine().getLatestSummary();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: summary }));
+  }
+
+  private sendScenarios(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+    const statusParam = url.searchParams.get('status');
+    const rrModeParam = url.searchParams.get('rrMode') as any;
+    const limit = parseInt(url.searchParams.get('limit') || '100', 10);
+    const statuses = statusParam ? statusParam.split(',') as any : undefined;
+
+    const scenarios = this.coordinator.getScenarioRegistry().getAll({
+      status: statuses,
+      rrMode: rrModeParam,
+      limit,
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, count: scenarios.length, data: scenarios }));
+  }
+
+  private sendScenarioDetail(res: http.ServerResponse, id: string): void {
+    const scenario = this.coordinator.getScenarioRegistry().getScenario(id);
+    if (!scenario) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Escenario no encontrado' }));
+      return;
+    }
+    const lifecycle = this.coordinator.getScenarioRegistry().getLifecycle(id);
+    const revalidations = this.db.getScenarioRevalidations(id);
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      success: true,
+      data: {
+        scenario,
+        lifecycle,
+        revalidations,
+      },
+    }));
+  }
+
+  private async handleTriggerDiscovery(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'No autorizado' }));
+      return;
+    }
+
+    try {
+      const result = await this.coordinator.getAiDiscoveryEngine().runDiscovery({ forceManual: true });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        scenariosDiscovered: result.scenarios.length,
+        data: result,
+      }));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+  }
+
+  private async handleManualRevalidate(req: http.IncomingMessage, res: http.ServerResponse, id: string): Promise<void> {
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'No autorizado' }));
+      return;
+    }
+
+    const scenario = this.coordinator.getScenarioRegistry().getScenario(id);
+    if (!scenario) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Escenario no encontrado' }));
+      return;
+    }
+
+    const currentPrice = this.coordinator.getMarketState().ticker?.lastPrice || scenario.targetEntry;
+    try {
+      const result = await this.coordinator.getAiRevalidation().revalidate(scenario, currentPrice);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: true,
+        data: result,
+      }));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
   }
 
   private broadcast(payload: any): void {

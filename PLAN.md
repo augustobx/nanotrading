@@ -18,7 +18,9 @@
 | **Fase 3** | Integración de IA & Motor de Consenso | Proveedores OpenAI y Gemini independientes, schemas estructurados, consenso, control de costos | **COMPLETADA** |
 | **Fase 4** | Alertas, Máquina de Estados y PWA | Ciclo de vida completo de señales, Telegram Bot, Web Push PWA, UI con NanoLabs Theme 2 | **COMPLETADA** |
 | **Fase 4.5** | Centro de Configuración, Riesgo y Router de IA | Gestión de capital, techos de SL, credenciales Bybit/IA, router multimodelo, auditoría | **COMPLETADA** |
-| **Fase 5** | Backtesting, Paper Trading & Validación | Motor de backtesting sin look-ahead bias, simulador de paper trading en vivo, métricas reales | PENDIENTE |
+| **Fase 5A** | Inteligencia Autónoma & Descubrimiento 1:2 / 1:4 | Descubrimiento autónomo IA, registro de escenarios, Algorithmic Watcher, reevaluación | **COMPLETADA** |
+| **Fase 5B** | Validación Histórica & Backtesting | Histórico Bybit sin look-ahead, comparación 1:2 vs 1:4, estadísticas y exportación | PENDIENTE |
+| **Fase 5C** | Validación en Vivo & Paper Trading Acumulado | Seguimiento de decisiones IA, resultados netos acumulados, métricas de efectividad | PENDIENTE |
 | **Fase 6** | Preparación para Ejecución Asistida | Abstracción de ejecución privada, reconciliación, kill switch avanzado (modo deshabilitado por defecto) | PENDIENTE |
 
 ---
@@ -244,3 +246,50 @@
   - Desglose completo de métricas financieras: Bruto teórico, Descuento aplicado, Costo neto facturable, Tokens gratuitos bonificados y Modelos compartidos.
 - [x] **Cobertura Integral de Pruebas Automatizadas**:
   - 100 pruebas unitarias pasando al 100% (15 pruebas dedicadas a modelos excluidos, modelos elegibles, verificación real, cupo organizacional, regla oficial de exceso, concurrencia, recuperación en reboot y persistencia de descuentos).
+
+---
+
+## [Fase 5A] — Análisis Inteligente Autónomo, Descubrimiento de Entradas 1:2 y 1:4, Watcher Algorítmico y Reevaluación [COMPLETADA]
+- [x] **Motor de Inteligencia de Mercado (`MarketIntelligenceSummary`)**:
+  - Captura continua y unificada del panorama multitemporal de 6 temporalidades (1D, 4H, 1H, 15m, 5m, 1m).
+  - Integración de indicadores matemáticos deterministas: RSI Wilder, ATR, EMA 20/50/200 con guarda histórica, VWAP intradía con reinicio a 00:00 UTC, Volumen Relativo (RVOL), Swings High/Low sin look-ahead bias, Break of Structure (BOS) y Change of Character (CHoCH), Fair Value Gaps (FVG) y Order Blocks (OB).
+  - Ticker en vivo (Last, Mark, Index, Spread L2, Funding Rate 8h, Open Interest) y estado de sincronización del orderbook.
+- [x] **Motor de Descubrimiento Autónomo de Mercado (`AiMarketDiscoveryEngine`)**:
+  - Inferencia desacoplada de OpenAI y Gemini sobre un mismo snapshot cuantitativo inmutable.
+  - Descubrimiento de hipótesis LONG y SHORT operables sin depender exclusivamente de estrategias A y B preconfiguradas.
+  - Regla imperativa: Conclusión "No operar es una decisión válida y a menudo la mejor" ante confluencia deficiente.
+  - Integración con tareas `MARKET_DISCOVERY` y `SCENARIO_GENERATION` del AI Model Router y reserva presupuestaria atómica en `HardBudgetManager`.
+- [x] **Registro Central de Escenarios (`ScenarioRegistry`)**:
+  - Persistencia completa en SQLite WAL y PostgreSQL (`scenarios`, `scenario_lifecycle`, `scenario_revalidations`).
+  - Deduplicación y agrupación inteligente de propuestas similares entre OpenAI y Gemini para evitar duplicaciones operativas.
+  - Trazabilidad estricta de ciclo de vida: `SCENARIO_PROPOSED` $\to$ `SCENARIO_REGISTERED` $\to$ `SCENARIO_MONITORING` $\to$ `APPROACHING_ZONE` $\to$ `IN_ZONE` $\to$ `REVALIDATION_REQUESTED` $\to$ `AI_REVALIDATING` $\to$ `ENTRY_VALIDATED` / `WAITING_CONFIRMATION` / `INVALIDATED` / `EXPIRED` / `CANCELLED`.
+- [x] **Vigilante Algorítmico Continuo (`AlgorithmicWatcher`)**:
+  - Vigilancia permanente en background tick a tick sobre WebSocket y cierres de vela con **0 tokens de IA consumidos**.
+  - Detección precisa de aproximación ($\le 0.35\%$) con transición a `APPROACHING_ZONE` y alerta temprana.
+  - Detección de mitigación en zona operativa con transición automática a `IN_ZONE` y solicitud de reevaluación (`REVALIDATION_REQUESTED`).
+  - Detección y cancelación inmediata (`INVALIDATED`) ante vulneración de Stop Loss o nivel estructural antes de mitigar la zona.
+  - Control de expiración temporal automática (`EXPIRED`).
+- [x] **Reevaluación de Entrada por IA (`AiEntryRevalidation`)**:
+  - Consulta event-driven a OpenAI y Gemini al tocar la zona registrada (tarea `SCENARIO_REVALIDATION`).
+  - Verificación de confirmaciones en microestructura, absorción en libro de órdenes y persistencia de hipótesis original.
+  - Matriz de consenso y fallback preservada (`DUAL_AI`, `SINGLE_AI_OPENAI`, `SINGLE_AI_GEMINI`, `AI_UNAVAILABLE`).
+  - Determinismo cuantitativo inviolable: recálculo estricto en tiempo real mediante `RiskCalculator.calculateDualTargets(...)` con comisiones maker/taker, spread y slippage para verificar net R:R $\ge 2.0$ y net R:R $\ge 4.0$.
+  - Transición a `ENTRY_VALIDATED` con emisión de alerta y generación de señal virtual en `SIGNALS_ONLY`.
+- [x] **Objetivos de Riesgo/Beneficio 1:2 y 1:4**:
+  - Variantes virtuales independientes vinculadas al mismo setup (`RR_1_2`, `RR_1_4`, `RR_BOTH`).
+  - Prohibida la compresión artificial de SL o estiramiento arbitrario de TP: los objetivos se anclan a niveles estructurales reales verificados.
+- [x] **Endpoints REST y WebSocket en Tiempo Real (`server.ts`)**:
+  - `GET /api/v1/discovery/market-intelligence`: Panorama multitemporal integral.
+  - `GET /api/v1/discovery/scenarios`: Listado con filtrado por estado, modo R:R y paginación.
+  - `GET /api/v1/discovery/scenarios/:id`: Detalle profundo de escenario, ciclo de vida e historial de reevaluaciones.
+  - `POST /api/v1/discovery/trigger`: Disparador administrativo de ciclo de descubrimiento IA.
+  - `POST /api/v1/discovery/scenarios/:id/revalidate`: Reevaluación administrativa bajo demanda.
+  - Eventos WebSocket emitidos: `scenario_registered`, `scenario_status_changed`, `scenario_updated`, `scenario_approaching`, `scenario_entry_validated`, `discovery_completed`.
+- [x] **Dashboard de Análisis Inteligente en Frontend (`AiTradingIntelligence.tsx`)**:
+  - Componente integrado en `http://localhost:3000` con diseño oficial NanoLabs Theme 2 (`visual-nanolabs`).
+  - Vista de Escenarios Detectados con filtrado rápido (Todos, 1:2 y 1:4 Ambos, 1:2 Corto, 1:4 Extendido).
+  - Panorama Multitemporal Cuantitativo de 6 temporalidades con badges de sesgo de OpenAI y Gemini.
+  - Panel detallado de escenario con comparativa de interpretaciones, condiciones de activación, triggers de invalidación y línea de tiempo de eventos.
+  - Panel en vivo del Algorithmic Watcher con métricas de vigilancia y gasto de IA.
+- [x] **Cobertura Exhaustiva de Pruebas Automatizadas**:
+  - 109 pruebas unitarias pasando al 100% (+9 pruebas dedicadas exclusivamente a Fase 5A: persistencia, deduplicación dual AI, descubrimiento autónomo, rechazo de R:R ficticio, vigilancia algorítmica sin IA, llegada a zona, invalidación por SL, reevaluación de consenso y hard budget limit).
