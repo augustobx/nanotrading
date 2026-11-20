@@ -662,7 +662,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
         method: 'POST',
         headers: getHeaders(true),
         credentials: 'include',
-        body: JSON.stringify({ dataSharingConfirmed: true }),
+        body: JSON.stringify({ adminDeclaration: true, dataSharingConfirmed: true }),
       });
       const json = await res.json();
       if (res.ok && json.success) {
@@ -1784,13 +1784,17 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                       <Sparkles className="w-4 h-4 text-emerald-400 shrink-0" />
                       <span className="text-slate-300">Programa OpenAI Data Sharing:</span>
                       {hardBudgetSummary?.openaiFreeTier?.enabled ? (
-                        hardBudgetSummary?.openaiFreeTier?.verified ? (
+                        hardBudgetSummary?.openaiFreeTier?.verificationStatus === 'CONFIRMED_BILLED' ? (
                           <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-600">
-                            ACTIVO (250k / 2.5M tokens libres/día)
+                            COMPROBADO EN FACTURACIÓN (250k / 2.5M)
+                          </span>
+                        ) : hardBudgetSummary?.openaiFreeTier?.verificationStatus === 'DECLARED_BY_ADMIN' || hardBudgetSummary?.openaiFreeTier?.verified ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-950 text-amber-300 border border-amber-600">
+                            DECLARADO POR ADMIN (Descuento Estimado)
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-950 text-amber-300 border border-amber-600">
-                            NO VERIFICADO (Estimación Conservadora)
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-400 border border-slate-700">
+                            SIN VERIFICAR (Estimación Conservadora)
                           </span>
                         )
                       ) : (
@@ -2510,13 +2514,17 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                     </div>
                     <div className="flex items-center gap-2">
                       {hardBudgetSummary?.openaiFreeTier?.enabled ? (
-                        hardBudgetSummary?.openaiFreeTier?.verified ? (
+                        hardBudgetSummary?.openaiFreeTier?.verificationStatus === 'CONFIRMED_BILLED' ? (
                           <span className="px-2.5 py-0.5 rounded text-[11px] font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-600 flex items-center gap-1.5 shadow-sm">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> VERIFICADO ACTIVO
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" /> COMPROBADO EN FACTURACIÓN
+                          </span>
+                        ) : hardBudgetSummary?.openaiFreeTier?.verificationStatus === 'DECLARED_BY_ADMIN' || hardBudgetSummary?.openaiFreeTier?.verified ? (
+                          <span className="px-2.5 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-950 text-amber-300 border border-amber-600 flex items-center gap-1.5 shadow-sm">
+                            <Shield className="w-3.5 h-3.5 text-amber-400" /> DECLARADO POR ADMIN (Estimado)
                           </span>
                         ) : (
-                          <span className="px-2.5 py-0.5 rounded text-[11px] font-mono font-bold bg-amber-950 text-amber-300 border border-amber-600 flex items-center gap-1.5 shadow-sm">
-                            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" /> NO VERIFICADO (Estimación Conservadora)
+                          <span className="px-2.5 py-0.5 rounded text-[11px] font-mono font-bold bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1.5 shadow-sm">
+                            <AlertTriangle className="w-3.5 h-3.5 text-slate-400" /> SIN VERIFICAR (Estimación Conservadora)
                           </span>
                         )
                       ) : (
@@ -2544,6 +2552,9 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                       </li>
                       <li>
                         <strong>Límite Económico Intocable:</strong> Nunca se supera el límite monetario configurado (${hardBudgetSummary?.dailyBudgetLimitUsd?.toFixed(2) || '0.50'} USD) asumiendo incorrectamente gratuidad.
+                      </li>
+                      <li>
+                        <strong>Cupo Compartido Organizacional:</strong> El saldo diario pertenece a la organización OpenAI. Si otras claves o proyectos consumen cupo, el saldo local es estimado y aplica un colchón de reserva conservadora.
                       </li>
                       <li>
                         <strong>Google Gemini:</strong> Permanece 100% independiente con presupuesto y contabilidad separados.
@@ -2577,7 +2588,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                         </span>
                       </div>
                       <div className="text-[10px] text-slate-400 font-mono">
-                        Modelos compartidos: <span className="text-orange-300">gpt-4o, gpt-6-luna, gpt-4-turbo</span>
+                        Modelos compartidos: <span className="text-orange-300">{hardBudgetSummary?.openaiFreeTier?.mainGroup?.models?.join(', ') || 'gpt-4o, gpt-6-luna'}</span>
                       </div>
                       <div className="w-full h-2.5 rounded-full bg-[#111624] border border-[#21283b] overflow-hidden">
                         <div
@@ -2610,7 +2621,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                         </span>
                       </div>
                       <div className="text-[10px] text-slate-400 font-mono">
-                        Modelos compartidos: <span className="text-blue-300">gpt-4o-mini, o3-mini</span>
+                        Modelos compartidos: <span className="text-blue-300">{hardBudgetSummary?.openaiFreeTier?.smallGroup?.models?.join(', ') || 'gpt-5.4-mini, gpt-5.4-nano, gpt-5-mini, o4-mini, gpt-4o-mini'}</span>
                       </div>
                       <div className="w-full h-2.5 rounded-full bg-[#111624] border border-[#21283b] overflow-hidden">
                         <div

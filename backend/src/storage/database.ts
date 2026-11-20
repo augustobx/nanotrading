@@ -282,6 +282,7 @@ export class DatabaseService {
         cost_net_usd REAL DEFAULT 0,
         free_tier_group TEXT DEFAULT 'NONE',
         is_free_tier INTEGER DEFAULT 0,
+        discount_status TEXT DEFAULT 'NONE',
         latency_ms INTEGER NOT NULL,
         status TEXT NOT NULL,
         analysis_id TEXT
@@ -352,6 +353,7 @@ export class DatabaseService {
       'cost_net_usd REAL DEFAULT 0',
       "free_tier_group TEXT DEFAULT 'NONE'",
       'is_free_tier INTEGER DEFAULT 0',
+      "discount_status TEXT DEFAULT 'NONE'",
     ];
     for (const col of consumptionExtraCols) {
       try {
@@ -1253,6 +1255,7 @@ export class DatabaseService {
     costNetUsd?: number;
     freeTierGroup?: string;
     isFreeTier?: boolean;
+    discountStatus?: string;
     latencyMs: number;
     status: string;
     analysisId?: string;
@@ -1263,15 +1266,16 @@ export class DatabaseService {
       const costGross = log.costGrossUsd !== undefined ? log.costGrossUsd : log.costUsd;
       const discount = log.discountUsd !== undefined ? log.discountUsd : 0;
       const costNet = log.costNetUsd !== undefined ? log.costNetUsd : (costGross - discount);
+      const discountStatus = log.discountStatus || (log.isFreeTier ? 'ESTIMATED' : 'NONE');
 
       this.db.prepare(`
         INSERT INTO ai_consumption_logs (
           id, timestamp, provider, model, task,
           tokens_prompt, tokens_completion, tokens_cached, tokens_reasoning,
           cost_usd, cost_gross_usd, discount_usd, cost_net_usd,
-          free_tier_group, is_free_tier, latency_ms, status, analysis_id
+          free_tier_group, is_free_tier, discount_status, latency_ms, status, analysis_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id,
         log.timestamp || Date.now(),
@@ -1288,6 +1292,7 @@ export class DatabaseService {
         costNet,
         log.freeTierGroup || 'NONE',
         log.isFreeTier ? 1 : 0,
+        discountStatus,
         log.latencyMs || 0,
         log.status || 'SUCCESS',
         log.analysisId || null
@@ -1318,6 +1323,7 @@ export class DatabaseService {
         costNetUsd: Number(r.cost_net_usd !== undefined && r.cost_net_usd !== null ? r.cost_net_usd : r.cost_usd),
         freeTierGroup: r.free_tier_group || 'NONE',
         isFreeTier: r.is_free_tier === 1,
+        discountStatus: r.discount_status || (r.is_free_tier === 1 ? 'ESTIMATED' : 'NONE'),
         latencyMs: Number(r.latency_ms),
         status: r.status,
         analysisId: r.analysis_id,

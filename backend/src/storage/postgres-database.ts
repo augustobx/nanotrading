@@ -302,6 +302,7 @@ export class PostgresDatabaseService {
         ALTER TABLE ai_consumption_logs ADD COLUMN IF NOT EXISTS cost_net_usd DOUBLE PRECISION DEFAULT 0;
         ALTER TABLE ai_consumption_logs ADD COLUMN IF NOT EXISTS free_tier_group VARCHAR(20) DEFAULT 'NONE';
         ALTER TABLE ai_consumption_logs ADD COLUMN IF NOT EXISTS is_free_tier INTEGER DEFAULT 0;
+        ALTER TABLE ai_consumption_logs ADD COLUMN IF NOT EXISTS discount_status VARCHAR(20) DEFAULT 'NONE';
       `);
     } finally {
       client.release();
@@ -1102,15 +1103,32 @@ export class PostgresDatabaseService {
     tokensPrompt: number;
     tokensCompletion: number;
     tokensCached?: number;
+    tokensReasoning?: number;
     costUsd: number;
+    costGrossUsd?: number;
+    discountUsd?: number;
+    costNetUsd?: number;
+    freeTierGroup?: string;
+    isFreeTier?: boolean;
+    discountStatus?: string;
     latencyMs: number;
     status: string;
     analysisId?: string;
   }): Promise<void> {
     const id = log.id || `cons_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const costGross = log.costGrossUsd !== undefined ? log.costGrossUsd : log.costUsd;
+    const discount = log.discountUsd !== undefined ? log.discountUsd : 0;
+    const costNet = log.costNetUsd !== undefined ? log.costNetUsd : (costGross - discount);
+    const discountStatus = log.discountStatus || (log.isFreeTier ? 'ESTIMATED' : 'NONE');
+
     const query = `
-      INSERT INTO ai_consumption_logs (id, timestamp, provider, model, task, tokens_prompt, tokens_completion, tokens_cached, cost_usd, latency_ms, status, analysis_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      INSERT INTO ai_consumption_logs (
+        id, timestamp, provider, model, task,
+        tokens_prompt, tokens_completion, tokens_cached, tokens_reasoning,
+        cost_usd, cost_gross_usd, discount_usd, cost_net_usd,
+        free_tier_group, is_free_tier, discount_status, latency_ms, status, analysis_id
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
     `;
     await this.pool.query(query, [
       id,
@@ -1121,7 +1139,14 @@ export class PostgresDatabaseService {
       log.tokensPrompt || 0,
       log.tokensCompletion || 0,
       log.tokensCached || 0,
-      log.costUsd || 0,
+      log.tokensReasoning || 0,
+      costNet,
+      costGross,
+      discount,
+      costNet,
+      log.freeTierGroup || 'NONE',
+      log.isFreeTier ? 1 : 0,
+      discountStatus,
       log.latencyMs || 0,
       log.status || 'SUCCESS',
       log.analysisId || null,
@@ -1139,7 +1164,14 @@ export class PostgresDatabaseService {
       tokensPrompt: Number(r.tokens_prompt),
       tokensCompletion: Number(r.tokens_completion),
       tokensCached: Number(r.tokens_cached),
+      tokensReasoning: Number(r.tokens_reasoning || 0),
       costUsd: Number(r.cost_usd),
+      costGrossUsd: Number(r.cost_gross_usd !== undefined && r.cost_gross_usd !== null ? r.cost_gross_usd : r.cost_usd),
+      discountUsd: Number(r.discount_usd || 0),
+      costNetUsd: Number(r.cost_net_usd !== undefined && r.cost_net_usd !== null ? r.cost_net_usd : r.cost_usd),
+      freeTierGroup: r.free_tier_group || 'NONE',
+      isFreeTier: r.is_free_tier === 1,
+      discountStatus: r.discount_status || (r.is_free_tier === 1 ? 'ESTIMATED' : 'NONE'),
       latencyMs: Number(r.latency_ms),
       status: r.status,
       analysisId: r.analysis_id,

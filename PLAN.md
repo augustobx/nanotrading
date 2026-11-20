@@ -194,3 +194,53 @@
   - Dashboard muestra estado `DUAL_AI` (`AVAILABLE` / `DISPONIBLE`) en OpenAI y Gemini en tiempo real.
 - [x] **Pruebas Automatizadas**:
   - 79 pruebas unitarias pasando al 100% (7 nuevas pruebas dedicadas a GPT-6 Luna, reservas atómicas, hard stop y reactivación).
+
+---
+
+## [Fase 4.6.1] — Seguridad, Presupuestos Inviolables y Verificación Real de IA [COMPLETADA]
+- [x] **Eliminación Total de Autenticación Automática Insegura**:
+  - Eliminadas claves administrativas fijas del frontend y variables de entorno expuestas (`ADMIN_API_KEY`).
+  - Rotada la clave administrativa predeterminada.
+  - Implementada autenticación administrativa mediante login seguro y sesión con hash SHA-256 + salt criptográfico.
+  - Gestión de sesión basada en cookies `HttpOnly`, `SameSite: Strict` y tokens CSRF anti-falsificación.
+  - Protección estricta de rutas de configuración, credenciales, presupuestos y Kill Switch.
+  - Cero secretos administrativos en `localStorage`. Soporte para cierre de sesión (`POST /api/v1/admin/logout`).
+- [x] **Corrección del Botón de Reactivación de Presupuesto (`HardBudgetManager`)**:
+  - Los gastos confirmados son inmutables: una reactivación manual jamás borra ni reduce el consumo acumulado.
+  - Si el gasto acumulado del día supera el límite actual, se exige ingresar un nuevo límite diario estrictamente superior al gasto actual para desbloquear las evaluaciones.
+  - Auditoría inmutable de reactivaciones con registro de usuario IP y nuevo límite configurado.
+- [x] **Cobertura de Pruebas Automatizadas**:
+  - 87 pruebas unitarias pasando al 100% (incluyendo pruebas de seguridad de sesión, inmutabilidad de gastos y reactivación condicional).
+
+---
+
+## [Fase 4.6.2] — Integración y Corrección Oficial de Tokens Gratuitos de OpenAI (Data Sharing) [COMPLETADA]
+- [x] **Corrección del Catálogo de Modelos Elegibles (`models-catalog.ts`)**:
+  - Contrastado exhaustivamente contra el Help Article oficial 10306912 de OpenAI.
+  - `gpt-6-luna`: Mantenido con status oficial en el Grupo Principal (250.000 tokens/día compartidos).
+  - `gpt-4-turbo`: Excluido formalmente del descuento promocional (`freeTierGroup: 'NONE'`).
+  - `o3-mini`: Excluido formalmente del grupo de modelos pequeños (`freeTierGroup: 'NONE'`).
+  - Modelos oficiales elegibles vigentes incorporados: `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-5-mini` y `o4-mini` (Grupo Modelos Pequeños - 2.500.000 tokens/día compartidos).
+  - Grupos completamente configurables dinámicamente (`mainGroupModels`, `smallGroupModels`) ante futuras actualizaciones de OpenAI.
+- [x] **Corrección de la Verificación Oficial de Beneficios**:
+  - Se eliminó la presunción indebida de beneficio activo basada en una simple prueba de API Key o modelo.
+  - Distinción cuádruple formal:
+    1. **Elegibilidad documentada del modelo** (`isEligible`).
+    2. **Participación declarada del proyecto** (`verificationStatus: 'DECLARED_BY_ADMIN'`).
+    3. **Consumo gratuito estimado** (`discountStatus: 'ESTIMATED'`).
+    4. **Beneficio comprobado en facturación oficial** (`verificationStatus: 'CONFIRMED_BILLED'`, `discountStatus: 'CONFIRMED_BILLED'`).
+  - Verificación mediante datos oficiales de facturación/uso cuando están disponibles y autorizados, o confirmación administrativa explícita tras revisión del panel oficial de OpenAI (Settings > Data Sharing).
+- [x] **Gestión de Cupo Compartido por Organización OpenAI**:
+  - Reconocimiento explícito de que el cupo diario de 250k y 2.5M tokens pertenece a la organización OpenAI y no a una clave aislada.
+  - Método `reconcileOrganizationalUsage(...)` para conciliar el consumo local con el consumo global de otros proyectos.
+  - Aplicación de reserva de seguridad conservadora (`externalUsageBufferTokens`, 5.000 tokens por defecto) cuando el consumo global es estimado.
+- [x] **AI Model Router Multimodelo (`ai-router.ts`)**:
+  - Priorización inteligente de modelos elegibles para el programa Data Sharing según complejidad.
+  - Admisión de `gpt-6-luna`, `gpt-4o`, `gpt-5.4-mini`, `gpt-5-mini` y `o4-mini` sin restringir análisis críticos exclusivamente a un modelo.
+  - Implementación de método reproducible y seguro `compareModels(...)` para benchmarking de modelos sin interferir en el motor de riesgo ni en el consenso técnico.
+- [x] **Persistencia y UI Frontend en PWA (`ConfigCenterModal.tsx`)**:
+  - Columna `discount_status` persistida en tabla `ai_consumption_logs` (SQLite WAL y PostgreSQL).
+  - Badges informativos según verificación real: `COMPROBADO EN FACTURACIÓN` (verde), `DECLARADO POR ADMIN (Estimado)` (ámbar) y `SIN VERIFICAR` (gris).
+  - Desglose completo de métricas financieras: Bruto teórico, Descuento aplicado, Costo neto facturable, Tokens gratuitos bonificados y Modelos compartidos.
+- [x] **Cobertura Integral de Pruebas Automatizadas**:
+  - 100 pruebas unitarias pasando al 100% (15 pruebas dedicadas a modelos excluidos, modelos elegibles, verificación real, cupo organizacional, regla oficial de exceso, concurrencia, recuperación en reboot y persistencia de descuentos).

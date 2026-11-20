@@ -11,13 +11,24 @@ import { DatabaseService } from '../storage/database.js';
 
 export type BudgetStatus = 'OK' | 'WARNING_50' | 'WARNING_80' | 'CRITICAL_95' | 'AI_BUDGET_EXCEEDED';
 
+export type FreeTierVerificationStatus = 'UNVERIFIED' | 'DECLARED_BY_ADMIN' | 'CONFIRMED_BILLED';
+export type FreeTierDiscountStatus = 'NONE' | 'ESTIMATED' | 'CONFIRMED_BILLED';
+
 export interface OpenAiFreeTierConfig {
   enabled: boolean;                      // Proyecto participa en programa de tokens gratuitos (Data Sharing)
-  verified: boolean;                     // Verificado con OpenAI (no asumir beneficio hasta verificarlo)
+  verified: boolean;                     // Compatibilidad booleana (true si DECLARED o CONFIRMED)
+  verificationStatus: FreeTierVerificationStatus; // 'UNVERIFIED' | 'DECLARED_BY_ADMIN' | 'CONFIRMED_BILLED'
   verifiedAt?: number | null;
   lastVerificationError?: string | null;
-  mainGroupDailyLimitTokens: number;     // 250,000 tokens/día (gpt-4o, gpt-6-luna, gpt-4-turbo)
-  smallGroupDailyLimitTokens: number;    // 2,500,000 tokens/día (gpt-4o-mini, o3-mini)
+  mainGroupDailyLimitTokens: number;     // 250,000 tokens/día (gpt-4o, gpt-6-luna)
+  smallGroupDailyLimitTokens: number;    // 2,500,000 tokens/día (gpt-5.4-mini, gpt-5.4-nano, gpt-5-mini, o4-mini, gpt-4o-mini)
+  mainGroupModels?: string[];            // Lista configurable de modelos del grupo principal
+  smallGroupModels?: string[];           // Lista configurable de modelos del grupo pequeño
+  externalUsageBufferTokens: number;     // Reserva conservadora si se desconoce uso externo (default 5000)
+  isGlobalUsageEstimated: boolean;       // Saldo estimado debido a cupo compartido en organización
+  reconciledAt?: number | null;          // Timestamp de última conciliación organizacional
+  reconciliationSource?: 'LOCAL_ESTIMATE' | 'OPENAI_USAGE_API' | 'ADMIN_DECLARATION';
+  billingEvidenceDetails?: string | null;
   participatingOrganizationId?: string | null;
   dataSharingConsentConfirmed?: boolean;
 }
@@ -79,7 +90,13 @@ export interface HardBudgetSummary {
   openaiFreeTier: {
     enabled: boolean;
     verified: boolean;
+    verificationStatus: FreeTierVerificationStatus;
+    isGlobalUsageEstimated: boolean;
+    externalUsageBufferTokens: number;
     verifiedAt: number | null;
+    reconciledAt: number | null;
+    reconciliationSource: 'LOCAL_ESTIMATE' | 'OPENAI_USAGE_API' | 'ADMIN_DECLARATION';
+    billingEvidenceDetails: string | null;
     mainGroup: {
       limitTokens: number;
       usedTokens: number;
@@ -101,6 +118,7 @@ export interface HardBudgetSummary {
       freeTokensConsumed: number;
       paidTokensConsumed: number;
       verifiedBilledSpendUsd: number | null;
+      discountStatus: FreeTierDiscountStatus;
     };
   };
   activeReservationsCount: number;
@@ -126,10 +144,18 @@ export const DEFAULT_HARD_BUDGET_CONFIG: HardBudgetConfig = {
   openaiFreeTier: {
     enabled: false,
     verified: false,
+    verificationStatus: 'UNVERIFIED',
     verifiedAt: null,
     lastVerificationError: null,
     mainGroupDailyLimitTokens: OPENAI_FREE_TIER_LIMITS.MAIN_GROUP_DAILY_TOKENS,
     smallGroupDailyLimitTokens: OPENAI_FREE_TIER_LIMITS.SMALL_GROUP_DAILY_TOKENS,
+    mainGroupModels: [...OPENAI_FREE_TIER_LIMITS.DEFAULT_MAIN_MODELS],
+    smallGroupModels: [...OPENAI_FREE_TIER_LIMITS.DEFAULT_SMALL_MODELS],
+    externalUsageBufferTokens: 5000,
+    isGlobalUsageEstimated: true,
+    reconciledAt: null,
+    reconciliationSource: 'LOCAL_ESTIMATE',
+    billingEvidenceDetails: null,
     participatingOrganizationId: null,
     dataSharingConsentConfirmed: false,
   },
@@ -175,6 +201,7 @@ export class HardBudgetManager {
     discountUsd?: number;
     freeTierGroup?: FreeTierGroup;
     isFreeTier?: boolean;
+    discountStatus?: FreeTierDiscountStatus;
   }> = [];
 
   constructor(initialConfig?: Partial<HardBudgetConfig>, notifiers?: NotifierCallbacks, db?: DatabaseService) {
@@ -259,21 +286,29 @@ export class HardBudgetManager {
    * Returns the official Data Sharing Free Tier Group for a given model.
    */
   public getFreeTierGroup(model: string): FreeTierGroup {
-    return getModelFreeTierGroup(model);
+    const cfg = this.config.openaiFreeTier;
+    return getModelFreeTierGroup(model, {
+      mainGroupModels: cfg?.mainGroupModels,
+      smallGroupModels: cfg?.smallGroupModels,
+    });
   }
 
   /**
    * Returns remaining daily free tokens for a given group.
+   * applyBuffer: If true and global usage is estimated, reserves a conservative margin (externalUsageBufferTokens).
    */
-  public getRemainingFreeTokens(group: FreeTierGroup): number {
+  public getRemainingFreeTokens(group: FreeTierGroup, applyBuffer: boolean = false): number {
     this.checkPeriodReset();
     const cfg = this.config.openaiFreeTier;
-    if (!cfg || !cfg.enabled || !cfg.verified) return 0;
+    if (!cfg || !cfg.enabled || !cfg.verified || cfg.verificationStatus === 'UNVERIFIED') return 0;
+    const buffer = (applyBuffer && cfg.isGlobalUsageEstimated) ? (cfg.externalUsageBufferTokens || 0) : 0;
     if (group === 'MAIN') {
-      return Math.max(0, cfg.mainGroupDailyLimitTokens - this.mainGroupTokensUsedToday);
+      const remaining = cfg.mainGroupDailyLimitTokens - this.mainGroupTokensUsedToday;
+      return Math.max(0, remaining - buffer);
     }
     if (group === 'SMALL') {
-      return Math.max(0, cfg.smallGroupDailyLimitTokens - this.smallGroupTokensUsedToday);
+      const remaining = cfg.smallGroupDailyLimitTokens - this.smallGroupTokensUsedToday;
+      return Math.max(0, remaining - buffer);
     }
     return 0;
   }
@@ -281,6 +316,10 @@ export class HardBudgetManager {
   /**
    * Evaluates OpenAI Free Tier eligibility and applies the Official Overage Rule:
    * "Considerar que una solicitud que supera el cupo disponible puede facturarse completamente."
+   * Distinguishes:
+   * - Model eligibility (isEligible)
+   * - Project declared participation vs official billed verification
+   * - Estimated discount (ESTIMATED) vs confirmed billed discount (CONFIRMED_BILLED)
    */
   public calculateFreeTierBenefit(
     model: string,
@@ -290,6 +329,7 @@ export class HardBudgetManager {
     group: FreeTierGroup;
     isEligible: boolean;
     isFree: boolean;
+    discountStatus: FreeTierDiscountStatus;
     totalTokens: number;
     grossCostUsd: number;
     discountUsd: number;
@@ -297,8 +337,8 @@ export class HardBudgetManager {
     reason: string;
   } {
     this.checkPeriodReset();
+    const group = this.getFreeTierGroup(model);
     const meta = getModelMetadata(model);
-    const group = meta.freeTierGroup || 'NONE';
     const cfg = this.config.openaiFreeTier;
 
     if (meta.provider !== 'OPENAI' || group === 'NONE') {
@@ -306,6 +346,7 @@ export class HardBudgetManager {
         group: 'NONE',
         isEligible: false,
         isFree: false,
+        discountStatus: 'NONE',
         totalTokens,
         grossCostUsd,
         discountUsd: 0,
@@ -317,8 +358,9 @@ export class HardBudgetManager {
     if (!cfg || !cfg.enabled) {
       return {
         group,
-        isEligible: false,
+        isEligible: true,
         isFree: false,
+        discountStatus: 'NONE',
         totalTokens,
         grossCostUsd,
         discountUsd: 0,
@@ -327,11 +369,12 @@ export class HardBudgetManager {
       };
     }
 
-    if (!cfg.verified) {
+    if (!cfg.verified || cfg.verificationStatus === 'UNVERIFIED') {
       return {
         group,
-        isEligible: false,
+        isEligible: true,
         isFree: false,
+        discountStatus: 'NONE',
         totalTokens,
         grossCostUsd,
         discountUsd: 0,
@@ -348,6 +391,7 @@ export class HardBudgetManager {
         group,
         isEligible: true,
         isFree: false,
+        discountStatus: 'NONE',
         totalTokens,
         grossCostUsd,
         discountUsd: 0,
@@ -356,16 +400,20 @@ export class HardBudgetManager {
       };
     }
 
+    const discountStatus: FreeTierDiscountStatus =
+      cfg.verificationStatus === 'CONFIRMED_BILLED' ? 'CONFIRMED_BILLED' : 'ESTIMATED';
+
     // Cumple con el cupo gratuito: 100% bonificado
     return {
       group,
       isEligible: true,
       isFree: true,
+      discountStatus,
       totalTokens,
       grossCostUsd,
       discountUsd: grossCostUsd,
       netCostUsd: 0,
-      reason: `Beneficio Data Sharing OpenAI aplicado: 100% bonificado (${group === 'MAIN' ? 'Grupo Principal' : 'Grupo Modelos Pequeños'}).`,
+      reason: `Beneficio Data Sharing OpenAI aplicado (${discountStatus === 'CONFIRMED_BILLED' ? 'Confirmado en facturación' : 'Estimado por declaración administrativa'}): 100% bonificado (${group === 'MAIN' ? 'Grupo Principal' : 'Grupo Modelos Pequeños'}).`,
     };
   }
 
@@ -511,8 +559,14 @@ export class HardBudgetManager {
     // Check if eligible for verified OpenAI free tier
     let isEstimatedFree = false;
     const group = this.getFreeTierGroup(params.model);
-    if (params.provider === 'OPENAI' && group !== 'NONE' && this.config.openaiFreeTier?.enabled && this.config.openaiFreeTier?.verified) {
-      const remainingFree = this.getRemainingFreeTokens(group);
+    if (
+      params.provider === 'OPENAI' &&
+      group !== 'NONE' &&
+      this.config.openaiFreeTier?.enabled &&
+      this.config.openaiFreeTier?.verified &&
+      this.config.openaiFreeTier?.verificationStatus !== 'UNVERIFIED'
+    ) {
+      const remainingFree = this.getRemainingFreeTokens(group, true);
       if (estimatedTokens <= remainingFree) {
         isEstimatedFree = true;
       }
@@ -658,6 +712,7 @@ export class HardBudgetManager {
     netCostUsd: number;
     isFreeTier: boolean;
     freeTierGroup: FreeTierGroup;
+    discountStatus: FreeTierDiscountStatus;
     benefitReason: string;
   } {
     const reservation = this.reservations.get(reservationId);
@@ -724,6 +779,7 @@ export class HardBudgetManager {
         discountUsd: discount,
         freeTierGroup: benefit.group,
         isFreeTier: isFree,
+        discountStatus: benefit.discountStatus,
       }
     );
 
@@ -733,12 +789,50 @@ export class HardBudgetManager {
       netCostUsd: netCost,
       isFreeTier: isFree,
       freeTierGroup: benefit.group,
+      discountStatus: benefit.discountStatus,
       benefitReason: benefit.reason,
     };
   }
 
   public releaseReservation(reservationId: string): void {
     this.reservations.delete(reservationId);
+  }
+
+  /**
+   * Reconciles usage against OpenAI organization usage data or administrative declaration.
+   * "El cupo gratuito pertenece a la organización."
+   */
+  public reconcileOrganizationalUsage(params: {
+    mainGroupUsedTokens?: number;
+    smallGroupUsedTokens?: number;
+    source: 'OPENAI_USAGE_API' | 'ADMIN_DECLARATION' | 'LOCAL_ESTIMATE';
+    evidenceDetails?: string;
+    verifiedBilled?: boolean;
+  }): void {
+    if (params.mainGroupUsedTokens !== undefined && params.mainGroupUsedTokens >= 0) {
+      this.mainGroupTokensUsedToday = Math.max(this.mainGroupTokensUsedToday, params.mainGroupUsedTokens);
+    }
+    if (params.smallGroupUsedTokens !== undefined && params.smallGroupUsedTokens >= 0) {
+      this.smallGroupTokensUsedToday = Math.max(this.smallGroupTokensUsedToday, params.smallGroupUsedTokens);
+    }
+    const cfg = this.config.openaiFreeTier;
+    if (cfg) {
+      cfg.reconciledAt = Date.now();
+      cfg.reconciliationSource = params.source;
+      if (params.evidenceDetails) {
+        cfg.billingEvidenceDetails = params.evidenceDetails;
+      }
+      if (params.verifiedBilled || params.source === 'OPENAI_USAGE_API') {
+        cfg.verificationStatus = 'CONFIRMED_BILLED';
+        cfg.verified = true;
+        cfg.isGlobalUsageEstimated = false;
+      } else if (params.source === 'ADMIN_DECLARATION') {
+        cfg.verificationStatus = 'DECLARED_BY_ADMIN';
+        cfg.verified = true;
+        cfg.isGlobalUsageEstimated = true;
+      }
+      this.config.updatedAt = Date.now();
+    }
   }
 
   /**
@@ -757,6 +851,7 @@ export class HardBudgetManager {
       discountUsd?: number;
       freeTierGroup?: FreeTierGroup;
       isFreeTier?: boolean;
+      discountStatus?: FreeTierDiscountStatus;
     }
   ): void {
     const roundedCost = parseFloat(costUsd.toFixed(6));
@@ -764,6 +859,7 @@ export class HardBudgetManager {
     const discount = freeTierMeta?.discountUsd !== undefined ? freeTierMeta.discountUsd : 0;
     const freeTierGroup = freeTierMeta?.freeTierGroup || 'NONE';
     const isFreeTier = freeTierMeta?.isFreeTier ?? false;
+    const discountStatus: FreeTierDiscountStatus = freeTierMeta?.discountStatus || (isFreeTier ? 'ESTIMATED' : 'NONE');
 
     const record = {
       id: `usg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -780,6 +876,7 @@ export class HardBudgetManager {
       discountUsd: discount,
       freeTierGroup,
       isFreeTier,
+      discountStatus,
     };
     this.usageRecords.push(record);
 
@@ -801,6 +898,7 @@ export class HardBudgetManager {
           costNetUsd: roundedCost,
           freeTierGroup,
           isFreeTier,
+          discountStatus,
           latencyMs,
           status,
         });
@@ -1041,20 +1139,26 @@ export class HardBudgetManager {
       openaiFreeTier: {
         enabled: !!cfg?.enabled,
         verified: !!cfg?.verified,
+        verificationStatus: cfg?.verificationStatus || (cfg?.verified ? 'CONFIRMED_BILLED' : 'UNVERIFIED'),
+        isGlobalUsageEstimated: cfg?.isGlobalUsageEstimated ?? true,
+        externalUsageBufferTokens: cfg?.externalUsageBufferTokens ?? 5000,
         verifiedAt: cfg?.verifiedAt || null,
+        reconciledAt: cfg?.reconciledAt || null,
+        reconciliationSource: cfg?.reconciliationSource || 'LOCAL_ESTIMATE',
+        billingEvidenceDetails: cfg?.billingEvidenceDetails || null,
         mainGroup: {
           limitTokens: mainLimit,
           usedTokens: mainUsed,
           remainingTokens: mainRemaining,
           percentUsed: mainPercent,
-          models: ['gpt-4o', 'gpt-6-luna', 'gpt-4-turbo'],
+          models: cfg?.mainGroupModels && cfg.mainGroupModels.length > 0 ? [...cfg.mainGroupModels] : [...OPENAI_FREE_TIER_LIMITS.DEFAULT_MAIN_MODELS],
         },
         smallGroup: {
           limitTokens: smallLimit,
           usedTokens: smallUsed,
           remainingTokens: smallRemaining,
           percentUsed: smallPercent,
-          models: ['gpt-4o-mini', 'o3-mini'],
+          models: cfg?.smallGroupModels && cfg.smallGroupModels.length > 0 ? [...cfg.smallGroupModels] : [...OPENAI_FREE_TIER_LIMITS.DEFAULT_SMALL_MODELS],
         },
         financialsToday: {
           grossSpendUsd: parseFloat(grossSpendToday.toFixed(4)),
@@ -1062,7 +1166,8 @@ export class HardBudgetManager {
           netSpendUsd: parseFloat(netSpendToday.toFixed(4)),
           freeTokensConsumed: freeTokensToday,
           paidTokensConsumed: Math.max(0, (promptTokens + completionTokens + reasoningTokens) - freeTokensToday),
-          verifiedBilledSpendUsd: cfg?.verified ? parseFloat(netSpendToday.toFixed(4)) : null,
+          verifiedBilledSpendUsd: cfg?.verificationStatus === 'CONFIRMED_BILLED' ? parseFloat(netSpendToday.toFixed(4)) : null,
+          discountStatus: cfg?.verificationStatus === 'CONFIRMED_BILLED' ? 'CONFIRMED_BILLED' : cfg?.verificationStatus === 'DECLARED_BY_ADMIN' ? 'ESTIMATED' : 'NONE',
         },
       },
       activeReservationsCount: this.reservations.size,

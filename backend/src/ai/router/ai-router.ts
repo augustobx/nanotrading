@@ -1,5 +1,5 @@
 import { AiProvider } from '../types.js';
-import { AI_MODELS_CATALOG, ModelMetadata, getValidatedModel } from '../models-catalog.js';
+import { AI_MODELS_CATALOG, ModelMetadata, getValidatedModel, calculateCallCost } from '../models-catalog.js';
 
 export type AiTaskType =
   | 'MARKET_SUMMARY'
@@ -53,6 +53,20 @@ export interface RouterAuditRecord extends RouterDecision {
   status: 'SUCCESS' | 'ERROR' | 'FALLBACK';
   error?: string;
   fallbackUsed?: boolean;
+}
+
+export interface ModelComparisonResult {
+  model: string;
+  provider: AiProvider;
+  latencyMs: number;
+  tokensPrompt: number;
+  tokensCompletion: number;
+  estimatedCostUsd: number;
+  verdict?: string;
+  confidence?: number;
+  responseSnippet?: string;
+  success: boolean;
+  error?: string;
 }
 
 export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
@@ -297,5 +311,82 @@ export class AiModelRouter {
 
   public getHistory(limit: number = 50): RouterAuditRecord[] {
     return this.decisionHistory.slice(0, limit);
+  }
+
+  /**
+   * Compares execution of multiple candidate models on an identical test prompt or task payload.
+   * Reproducible and isolated: does NOT alter signal state, risk engine, or consensus verdicts.
+   */
+  public async compareModels(params: {
+    task: AiTaskType;
+    candidateModels: string[];
+    testPayload: any;
+    executeInferenceFn?: (model: string, payload: any) => Promise<{
+      latencyMs: number;
+      tokensPrompt: number;
+      tokensCompletion: number;
+      verdict?: string;
+      confidence?: number;
+      responseSnippet?: string;
+    }>;
+  }): Promise<ModelComparisonResult[]> {
+    const results: ModelComparisonResult[] = [];
+    for (const model of params.candidateModels) {
+      const meta = AI_MODELS_CATALOG[model];
+      const provider = meta?.provider || (model.startsWith('gemini') ? 'GEMINI' : 'OPENAI');
+      if (params.executeInferenceFn) {
+        try {
+          const res = await params.executeInferenceFn(model, params.testPayload);
+          const cost = calculateCallCost(model, {
+            promptTokens: res.tokensPrompt,
+            completionTokens: res.tokensCompletion,
+          });
+          results.push({
+            model,
+            provider,
+            latencyMs: res.latencyMs,
+            tokensPrompt: res.tokensPrompt,
+            tokensCompletion: res.tokensCompletion,
+            estimatedCostUsd: cost,
+            verdict: res.verdict,
+            confidence: res.confidence,
+            responseSnippet: res.responseSnippet,
+            success: true,
+          });
+        } catch (err: any) {
+          results.push({
+            model,
+            provider,
+            latencyMs: 0,
+            tokensPrompt: 0,
+            tokensCompletion: 0,
+            estimatedCostUsd: 0,
+            success: false,
+            error: err.message || 'Error ejecutando inferencia en modelo de prueba',
+          });
+        }
+      } else {
+        // Deterministic baseline simulation for model benchmarking
+        const simPromptTokens = 2000;
+        const simCompletionTokens = 400;
+        const cost = calculateCallCost(model, {
+          promptTokens: simPromptTokens,
+          completionTokens: simCompletionTokens,
+        });
+        results.push({
+          model,
+          provider,
+          latencyMs: meta?.provider === 'GEMINI' ? 350 : 850,
+          tokensPrompt: simPromptTokens,
+          tokensCompletion: simCompletionTokens,
+          estimatedCostUsd: cost,
+          verdict: 'APPROVE',
+          confidence: 85,
+          responseSnippet: `Benchmark determinista reproducible para ${model}`,
+          success: true,
+        });
+      }
+    }
+    return results;
   }
 }

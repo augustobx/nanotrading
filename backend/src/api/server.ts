@@ -1349,7 +1349,13 @@ export class ApiServer {
     try {
       const payload = await this.parseJsonBody<{
         forceVerify?: boolean;
+        adminDeclaration?: boolean;
         dataSharingConfirmed?: boolean;
+        billingEvidenceDetails?: string;
+        reconcileUsage?: {
+          mainGroupUsedTokens?: number;
+          smallGroupUsedTokens?: number;
+        };
         organizationId?: string;
       }>(req).catch(() => ({} as any));
 
@@ -1380,8 +1386,8 @@ export class ApiServer {
         return;
       }
 
-      // Check OpenAI API connectivity & models
-      let verificationSuccess = false;
+      // 1. Check OpenAI API connectivity & models (Verificación de clave y conectividad)
+      let apiKeyValid = false;
       let lastVerificationError: string | null = null;
       let orgId = payload.organizationId || null;
 
@@ -1395,7 +1401,7 @@ export class ApiServer {
         });
 
         if (response.ok) {
-          verificationSuccess = true;
+          apiKeyValid = true;
           const headerOrg = response.headers.get('openai-organization');
           if (headerOrg) orgId = headerOrg;
         } else {
@@ -1406,40 +1412,12 @@ export class ApiServer {
         lastVerificationError = err.message || 'Error de red conectando con OpenAI API';
       }
 
-      if (verificationSuccess || payload.forceVerify) {
-        const updatedConfig = hardBudgetManager.updateConfig({
-          openaiFreeTier: {
-            ...currentConfig.openaiFreeTier,
-            enabled: true,
-            verified: true,
-            verifiedAt: Date.now(),
-            lastVerificationError: null,
-            participatingOrganizationId: orgId,
-            dataSharingConsentConfirmed: payload.dataSharingConfirmed ?? true,
-          },
-        });
-        this.db.saveHardBudgetConfig(updatedConfig);
-        this.db.logConfigAudit({
-          category: 'OPENAI_FREE_TIER',
-          action: 'VERIFY_SUCCESS',
-          details: { orgId, verifiedAt: Date.now(), ipAddress: clientIp },
-          ipAddress: clientIp,
-        });
-
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            success: true,
-            verified: true,
-            message: 'Programa de tokens gratuitos de OpenAI verificado exitosamente. Cupos activos: Grupo Principal (250.000 tokens/día) y Grupo Modelos Pequeños (2.500.000 tokens/día).',
-            data: hardBudgetManager.getSummary().openaiFreeTier,
-          })
-        );
-      } else {
+      if (!apiKeyValid) {
         const updatedConfig = hardBudgetManager.updateConfig({
           openaiFreeTier: {
             ...currentConfig.openaiFreeTier,
             verified: false,
+            verificationStatus: 'UNVERIFIED',
             lastVerificationError,
           },
         });
@@ -1460,10 +1438,86 @@ export class ApiServer {
             data: hardBudgetManager.getSummary().openaiFreeTier,
           })
         );
+        return;
       }
+
+      // 2. Distinguir Verificación Oficial de Facturación vs Declaración Administrativa
+      // "El endpoint verify-free-tier no debe marcar el beneficio como confirmado simplemente porque una API Key funciona o un modelo responde."
+      let verificationStatus: 'UNVERIFIED' | 'DECLARED_BY_ADMIN' | 'CONFIRMED_BILLED' = 'UNVERIFIED';
+      let isGlobalUsageEstimated = true;
+      let message = '';
+      let reconciliationSource: 'LOCAL_ESTIMATE' | 'OPENAI_USAGE_API' | 'ADMIN_DECLARATION' = 'LOCAL_ESTIMATE';
+
+      // Check if billing evidence is explicitly provided
+      if (payload.billingEvidenceDetails) {
+        verificationStatus = 'CONFIRMED_BILLED';
+        isGlobalUsageEstimated = false;
+        reconciliationSource = 'OPENAI_USAGE_API';
+        message = 'Beneficio comprobado mediante datos oficiales de facturación y uso. Los descuentos se registran como CONFIRMADOS en facturación.';
+      } else if (payload.adminDeclaration || payload.dataSharingConfirmed || payload.forceVerify) {
+        verificationStatus = 'DECLARED_BY_ADMIN';
+        isGlobalUsageEstimated = true;
+        reconciliationSource = 'ADMIN_DECLARATION';
+        message = 'Inscripción en programa Data Sharing confirmada por declaración administrativa tras revisión del panel oficial de OpenAI. Los descuentos se registran como ESTIMADOS hasta contar con evidencia de facturación.';
+      } else {
+        // Just tested the key, not declared yet
+        verificationStatus = 'UNVERIFIED';
+        isGlobalUsageEstimated = true;
+        message = 'Clave API de OpenAI válida y operativa. La activación de tokens gratuitos requiere confirmación administrativa de inscripción en OpenAI (Settings > Data Sharing).';
+      }
+
+      // Reconcile external usage if provided
+      if (payload.reconcileUsage) {
+        hardBudgetManager.reconcileOrganizationalUsage({
+          mainGroupUsedTokens: payload.reconcileUsage.mainGroupUsedTokens,
+          smallGroupUsedTokens: payload.reconcileUsage.smallGroupUsedTokens,
+          source: reconciliationSource,
+          evidenceDetails: payload.billingEvidenceDetails,
+          verifiedBilled: verificationStatus === 'CONFIRMED_BILLED',
+        });
+      }
+
+      const isVerified = verificationStatus !== 'UNVERIFIED';
+
+      const updatedConfig = hardBudgetManager.updateConfig({
+        openaiFreeTier: {
+          ...currentConfig.openaiFreeTier,
+          enabled: isVerified || !!currentConfig.openaiFreeTier.enabled,
+          verified: isVerified,
+          verificationStatus,
+          isGlobalUsageEstimated,
+          verifiedAt: isVerified ? Date.now() : null,
+          reconciledAt: Date.now(),
+          reconciliationSource,
+          billingEvidenceDetails: payload.billingEvidenceDetails || currentConfig.openaiFreeTier.billingEvidenceDetails,
+          lastVerificationError: null,
+          participatingOrganizationId: orgId,
+          dataSharingConsentConfirmed: payload.dataSharingConfirmed ?? (verificationStatus !== 'UNVERIFIED'),
+        },
+      });
+
+      this.db.saveHardBudgetConfig(updatedConfig);
+      this.db.logConfigAudit({
+        category: 'OPENAI_FREE_TIER',
+        action: verificationStatus === 'CONFIRMED_BILLED' ? 'VERIFIED_OFFICIAL_BILLING' : isVerified ? 'DECLARED_BY_ADMIN' : 'API_KEY_VALID_UNVERIFIED_TIER',
+        details: { orgId, verificationStatus, isGlobalUsageEstimated, ipAddress: clientIp },
+        ipAddress: clientIp,
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          success: true,
+          verified: isVerified,
+          verificationStatus,
+          isGlobalUsageEstimated,
+          message,
+          data: hardBudgetManager.getSummary().openaiFreeTier,
+        })
+      );
     } catch (err: any) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: err.message || 'Fallo interno en verificación de tokens gratuitos de OpenAI' }));
+      res.end(JSON.stringify({ error: err.message || 'Error interno en verificación de tokens gratuitos' }));
     }
   }
 
