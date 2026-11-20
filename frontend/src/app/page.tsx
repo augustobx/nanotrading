@@ -1,0 +1,531 @@
+'use client';
+
+import React, { useEffect, useState, useRef } from 'react';
+import { PaletteSelector } from '../nanolabs-components/PaletteSelector';
+import { useERPTheme } from '../nanolabs-components/ThemeContext';
+import { CandleChart, Timeframe } from '../components/CandleChart';
+import { OrderBookWidget } from '../components/OrderBookWidget';
+import { MultiTimeframeMatrix } from '../components/MultiTimeframeMatrix';
+import { AiAnalystsCard } from '../components/AiAnalystsCard';
+import {
+  Activity,
+  Shield,
+  Clock,
+  ArrowUpRight,
+  ArrowDownRight,
+  Layers,
+  Database,
+  RefreshCw,
+  Sun,
+  Moon,
+} from 'lucide-react';
+
+interface CandleData {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  turnover: number;
+  confirmed?: boolean;
+}
+
+interface TickerData {
+  symbol: string;
+  lastPrice: number;
+  markPrice: number;
+  indexPrice: number;
+  bid1Price: number;
+  ask1Price: number;
+  spread: number;
+  spreadPcnt: number;
+  highPrice24h: number;
+  lowPrice24h: number;
+  price24hPcnt: number;
+  volume24h: number;
+  turnover24h: number;
+  fundingRate: number;
+  openInterest: number;
+}
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws/live';
+
+export default function DashboardPage() {
+  const { palette, isDark, toggleDarkMode } = useERPTheme();
+
+  const [timeframe, setTimeframe] = useState<Timeframe>('15m');
+  const [ticker, setTicker] = useState<TickerData | null>(null);
+  const [prevPrice, setPrevPrice] = useState<number>(0);
+  const [priceFlash, setPriceFlash] = useState<'up' | 'down' | null>(null);
+  const [orderBook, setOrderBook] = useState<any>(null);
+  const [candles, setCandles] = useState<CandleData[]>([]);
+  const [currentCandles, setCurrentCandles] = useState<Record<Timeframe, CandleData | null>>({
+    '1m': null,
+    '5m': null,
+    '15m': null,
+    '1h': null,
+    '4h': null,
+    '1d': null,
+  });
+  const [lastClosedCandles, setLastClosedCandles] = useState<Record<Timeframe, CandleData | null>>({
+    '1m': null,
+    '5m': null,
+    '15m': null,
+    '1h': null,
+    '4h': null,
+    '1d': null,
+  });
+
+  const [wsConnected, setWsConnected] = useState<boolean>(false);
+  const [wsLatency, setWsLatency] = useState<number>(0);
+  const [systemStatus, setSystemStatus] = useState<string>('OBSERVING');
+  const [systemEvents, setSystemEvents] = useState<any[]>([]);
+  const [argentinaTime, setArgentinaTime] = useState<string>('');
+
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // Time clock update for America/Argentina/Buenos_Aires
+  useEffect(() => {
+    const updateTime = () => {
+      const now = new Date();
+      setArgentinaTime(
+        now.toLocaleTimeString('es-AR', {
+          timeZone: 'America/Argentina/Buenos_Aires',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        })
+      );
+    };
+    updateTime();
+    const timer = setInterval(updateTime, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Fetch initial candles for active timeframe
+  const fetchCandles = async (tf: Timeframe) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/market/candles?timeframe=${tf}&limit=150`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.data) {
+          setCandles(json.data);
+        }
+      }
+    } catch {}
+  };
+
+  // Fetch initial events
+  const fetchEvents = async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/events?limit=8`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success && json.data) {
+          setSystemEvents(json.data);
+        }
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    fetchCandles(timeframe);
+  }, [timeframe]);
+
+  useEffect(() => {
+    fetchEvents();
+    const timer = setInterval(fetchEvents, 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // WebSocket Live Connection
+  useEffect(() => {
+    let isSubscribed = true;
+
+    const connectWs = () => {
+      try {
+        const ws = new WebSocket(WS_URL);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          if (!isSubscribed) return;
+          setWsConnected(true);
+        };
+
+        ws.onmessage = (event) => {
+          if (!isSubscribed) return;
+          try {
+            const msg = JSON.parse(event.data);
+
+            if (msg.type === 'initial_state') {
+              const state = msg.data;
+              if (state.ticker) setTicker(state.ticker);
+              if (state.orderBook) setOrderBook(state.orderBook);
+              if (state.currentCandle) setCurrentCandles(state.currentCandle);
+              if (state.lastClosedCandle) setLastClosedCandles(state.lastClosedCandle);
+              setWsLatency(state.wsLatencyMs || 0);
+              setSystemStatus(state.status || 'OBSERVING');
+            } else if (msg.type === 'ticker') {
+              setTicker((prev) => {
+                if (prev && msg.data.lastPrice !== prev.lastPrice) {
+                  setPriceFlash(msg.data.lastPrice > prev.lastPrice ? 'up' : 'down');
+                  setTimeout(() => setPriceFlash(null), 800);
+                }
+                return msg.data;
+              });
+            } else if (msg.type === 'candle_updated') {
+              const c = msg.data;
+              setCurrentCandles((prev) => ({ ...prev, [c.timeframe]: c }));
+              // If this is the active timeframe, update candles
+              if (c.timeframe === timeframe) {
+                setCandles((prev) => {
+                  const idx = prev.findIndex((item) => item.timestamp === c.timestamp);
+                  if (idx >= 0) {
+                    const next = [...prev];
+                    next[idx] = c;
+                    return next;
+                  }
+                  return [...prev, c];
+                });
+              }
+            } else if (msg.type === 'candle_closed') {
+              const c = msg.data;
+              setLastClosedCandles((prev) => ({ ...prev, [c.timeframe]: c }));
+              setCurrentCandles((prev) => ({ ...prev, [c.timeframe]: null }));
+              if (c.timeframe === timeframe) {
+                setCandles((prev) => {
+                  const idx = prev.findIndex((item) => item.timestamp === c.timestamp);
+                  if (idx >= 0) {
+                    const next = [...prev];
+                    next[idx] = c;
+                    return next;
+                  }
+                  return [...prev, c];
+                });
+              }
+            } else if (msg.type === 'orderbook') {
+              setOrderBook(msg.data);
+            } else if (msg.type === 'state') {
+              setSystemStatus(msg.data.status);
+              setWsLatency(msg.data.wsLatencyMs);
+            }
+          } catch {}
+        };
+
+        ws.onclose = () => {
+          if (!isSubscribed) return;
+          setWsConnected(false);
+          setTimeout(connectWs, 3000);
+        };
+
+        ws.onerror = () => {
+          ws.close();
+        };
+      } catch {
+        setTimeout(connectWs, 3000);
+      }
+    };
+
+    connectWs();
+
+    return () => {
+      isSubscribed = false;
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [timeframe]);
+
+  const priceColor =
+    priceFlash === 'up'
+      ? 'bg-emerald-500/20 text-emerald-300'
+      : priceFlash === 'down'
+      ? 'bg-rose-500/20 text-rose-300'
+      : 'text-white';
+
+  const is24hPositive = (ticker?.price24hPcnt || 0) >= 0;
+
+  return (
+    <div className="min-h-screen bg-[#0c0f17] text-slate-100 flex flex-col">
+      {/* NanoLabs Header Oficial (80px standard) */}
+      <header className="h-20 border-b border-slate-800/80 bg-[#0f1422]/90 backdrop-blur-md px-4 sm:px-6 flex items-center justify-between sticky top-0 z-40">
+        <div className="flex items-center gap-4">
+          {/* App Tile degradé con micro-rotación hover */}
+          <div className="flex items-center gap-3">
+            <div
+              className="w-11 h-11 rounded-2xl flex items-center justify-center shadow-lg transition-transform hover:rotate-6 cursor-pointer"
+              style={{ background: palette.gradient }}
+            >
+              <Activity className="w-6 h-6 text-white stroke-[2.5]" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="font-display font-extrabold text-base sm:text-lg text-white tracking-wide">
+                  NanoLabs AI Trading
+                </h1>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300">
+                  v1.0
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-400 font-mono">
+                BTCUSDT Perpetual · Bybit V5 Linear
+              </p>
+            </div>
+          </div>
+
+          {/* Connection Status Badge */}
+          <div className="hidden md:flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-1.5 font-mono text-xs">
+            <span
+              className={`w-2.5 h-2.5 rounded-full ${
+                wsConnected ? 'bg-emerald-500 pulse-live shadow-emerald-500/50' : 'bg-rose-500'
+              }`}
+            />
+            <span className="text-slate-300 font-semibold">
+              {wsConnected ? 'Bybit WS Activo' : 'Reconectando...'}
+            </span>
+            {wsConnected && (
+              <span className="text-slate-500 text-[10px]">({wsLatency}ms)</span>
+            )}
+          </div>
+        </div>
+
+        {/* Right Header Controls */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          {/* Buenos Aires Time Badge */}
+          <div className="hidden lg:flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-1.5 font-mono text-xs text-slate-300">
+            <Clock className="w-3.5 h-3.5 text-slate-400" />
+            <span>{argentinaTime || 'Hora AR'}</span>
+            <span className="text-[10px] text-slate-500">ART</span>
+          </div>
+
+          {/* Palette Selector Oficial */}
+          <PaletteSelector />
+
+          {/* Dark Mode Toggle */}
+          <button
+            onClick={toggleDarkMode}
+            className="p-2 rounded-xl border border-slate-800 bg-slate-900/80 text-slate-300 hover:text-white transition-all cursor-pointer"
+            title="Alternar tema claro/oscuro"
+          >
+            {isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-400" />}
+          </button>
+        </div>
+      </header>
+
+      {/* Operational Security Bar */}
+      <div className="bg-slate-900/90 border-b border-slate-800/80 px-4 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 text-emerald-400">
+            <Shield className="w-4 h-4" />
+            <span className="font-bold">MODO: SIGNALS_ONLY</span>
+          </div>
+          <span className="text-slate-600 hidden sm:inline">|</span>
+          <span className="text-slate-400 hidden sm:inline">
+            Ejecución Real: <strong className="text-rose-400">DESHABILITADA</strong>
+          </span>
+          <span className="text-slate-600 hidden md:inline">|</span>
+          <span className="text-slate-400 hidden md:inline">
+            Kill Switch: <strong className="text-emerald-400">STANDBY OK</strong>
+          </span>
+        </div>
+        <div className="flex items-center gap-3 text-slate-400">
+          <span>Riesgo/Op: <strong className="text-slate-200">0.5%</strong></span>
+          <span>Pérdida Diaria: <strong className="text-slate-200">1.5%</strong></span>
+          <span>R:R Neto Mín: <strong className="text-amber-400">1:4</strong></span>
+        </div>
+      </div>
+
+      {/* Main Content Area */}
+      <main className="flex-1 p-4 sm:p-6 space-y-5 max-w-[1700px] w-full mx-auto">
+        {/* Real-time Ticker Ribbon */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          {/* Last Price Tile */}
+          <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
+            <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
+              Precio Last
+            </p>
+            <div className={`text-xl sm:text-2xl font-mono font-extrabold transition-all rounded px-1 -mx-1 ${priceColor}`}>
+              ${ticker ? ticker.lastPrice.toLocaleString('en-US', { minimumFractionDigits: 1 }) : '---'}
+            </div>
+            <div className="flex items-center gap-1 mt-1 text-xs font-mono">
+              <span className={`flex items-center font-bold ${is24hPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {is24hPositive ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
+                {ticker ? `${(ticker.price24hPcnt * 100).toFixed(2)}%` : '0.00%'}
+              </span>
+              <span className="text-slate-500 text-[10px]">24h</span>
+            </div>
+          </div>
+
+          {/* Mark & Index Price */}
+          <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
+            <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
+              Mark / Index Price
+            </p>
+            <div className="text-base sm:text-lg font-mono font-bold text-slate-200">
+              ${ticker ? ticker.markPrice.toFixed(1) : '---'}
+            </div>
+            <p className="text-xs font-mono text-slate-400 mt-1">
+              Index: ${ticker ? ticker.indexPrice.toFixed(1) : '---'}
+            </p>
+          </div>
+
+          {/* Spread */}
+          <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
+            <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
+              Spread Bid-Ask
+            </p>
+            <div className="text-base sm:text-lg font-mono font-bold text-amber-400">
+              ${ticker ? ticker.spread.toFixed(2) : '---'}
+            </div>
+            <p className="text-xs font-mono text-slate-400 mt-1">
+              {ticker ? `${ticker.spreadPcnt.toFixed(4)}%` : '---'}
+            </p>
+          </div>
+
+          {/* 24h High / Low */}
+          <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
+            <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
+              24h High / Low
+            </p>
+            <div className="text-xs font-mono text-emerald-400 font-semibold">
+              H: ${ticker ? ticker.highPrice24h.toFixed(1) : '---'}
+            </div>
+            <div className="text-xs font-mono text-rose-400 font-semibold mt-1">
+              L: ${ticker ? ticker.lowPrice24h.toFixed(1) : '---'}
+            </div>
+          </div>
+
+          {/* Funding Rate */}
+          <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
+            <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
+              Funding Rate
+            </p>
+            <div className="text-base sm:text-lg font-mono font-bold text-purple-400">
+              {ticker ? `${(ticker.fundingRate * 100).toFixed(4)}%` : '---'}
+            </div>
+            <p className="text-xs font-mono text-slate-400 mt-1">
+              Intervalo 8h
+            </p>
+          </div>
+
+          {/* Open Interest */}
+          <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
+            <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
+              Open Interest
+            </p>
+            <div className="text-base sm:text-lg font-mono font-bold text-blue-400">
+              {ticker ? `${ticker.openInterest.toFixed(0)} BTC` : '---'}
+            </div>
+            <p className="text-xs font-mono text-slate-400 mt-1">
+              Vol 24h: {ticker ? `${(ticker.volume24h / 1000).toFixed(1)}k BTC` : '---'}
+            </p>
+          </div>
+        </div>
+
+        {/* Central Grid: Chart (2/3) + Order Book (1/3) */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+          <div className="lg:col-span-2 space-y-5">
+            <CandleChart
+              candles={candles}
+              currentCandle={currentCandles[timeframe]}
+              timeframe={timeframe}
+              onTimeframeChange={setTimeframe}
+              symbol="BTCUSDT"
+              isDark={isDark}
+            />
+          </div>
+
+          <div className="lg:col-span-1 space-y-5">
+            <OrderBookWidget orderBook={orderBook} />
+          </div>
+        </div>
+
+        {/* Multi-Timeframe Matrix */}
+        <MultiTimeframeMatrix
+          currentCandles={currentCandles}
+          lastClosedCandles={lastClosedCandles}
+          activeTimeframe={timeframe}
+          onSelectTimeframe={setTimeframe}
+        />
+
+        {/* AI Analysts Panel */}
+        <AiAnalystsCard />
+
+        {/* Audit & System Event Log */}
+        <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-4 shadow-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-3">
+            <div className="flex items-center gap-2">
+              <Database className="w-4 h-4 text-slate-400" />
+              <h3 className="font-display font-bold text-sm text-slate-200 uppercase tracking-wider">
+                Registro de Eventos del Sistema & Auditoría
+              </h3>
+            </div>
+            <span className="text-[11px] font-mono text-slate-500">
+              Persistencia SQLite WAL / PostgreSQL
+            </span>
+          </div>
+
+          <div className="overflow-x-auto custom-scrollbar">
+            <table className="w-full text-left font-mono text-xs">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-500 text-[11px]">
+                  <th className="pb-2">Hora</th>
+                  <th className="pb-2">Nivel</th>
+                  <th className="pb-2">Componente</th>
+                  <th className="pb-2">Mensaje</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/50">
+                {systemEvents.length > 0 ? (
+                  systemEvents.map((ev, i) => (
+                    <tr key={ev.id || i} className="hover:bg-slate-900/40">
+                      <td className="py-2 text-slate-400 whitespace-nowrap">
+                        {new Date(ev.timestamp).toLocaleTimeString('es-AR')}
+                      </td>
+                      <td className="py-2">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            ev.level === 'CRITICAL'
+                              ? 'bg-rose-500/20 text-rose-400'
+                              : ev.level === 'ERROR'
+                              ? 'bg-rose-500/10 text-rose-400'
+                              : ev.level === 'WARN'
+                              ? 'bg-amber-500/10 text-amber-400'
+                              : 'bg-emerald-500/10 text-emerald-400'
+                          }`}
+                        >
+                          {ev.level}
+                        </span>
+                      </td>
+                      <td className="py-2 text-slate-300 font-semibold">{ev.component}</td>
+                      <td className="py-2 text-slate-400">{ev.message}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={4} className="py-4 text-center text-slate-600">
+                      No hay eventos recientes registrados.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </main>
+
+      {/* Footer Oficial NanoLabs */}
+      <footer className="border-t border-slate-800/80 bg-[#0f1422] py-4 px-6 text-center text-xs text-slate-500 font-mono flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-emerald-500" />
+          <span>NanoLabs AI Trading · Sistema Cuantitativo 24/7</span>
+        </div>
+        <div>
+          <span>Powered by <strong>NanoLabs</strong></span>
+        </div>
+      </footer>
+    </div>
+  );
+}

@@ -1,0 +1,28 @@
+{
+  "name": "nanolabs-ai-trading",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NanoLabs AI Trading - Sistema inteligente de análisis cuantitativo y monitoreo de trading 24/7",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev:backend": "npm run dev --workspace=backend",
+    "dev:frontend": "npm run dev --workspace=frontend",
+    "test:backend": "npm run test --workspace=backend",
+    "test:integration": "npm run test:integration --workspace=backend",
+    "build:backend": "npm run build --workspace=backend",
+    "build:frontend": "npm run build --workspace=frontend"
+  },
+  "keywords": [
+    "trading",
+    "bybit",
+    "nanolabs",
+    "ai",
+    "crypto",
+    "quant"
+  ],
+  "author": "NanoLabs",
+  "license": "UNLICENSED"
+}
