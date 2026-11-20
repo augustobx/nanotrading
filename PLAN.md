@@ -12,8 +12,8 @@
 
 | Fase | Título | Alcance Principal | Estado |
 | :--- | :--- | :--- | :--- |
-| **Fase 0** | Auditoría, Arquitectura y Preparación | Estructura del proyecto, tipados, docker aislado, CI/scripts, base de datos | **EN PROGRESO** |
-| **Fase 1** | Bybit y Mercado en Tiempo Real | Clientes V5 REST & WS, streams multitemporales, gaps, orderbook, server API, gráficos en vivo | **EN PROGRESO** |
+| **Fase 0** | Auditoría, Arquitectura y Preparación | Estructura del proyecto, tipados, docker aislado, CI/scripts, base de datos | **COMPLETADA** |
+| **Fase 1** | Bybit y Mercado en Tiempo Real | Clientes V5 REST & WS, streams multitemporales, gaps, orderbook, server API, gráficos en vivo | **COMPLETADA** |
 | **Fase 2** | Motor Técnico Cuantitativo & SMC/ICT | Detección de Swings, BOS, CHoCH, FVG, OB, Liquidez, Estrategias A y B, R:R 1:4 estricto | PENDIENTE |
 | **Fase 3** | Integración de IA & Motor de Consenso | Proveedores OpenAI y Gemini independientes, schemas estructurados, consenso, control de costos | PENDIENTE |
 | **Fase 4** | Alertas, Máquina de Estados y PWA | Ciclo de vida completo de señales, Telegram Bot, Web Push PWA, UI con NanoLabs Theme 2 | PENDIENTE |
@@ -34,18 +34,18 @@
 - [x] Inicializar repositorio Git y `.gitignore`.
 - [x] Documentar `AGENTS.md` con reglas permanentes.
 - [x] Crear `PLAN.md` maestro.
-- [ ] Configurar `package.json` raíz y estructura de directorios:
+- [x] Configurar `package.json` raíz y estructura de directorios:
   - `backend/`: Core de trading, ingestion de mercado, cálculo cuantitativo, persistencia, servidor HTTP/WS.
   - `frontend/`: Aplicación Next.js PWA con Tailwind CSS, componentes oficiales NanoLabs Theme 2 y visualizador financiero.
   - `docker/`: Configuración Docker Compose aislada para PostgreSQL, Redis, backend y frontend.
-- [ ] Definir esquemas de base de datos para velas (`candles`), libros (`orderbook_snapshots`), eventos (`market_events`), configuraciones (`trading_config`), setups, señales y auditoría.
-- [ ] Configurar capa de base de datos compatible (PostgreSQL para producción/docker y SQLite para desarrollo y tests locales inmediatos sin dependencias externas obligatorias).
-- [ ] Verificar healthcheck básico y scripts de compilación TypeScript.
+- [x] Definir esquemas de base de datos para velas (`candles`), libros (`orderbook_snapshots`), eventos (`market_events`), configuraciones (`trading_config`), setups, señales y auditoría.
+- [x] Configurar capa de base de datos compatible (PostgreSQL para producción/docker y SQLite WAL para desarrollo y tests locales inmediatos sin dependencias externas obligatorias).
+- [x] Verificar healthcheck básico y scripts de compilación TypeScript.
 
 ### Criterios de Aceptación Fase 0
-- El proyecto compila sin errores de tipos TypeScript en modo estricto.
-- Se cuenta con entorno ejecutable de backend y frontend.
-- Los contenedores Docker están aislados y no interfieren con ningún servicio existente de NanoLabs.
+- El proyecto compila sin errores de tipos TypeScript en modo estricto. (VERIFICADO)
+- Se cuenta con entorno ejecutable de backend y frontend. (VERIFICADO)
+- Los contenedores Docker están aislados y no interfieren con ningún servicio existente de NanoLabs. (VERIFICADO)
 
 ---
 
@@ -59,49 +59,50 @@
 - Exponer API HTTP y WebSocket interno para el panel PWA y alimentar el gráfico interactivo con velas reales.
 
 ### Tareas Detalladas
-- [ ] Implementar `BybitRestClient`:
+- [x] Implementar `BybitRestClient`:
   - `getKlines(category, symbol, interval, limit, start, end)`
   - `getTicker(category, symbol)`
   - `getOrderBook(category, symbol, limit)`
   - `getInstrumentsInfo(category, symbol)`
   - `getRecentTrades(category, symbol, limit)`
   - Manejo de rate limits (header tracking) y backoff exponencial con jitter ante errores 429/5xx.
-- [ ] Implementar `BybitWsClient`:
+- [x] Implementar `BybitWsClient`:
   - Conexión a `wss://stream.bybit.com/v5/public/linear`
   - Heartbeat ping cada 20 segundos con verificación de pong.
-  - Suscripción dinámica a tópicos: `tickers.BTCUSDT`, `kline.{interval}.BTCUSDT`, `orderbook.50.BTCUSDT`, `publicTrade.BTCUSDT`, `liquidation.BTCUSDT`.
+  - Suscripción dinámica a tópicos: `tickers.BTCUSDT`, `kline.{interval}.BTCUSDT`, `orderbook.50.BTCUSDT`, `publicTrade.BTCUSDT`, `allLiquidation.BTCUSDT`.
   - Detección de stream congelado (watchdog timer).
   - Reconexión automática sin pérdida de estado.
-- [ ] Implementar `CandleManager`:
+- [x] Implementar `CandleManager`:
   - Soporte para 1m, 5m, 15m, 1h, 4h, 1d.
   - Distinción estricta de vela abierta (`confirm: false`) vs vela cerrada (`confirm: true`).
   - Detección de gaps temporales y sincronización automática vía REST.
   - Almacenamiento eficiente en memoria (buffer circular) y persistencia en DB.
-- [ ] Implementar `OrderBookManager`:
+- [x] Implementar `OrderBookManager`:
   - Procesamiento de snapshots y deltas Bybit V5 con validación de secuencia.
   - Cálculo de spread (Bid-Ask), Best Bid, Best Ask y desequilibrio de liquidez (order book imbalance).
-- [ ] Implementar API Server (HTTP + WebSocket):
+- [x] Implementar API Server (HTTP + WebSocket):
   - `GET /health`: Estado detallado de conectividad Bybit, latencia, último mensaje WS, tiempo de última vela cerrada por temporalidad.
   - `GET /api/v1/market/state`: Ticker en vivo, mark price, spread, funding, open interest.
   - `GET /api/v1/market/candles`: Velas históricas verificables por temporalidad.
   - `GET /api/v1/market/orderbook`: Snapshot del libro y spread.
   - WebSocket interno `/ws/live`: Emisión en tiempo real de ticks, velas actualizadas y estado para el frontend.
-- [ ] Implementar Frontend PWA con datos reales:
+- [x] Implementar Frontend PWA con datos reales:
   - Gráfico profesional de velas japonesas interactivas (TradingView Lightweight Charts).
   - Selector de temporalidades (1m, 5m, 15m, 1h, 4h, 1d).
   - Indicadores de conexión en vivo con Bybit (latencia en ms, timestamp UTC y AR).
   - Tarjetas de métricas en tiempo real: Last, Mark, Index, Spread, 24h Vol, Funding Rate, Open Interest.
   - Header NanoLabs oficial de 80px con selector de 7 paletas y dark mode.
-- [ ] Batería de Tests de Fase 1:
+- [x] Batería de Tests de Fase 1:
   - Test unitario: parsing de mensajes WS Bybit y normalización de velas.
   - Test unitario: detección de gaps en secuencia de velas y disparador de backfill.
   - Test de integración: conectividad REST real con Bybit V5.
   - Test de integración: streaming de WebSocket real y recepción de tickers y velas.
+  - Test de integración end-to-end de servidor HTTP y WebSocket interno.
 
 ### Criterios de Aceptación Fase 1
-- El usuario puede abrir la aplicación y ver BTCUSDT en vivo con velas reales de Bybit en los 6 marcos temporales.
-- Al forzar una desconexión de red o reinicio del servicio, el sistema se reconecta automáticamente y rellena cualquier gap detectado sin duplicar velas.
-- Las cotizaciones y métricas de Bybit coinciden exactamente con la realidad del exchange.
+- El usuario puede abrir la aplicación y ver BTCUSDT en vivo con velas reales de Bybit en los 6 marcos temporales. (VERIFICADO)
+- Al forzar una desconexión de red o reinicio del servicio, el sistema se reconecta automáticamente y rellena cualquier gap detectado sin duplicar velas. (VERIFICADO)
+- Las cotizaciones y métricas de Bybit coinciden exactamente con la realidad del exchange. (VERIFICADO)
 
 ---
 
