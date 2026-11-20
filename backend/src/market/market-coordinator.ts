@@ -15,6 +15,10 @@ import { OrderBookManager } from './orderbook-manager.js';
 import { DatabaseService } from '../storage/database.js';
 import { SetupEngine } from '../engine/setup-engine.js';
 import { ConsensusEngine } from '../ai/consensus-engine.js';
+import { SignalStateMachine } from '../engine/signal-state-machine.js';
+import { TelegramNotifier } from '../notifications/telegram-notifier.js';
+import { WebPushNotifier } from '../notifications/web-push-notifier.js';
+import { MarketMonitorWorker } from '../engine/market-monitor-worker.js';
 import { config } from '../config/index.js';
 
 export class MarketCoordinator extends EventEmitter {
@@ -24,6 +28,10 @@ export class MarketCoordinator extends EventEmitter {
   private orderBookManager: OrderBookManager;
   private setupEngine: SetupEngine;
   private consensusEngine: ConsensusEngine;
+  private signalStateMachine: SignalStateMachine;
+  private telegramNotifier: TelegramNotifier;
+  private webPushNotifier: WebPushNotifier;
+  private marketMonitorWorker: MarketMonitorWorker;
   private db: DatabaseService;
   private symbol: string;
   private instrumentInfo: InstrumentInfo | null = null;
@@ -50,6 +58,16 @@ export class MarketCoordinator extends EventEmitter {
     this.setupEngine = new SetupEngine(this.candleManager, this.db);
     this.consensusEngine = new ConsensusEngine({
       coordinator: this,
+      db: this.db,
+    });
+    this.signalStateMachine = new SignalStateMachine(this.db);
+    this.telegramNotifier = new TelegramNotifier(this.db);
+    this.webPushNotifier = new WebPushNotifier(this.db);
+    this.marketMonitorWorker = new MarketMonitorWorker({
+      coordinator: this,
+      stateMachine: this.signalStateMachine,
+      telegramNotifier: this.telegramNotifier,
+      webPushNotifier: this.webPushNotifier,
       db: this.db,
     });
 
@@ -141,6 +159,14 @@ export class MarketCoordinator extends EventEmitter {
         }
       }
     });
+
+    // Forward Signal State Machine events
+    this.signalStateMachine.on('state_changed', (evt) => {
+      this.emit('signal_state_changed', evt);
+    });
+    this.signalStateMachine.on('metrics_updated', (signal) => {
+      this.emit('signal_metrics_updated', signal);
+    });
   }
 
   public async bootstrap(): Promise<void> {
@@ -181,7 +207,10 @@ export class MarketCoordinator extends EventEmitter {
       // 6. Run quantitative setup engine analysis across loaded candles
       this.setupEngine.runFullAnalysis(this.currentTicker?.spread || 0.1);
 
-      // 7. Start periodic audit snapshot timer (every 60s)
+      // 7. Start 24/7 background monitor worker
+      this.marketMonitorWorker.start();
+
+      // 8. Start periodic audit snapshot timer (every 60s)
       this.startSnapshotTimer();
 
       this.isBootstrapped = true;
@@ -322,8 +351,37 @@ export class MarketCoordinator extends EventEmitter {
     return this.consensusEngine;
   }
 
+  public getSignalStateMachine(): SignalStateMachine {
+    return this.signalStateMachine;
+  }
+
+  public getMarketMonitorWorker(): MarketMonitorWorker {
+    return this.marketMonitorWorker;
+  }
+
+  public getTelegramNotifier(): TelegramNotifier {
+    return this.telegramNotifier;
+  }
+
+  public getWebPushNotifier(): WebPushNotifier {
+    return this.webPushNotifier;
+  }
+
+  public setKillSwitch(active: boolean, reason?: string): void {
+    config.security.killSwitchActive = active;
+    this.db.logEvent('WARN', 'Security', `Kill Switch ${active ? 'ACTIVATED' : 'DEACTIVATED'}: ${reason || 'Acción administrativa'}`);
+    if (active) {
+      this.signalStateMachine.cancelAll('KILL_SWITCH_ACTIVE');
+      this.telegramNotifier.notifyEmergencyKillSwitch(true, reason).catch(() => {});
+    } else {
+      this.telegramNotifier.notifyEmergencyKillSwitch(false, reason).catch(() => {});
+    }
+    this.emit('state_updated', this.getMarketState());
+  }
+
   public stop(): void {
     this.isStopped = true;
+    this.marketMonitorWorker.stop();
     if (this.snapshotIntervalTimer) {
       clearInterval(this.snapshotIntervalTimer);
       this.snapshotIntervalTimer = null;

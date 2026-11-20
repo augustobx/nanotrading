@@ -1,5 +1,5 @@
 import { MarketSnapshot, AiEvaluationResult } from './types.js';
-import { calculateCallCost } from './models-catalog.js';
+import { calculateCallCost, getValidatedModel } from './models-catalog.js';
 
 export interface OpenAiAdapterOptions {
   apiKey?: string;
@@ -16,7 +16,7 @@ export class OpenAiAdapter {
 
   constructor(options: OpenAiAdapterOptions = {}) {
     this.apiKey = options.apiKey || process.env.OPENAI_API_KEY || '';
-    this.model = options.model || process.env.OPENAI_MODEL || 'gpt-4o';
+    this.model = getValidatedModel(options.model || process.env.OPENAI_MODEL || 'gpt-4o', 'OPENAI');
     this.timeoutMs = options.timeoutMs || 8000;
     this.mockEvaluator = options.mockEvaluator;
   }

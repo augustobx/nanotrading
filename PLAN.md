@@ -16,7 +16,7 @@
 | **Fase 1** | Bybit y Mercado en Tiempo Real | Clientes V5 REST & WS, streams multitemporales, gaps, orderbook, server API, gráficos en vivo | **COMPLETADA** |
 | **Fase 2** | Motor Técnico Cuantitativo & SMC/ICT | Detección de Swings, BOS, CHoCH, FVG, OB, Liquidez, Estrategias A y B, R:R 1:4 estricto | **COMPLETADA** |
 | **Fase 3** | Integración de IA & Motor de Consenso | Proveedores OpenAI y Gemini independientes, schemas estructurados, consenso, control de costos | **COMPLETADA** |
-| **Fase 4** | Alertas, Máquina de Estados y PWA | Ciclo de vida completo de señales, Telegram Bot, Web Push PWA, UI con NanoLabs Theme 2 | PENDIENTE |
+| **Fase 4** | Alertas, Máquina de Estados y PWA | Ciclo de vida completo de señales, Telegram Bot, Web Push PWA, UI con NanoLabs Theme 2 | **COMPLETADA** |
 | **Fase 5** | Backtesting, Paper Trading & Validación | Motor de backtesting sin look-ahead bias, simulador de paper trading en vivo, métricas reales | PENDIENTE |
 | **Fase 6** | Preparación para Ejecución Asistida | Abstracción de ejecución privada, reconciliación, kill switch avanzado (modo deshabilitado por defecto) | PENDIENTE |
 
@@ -91,8 +91,40 @@
 
 ---
 
-## FASE 4: Alertas, Máquina de Estados y PWA (Próxima Fase)
-- [ ] Máquina de estados formal de señales (`OBSERVING` $\to$ `SETUP_DETECTED` $\to$ `AI_REVIEW` $\to$ `ENTRY_VALIDATED` $\to$ `ALERT_SENT` $\to$ `TRACKING` $\to$ `COMPLETED_TP`/`COMPLETED_SL`/`INVALIDATED`/`EXPIRED`).
-- [ ] Bot de Telegram con formato Markdown profesional, niveles de alerta 1 a 6 y botones interactivos.
-- [ ] Servicio de Web Push Notifications en la PWA.
-- [ ] Panel de auditoría de ciclo de vida de señales en vivo.
+## FASE 4: Alertas, Máquina de Estados, Worker 24/7 y PWA
+- [x] **Correcciones Críticas de Fase 3**:
+  - `models-catalog.ts`: Verificación oficial de catálogo OpenAI/Gemini, depreciación de obsoletos (`gpt-3.5-turbo`, `gemini-1.0-pro`), fechas de vigencia de tarifas y cálculo estimado.
+  - Endpoints frontend resilientes: helper `api-config.ts` (`getApiBaseUrl()`, `getWebSocketLiveUrl()`) con soporte dual (dev localhost y reverse proxy HTTPS/WSS bajo Nginx Proxy Manager sin contenido mixto).
+  - Seguridad en `POST /api/v1/ai/evaluate`: Autenticación con `x-admin-key`/Bearer token, rate limiting de 10 req/min, deduplicación de evaluaciones concurrentes, validación de `setupId`, salvaguarda de presupuesto y auditoría en base de datos.
+  - Drift de precio dinámico en `consensus-engine.ts`: Ajustado a $\min(0.15\%\text{ precio}, 10\%\text{ riesgo}, 5\%\text{ ATR})$, con validación de SL previo a entrada y disclaimer de subjetividad de confianza IA.
+- [x] **Máquina de Estados Persistente (`signal-state-machine.ts`)**:
+  - 17 estados formales (`OBSERVING`, `SETUP_DETECTED`, `APPROACHING_ZONE`, `IN_ZONE`, `WAITING_CONFIRMATION`, `AI_REVIEW`, `ENTRY_VALIDATED`, `ALERT_SENT`, `ENTRY_TRIGGERED`, `TRACKING`, `COMPLETED_TP`, `COMPLETED_SL`, `EXPIRED`, `INVALIDATED`, `CANCELLED`, `DATA_UNAVAILABLE`, `ERROR`).
+  - Matriz estricta de transiciones `VALID_TRANSITIONS` e idempotencia.
+  - Persistencia de cada transición en tabla `signal_lifecycle` y métricas en `signals` (SQLite WAL y PostgreSQL).
+  - Recuperación automática en reboot (`recoverActiveSignals()`).
+- [x] **Worker Desacoplado de Monitoreo 24/7 (`market-monitor-worker.ts`)**:
+  - Procesamiento por eventos de ticks de precio y cierre de velas.
+  - Detección de aproximación ($\le 0.25\%$) y entrada en zona ($\le 0.05\%$).
+  - Ejecución de llenado en simulación paper trading $\to$ `TRACKING`.
+  - Cálculo en tiempo real de MFE (Máxima Excursión Favorable en R), MAE (Máxima Excursión Adversa en R) y duración.
+  - Detección de TP alcanzado $\to$ `COMPLETED_TP` (+netRR, beneficio neto USDT).
+  - Detección de SL alcanzado $\to$ `COMPLETED_SL` (-1.0R, pérdida acotada).
+  - Expiración (4h sin fill) e invalidación estructural por vela cerrada adversa.
+- [x] **Integración Bot de Telegram (`telegram-notifier.ts`)**:
+  - Mensajería estructurada HTML con targets, SL, TP, R:R $\ge 1:4.0$, consenso OpenAI/Gemini y disclaimers.
+  - Ventana de deduplicación de 60 segundos y reintentos con backoff exponencial.
+  - Registro de auditoría en tabla `notifications_log`.
+- [x] **Notificaciones Web Push PWA (`web-push-notifier.ts`, `sw.js`)**:
+  - Protocolo VAPID con claves criptográficas y gestión de suscripciones en base de datos.
+  - Service Worker nativo para recepción en background, vibración y apertura/foco de dashboard.
+  - Poda automática de suscripciones caducadas (HTTP 404/410).
+- [x] **Seguridad Operativa y Kill Switch**:
+  - Garantía absoluta de modo `SIGNALS_ONLY` y `PAPER_TRADING` (ejecución real con dinero deshabilitada).
+  - Kill Switch interactivo persistente: cancela señales activas y detiene nuevas operaciones.
+- [x] **Frontend PWA Mejorado (`page.tsx`, `SignalLifecycleMonitor.tsx`, `NotificationsModal.tsx`)**:
+  - Panel en vivo de seguimiento de ciclo de vida de señales con badges de estado y barras de MFE/MAE.
+  - Modal interactivo de Centro de Notificaciones con tests de Telegram y Web Push.
+  - Botón de Kill Switch en barra superior y registro de Service Worker en cliente.
+- [x] **Cobertura Integral de Pruebas**:
+  - 57 pruebas unitarias pasando al 100% (incluyendo transiciones de máquina de estados, worker 24/7, deduplicación de alertas, VAPID y seguridad de endpoints).
+  - Test de integración E2E con Bybit V5 en vivo verificado exitosamente.

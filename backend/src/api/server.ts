@@ -13,11 +13,13 @@ export class ApiServer {
   private port: number;
   private host: string;
   private startTime: number = Date.now();
+  private rateLimitMap: Map<string, { count: number; resetTime: number }> = new Map();
+  private evaluationsInProgress: Set<string> = new Set();
 
   constructor(coordinator: MarketCoordinator, db: DatabaseService, port?: number, host?: string) {
     this.coordinator = coordinator;
     this.db = db;
-    this.port = port || config.port;
+    this.port = port !== undefined ? port : config.port;
     this.host = host || config.host;
 
     this.server = http.createServer((req, res) => this.handleHttpRequest(req, res));
@@ -27,11 +29,32 @@ export class ApiServer {
     this.setupWebSocketBroadcast();
   }
 
+  private isAuthenticated(req: http.IncomingMessage): boolean {
+    const authHeader = (req.headers['authorization'] as string) || '';
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const apiKeyHeader = (req.headers['x-admin-key'] as string) || '';
+    return token === config.security.adminApiKey || apiKeyHeader === config.security.adminApiKey;
+  }
+
+  private checkRateLimit(ip: string): boolean {
+    const now = Date.now();
+    const entry = this.rateLimitMap.get(ip);
+    if (!entry || now > entry.resetTime) {
+      this.rateLimitMap.set(ip, { count: 1, resetTime: now + 60000 });
+      return true;
+    }
+    if (entry.count >= config.security.rateLimitPerMinute) {
+      return false;
+    }
+    entry.count++;
+    return true;
+  }
+
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     // Enable CORS for frontend PWA
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-key');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -65,11 +88,36 @@ export class ApiServer {
         const setupId = url.searchParams.get('setupId');
         const limit = parseInt(url.searchParams.get('limit') || '50', 10);
         this.sendAiReviews(res, setupId, limit);
-      } else if (pathname === '/api/v1/signals' && req.method === 'GET') {
+      } else if ((pathname === '/api/v1/signals' || pathname === '/api/v1/signals/history') && req.method === 'GET') {
         const limit = parseInt(url.searchParams.get('limit') || '50', 10);
         this.sendSignals(res, limit);
+      } else if (pathname === '/api/v1/signals/active' && req.method === 'GET') {
+        this.sendActiveSignals(res);
+      } else if (pathname.startsWith('/api/v1/signals/') && pathname.endsWith('/lifecycle') && req.method === 'GET') {
+        const parts = pathname.split('/');
+        const signalId = parts[4];
+        this.sendSignalLifecycle(res, signalId);
+      } else if (pathname.startsWith('/api/v1/signals/') && pathname.endsWith('/cancel') && req.method === 'POST') {
+        const parts = pathname.split('/');
+        const signalId = parts[4];
+        this.handleCancelSignal(req, res, signalId);
       } else if (pathname === '/api/v1/ai/evaluate' && req.method === 'POST') {
         this.handleEvaluateSetup(req, res);
+      } else if (pathname === '/api/v1/kill-switch' && req.method === 'POST') {
+        this.handleKillSwitch(req, res);
+      } else if (pathname === '/api/v1/push/vapid-public-key' && req.method === 'GET') {
+        this.sendVapidPublicKey(res);
+      } else if (pathname === '/api/v1/push/subscribe' && req.method === 'POST') {
+        this.handlePushSubscribe(req, res);
+      } else if (pathname === '/api/v1/push/unsubscribe' && req.method === 'POST') {
+        this.handlePushUnsubscribe(req, res);
+      } else if (pathname === '/api/v1/push/test' && req.method === 'POST') {
+        this.handlePushTest(req, res);
+      } else if (pathname === '/api/v1/notifications/telegram/test' && req.method === 'POST') {
+        this.handleTelegramTest(req, res);
+      } else if (pathname === '/api/v1/notifications/history' && req.method === 'GET') {
+        const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+        this.sendNotificationHistory(res, limit);
       } else if (pathname === '/api/v1/events' && req.method === 'GET') {
         const limit = parseInt(url.searchParams.get('limit') || '50', 10);
         this.sendEvents(res, limit);
@@ -79,7 +127,7 @@ export class ApiServer {
       }
     } catch (err: any) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal Server Error', message: err.message }));
+      res.end(JSON.stringify({ error: 'Internal Server Error', message: 'Error interno de servidor' }));
     }
   }
 
@@ -217,20 +265,201 @@ export class ApiServer {
     res.end(JSON.stringify({ success: true, count: signals.length, data: signals }));
   }
 
+  private sendActiveSignals(res: http.ServerResponse): void {
+    const active = this.coordinator.getSignalStateMachine().getActiveSignals();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, count: active.length, data: active }));
+  }
+
+  private sendSignalLifecycle(res: http.ServerResponse, signalId: string): void {
+    if (!signalId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Falta signalId' }));
+      return;
+    }
+    const history = this.db.getSignalLifecycle(signalId);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, signalId, count: history.length, data: history }));
+  }
+
+  private handleCancelSignal(req: http.IncomingMessage, res: http.ServerResponse, signalId: string): void {
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere clave administrativa' }));
+      return;
+    }
+    try {
+      const updated = this.coordinator.getSignalStateMachine().cancelSignal(signalId, 'CANCELLED_BY_ADMIN');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: updated }));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+  }
+
+  private handleKillSwitch(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere clave administrativa' }));
+      return;
+    }
+
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const active = payload.active === true;
+        const reason = payload.reason || 'Acción manual desde panel de control';
+        this.coordinator.setKillSwitch(active, reason);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, killSwitchActive: active, reason }));
+      } catch (err: any) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'JSON inválido' }));
+      }
+    });
+  }
+
+  private sendVapidPublicKey(res: http.ServerResponse): void {
+    const key = this.coordinator.getWebPushNotifier().getPublicKey();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, publicKey: key }));
+  }
+
+  private handlePushSubscribe(req: http.IncomingMessage, res: http.ServerResponse): void {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        if (!payload.endpoint || !payload.keys?.p256dh || !payload.keys?.auth) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Suscripción inválida: faltan endpoint o keys' }));
+          return;
+        }
+        this.coordinator.getWebPushNotifier().saveSubscription(payload);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Suscripción Web Push registrada exitosamente' }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'JSON inválido' }));
+      }
+    });
+  }
+
+  private handlePushUnsubscribe(req: http.IncomingMessage, res: http.ServerResponse): void {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        if (!payload.endpoint) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Falta endpoint' }));
+          return;
+        }
+        this.coordinator.getWebPushNotifier().removeSubscription(payload.endpoint);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, message: 'Suscripción Web Push eliminada' }));
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'JSON inválido' }));
+      }
+    });
+  }
+
+  private async handlePushTest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado' }));
+      return;
+    }
+    const result = await this.coordinator.getWebPushNotifier().sendTestPush();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, result }));
+  }
+
+  private async handleTelegramTest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado' }));
+      return;
+    }
+    const result = await this.coordinator.getTelegramNotifier().sendTestNotification();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+  }
+
+  private sendNotificationHistory(res: http.ServerResponse, limit: number): void {
+    const history = this.db.getNotificationHistory(limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, count: history.length, data: history }));
+  }
+
   private handleEvaluateSetup(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const clientIp =
+      (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+
+    // 1. Authentication check
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({ error: 'No autorizado: se requiere clave administrativa (x-admin-key o Bearer token)' })
+      );
+      return;
+    }
+
+    // 2. Rate limiting check
+    if (!this.checkRateLimit(clientIp)) {
+      res.writeHead(429, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: `Límite de solicitudes de evaluación excedido (máximo ${config.security.rateLimitPerMinute} por minuto)`,
+        })
+      );
+      return;
+    }
+
     let body = '';
     req.on('data', (chunk) => {
       body += chunk;
-      if (body.length > 100000) req.destroy();
+      if (body.length > 50000) req.destroy();
     });
 
     req.on('end', async () => {
       try {
         const payload = JSON.parse(body || '{}');
         const setupId = payload.setupId;
-        if (!setupId) {
+
+        // 3. Input validation
+        if (!setupId || typeof setupId !== 'string' || !/^[a-zA-Z0-9_\-]+$/.test(setupId)) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Falta parámetro setupId' }));
+          res.end(JSON.stringify({ error: 'Parámetro setupId inválido o ausente' }));
+          return;
+        }
+
+        // 4. Deduplication
+        if (this.evaluationsInProgress.has(setupId)) {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: `Evaluación de IA ya en progreso para el setup ${setupId}. Evitando costo duplicado.`,
+            })
+          );
+          return;
+        }
+
+        // 5. Budget guard check
+        const costTracker = this.coordinator.getConsensusEngine().getCostTracker();
+        if (!costTracker.canMakeCalls(2)) {
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              error: 'Límite de presupuesto diario o mensual de IA alcanzado. Evaluación bloqueada.',
+            })
+          );
           return;
         }
 
@@ -242,12 +471,25 @@ export class ApiServer {
           return;
         }
 
-        const result = await this.coordinator.getConsensusEngine().evaluateSetup(setup);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, data: result }));
+        // 6. Audit security log
+        this.db.logEvent('INFO', 'Security', `Evaluación IA autorizada para setup ${setupId}`, { clientIp });
+
+        this.evaluationsInProgress.add(setupId);
+        try {
+          const result = await this.coordinator.getConsensusEngine().evaluateSetup(setup);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, data: result }));
+        } finally {
+          this.evaluationsInProgress.delete(setupId);
+        }
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Error durante la evaluación de consenso', message: err.message }));
+        res.end(
+          JSON.stringify({
+            error: 'Error durante la evaluación de consenso',
+            message: 'Fallo interno controlado en evaluación',
+          })
+        );
       }
     });
   }
@@ -320,6 +562,16 @@ export class ApiServer {
     this.coordinator.on('signal_evaluated', (signal) => {
       this.broadcast({ type: 'signal_evaluated', data: signal });
     });
+
+    // Broadcast signal lifecycle transitions
+    this.coordinator.on('signal_state_changed', (evt) => {
+      this.broadcast({ type: 'signal_state_changed', data: evt });
+    });
+
+    // Broadcast live signal tracking metrics (MFE / MAE)
+    this.coordinator.on('signal_metrics_updated', (signal) => {
+      this.broadcast({ type: 'signal_metrics_updated', data: signal });
+    });
   }
 
   private broadcast(payload: any): void {
@@ -334,10 +586,18 @@ export class ApiServer {
   public async start(): Promise<void> {
     return new Promise((resolve) => {
       this.server.listen(this.port, this.host, () => {
+        const addr = this.server.address();
+        if (typeof addr === 'object' && addr !== null) {
+          this.port = addr.port;
+        }
         this.db.logEvent('INFO', 'ApiServer', `Server listening on http://${this.host}:${this.port}`);
         resolve();
       });
     });
+  }
+
+  public getPort(): number {
+    return this.port;
   }
 
   public async stop(): Promise<void> {

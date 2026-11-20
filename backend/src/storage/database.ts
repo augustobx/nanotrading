@@ -19,6 +19,15 @@ export class DatabaseService {
   private selectAiReviewsBySetupStmt: any;
   private insertSignalStmt: any;
   private selectSignalsStmt: any;
+  private insertLifecycleStmt: any;
+  private selectLifecycleStmt: any;
+  private upsertPushSubStmt: any;
+  private deletePushSubStmt: any;
+  private selectPushSubsStmt: any;
+  private insertNotifLogStmt: any;
+  private selectNotifLogStmt: any;
+  private selectActiveSignalsStmt: any;
+  private updateSignalMetricsStmt: any;
 
   constructor(customPath?: string) {
     const dbPath = customPath || config.storage.sqlitePath;
@@ -158,7 +167,65 @@ export class DatabaseService {
 
       CREATE INDEX IF NOT EXISTS idx_signals_time 
       ON signals(timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS signal_lifecycle (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        signal_id TEXT NOT NULL,
+        from_state TEXT NOT NULL,
+        to_state TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        reason TEXT,
+        metadata TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_lifecycle_signal 
+      ON signal_lifecycle(signal_id, timestamp ASC);
+
+      CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id TEXT PRIMARY KEY,
+        endpoint TEXT NOT NULL UNIQUE,
+        p256dh TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        user_id TEXT,
+        created_at INTEGER NOT NULL,
+        last_active INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS notifications_log (
+        id TEXT PRIMARY KEY,
+        channel TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        signal_id TEXT,
+        message_type TEXT NOT NULL,
+        payload TEXT,
+        status TEXT NOT NULL,
+        delivered_at INTEGER,
+        timestamp INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_notif_time 
+      ON notifications_log(timestamp DESC);
     `);
+
+    // Signal columns migration for tracking metrics
+    const extraCols = [
+      'simulated_entry_time INTEGER',
+      'exit_time INTEGER',
+      'duration_ms INTEGER',
+      'exit_price REAL',
+      'mfe_price REAL',
+      'mfe_r REAL',
+      'mae_price REAL',
+      'mae_r REAL',
+      'realized_net_r REAL',
+      'realized_net_pnl_usdt REAL',
+      "entry_mode TEXT DEFAULT 'SIGNALS_ONLY'",
+    ];
+    for (const col of extraCols) {
+      try {
+        this.db.exec(`ALTER TABLE signals ADD COLUMN ${col}`);
+      } catch {}
+    }
   }
 
   private prepareStatements(): void {
@@ -236,6 +303,62 @@ export class DatabaseService {
 
     this.selectSignalsStmt = this.db.prepare(`
       SELECT * FROM signals ORDER BY timestamp DESC LIMIT ?
+    `);
+
+    this.insertLifecycleStmt = this.db.prepare(`
+      INSERT INTO signal_lifecycle (signal_id, from_state, to_state, timestamp, reason, metadata)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    this.selectLifecycleStmt = this.db.prepare(`
+      SELECT * FROM signal_lifecycle WHERE signal_id = ? ORDER BY timestamp ASC
+    `);
+
+    this.upsertPushSubStmt = this.db.prepare(`
+      INSERT INTO push_subscriptions (id, endpoint, p256dh, auth, user_id, created_at, last_active)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(endpoint) DO UPDATE SET
+        p256dh = excluded.p256dh,
+        auth = excluded.auth,
+        last_active = excluded.last_active
+    `);
+
+    this.deletePushSubStmt = this.db.prepare(`
+      DELETE FROM push_subscriptions WHERE endpoint = ?
+    `);
+
+    this.selectPushSubsStmt = this.db.prepare(`
+      SELECT * FROM push_subscriptions
+    `);
+
+    this.insertNotifLogStmt = this.db.prepare(`
+      INSERT INTO notifications_log (id, channel, recipient, signal_id, message_type, payload, status, delivered_at, timestamp)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.selectNotifLogStmt = this.db.prepare(`
+      SELECT * FROM notifications_log ORDER BY timestamp DESC LIMIT ?
+    `);
+
+    this.selectActiveSignalsStmt = this.db.prepare(`
+      SELECT * FROM signals WHERE status NOT IN ('COMPLETED_TP', 'COMPLETED_SL', 'EXPIRED', 'INVALIDATED', 'CANCELLED', 'DISCARDED') ORDER BY timestamp ASC
+    `);
+
+    this.updateSignalMetricsStmt = this.db.prepare(`
+      UPDATE signals SET
+        status = coalesce(?, status),
+        simulated_entry_time = coalesce(?, simulated_entry_time),
+        exit_time = coalesce(?, exit_time),
+        duration_ms = coalesce(?, duration_ms),
+        exit_price = coalesce(?, exit_price),
+        mfe_price = coalesce(?, mfe_price),
+        mfe_r = coalesce(?, mfe_r),
+        mae_price = coalesce(?, mae_price),
+        mae_r = coalesce(?, mae_r),
+        realized_net_r = coalesce(?, realized_net_r),
+        realized_net_pnl_usdt = coalesce(?, realized_net_pnl_usdt),
+        entry_mode = coalesce(?, entry_mode)
+      WHERE id = ?
     `);
   }
 
@@ -496,7 +619,229 @@ export class DatabaseService {
       rejectionReason: r.rejection_reason,
       snapshotId: r.snapshot_id,
       createdAt: Number(r.created_at),
+      simulatedEntryTime: r.simulated_entry_time ? Number(r.simulated_entry_time) : null,
+      exitTime: r.exit_time ? Number(r.exit_time) : null,
+      durationMs: r.duration_ms ? Number(r.duration_ms) : null,
+      exitPrice: r.exit_price !== null && r.exit_price !== undefined ? Number(r.exit_price) : null,
+      mfePrice: r.mfe_price !== null && r.mfe_price !== undefined ? Number(r.mfe_price) : null,
+      mfeR: r.mfe_r !== null && r.mfe_r !== undefined ? Number(r.mfe_r) : null,
+      maePrice: r.mae_price !== null && r.mae_price !== undefined ? Number(r.mae_price) : null,
+      maeR: r.mae_r !== null && r.mae_r !== undefined ? Number(r.mae_r) : null,
+      realizedNetR: r.realized_net_r !== null && r.realized_net_r !== undefined ? Number(r.realized_net_r) : null,
+      realizedNetPnlUsdt: r.realized_net_pnl_usdt !== null && r.realized_net_pnl_usdt !== undefined ? Number(r.realized_net_pnl_usdt) : null,
+      entryMode: r.entry_mode || 'SIGNALS_ONLY',
     }));
+  }
+
+  public recordSignalTransition(transition: {
+    signalId: string;
+    fromState: string;
+    toState: string;
+    timestamp: number;
+    reason?: string;
+    metadata?: any;
+  }): void {
+    if (this.isClosed) return;
+    try {
+      this.insertLifecycleStmt.run(
+        transition.signalId,
+        transition.fromState,
+        transition.toState,
+        transition.timestamp,
+        transition.reason || null,
+        transition.metadata ? JSON.stringify(transition.metadata) : null
+      );
+    } catch {}
+  }
+
+  public getSignalLifecycle(signalId: string): any[] {
+    if (this.isClosed) return [];
+    try {
+      const rows = this.selectLifecycleStmt.all(signalId) as any[];
+      return rows.map((r) => ({
+        id: r.id,
+        signalId: r.signal_id,
+        fromState: r.from_state,
+        toState: r.to_state,
+        timestamp: Number(r.timestamp),
+        reason: r.reason,
+        metadata: r.metadata ? JSON.parse(r.metadata) : null,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  public savePushSubscription(sub: {
+    id: string;
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    userId?: string;
+    createdAt: number;
+    lastActive: number;
+  }): void {
+    if (this.isClosed) return;
+    try {
+      this.upsertPushSubStmt.run(
+        sub.id,
+        sub.endpoint,
+        sub.p256dh,
+        sub.auth,
+        sub.userId || null,
+        sub.createdAt,
+        sub.lastActive
+      );
+    } catch {}
+  }
+
+  public deletePushSubscription(endpoint: string): void {
+    if (this.isClosed) return;
+    try {
+      this.deletePushSubStmt.run(endpoint);
+    } catch {}
+  }
+
+  public getPushSubscriptions(): any[] {
+    if (this.isClosed) return [];
+    try {
+      const rows = this.selectPushSubsStmt.all() as any[];
+      return rows.map((r) => ({
+        id: r.id,
+        endpoint: r.endpoint,
+        p256dh: r.p256dh,
+        auth: r.auth,
+        userId: r.user_id,
+        createdAt: Number(r.created_at),
+        lastActive: Number(r.last_active),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  public logNotification(record: {
+    id: string;
+    channel: string;
+    recipient: string;
+    signalId?: string;
+    messageType: string;
+    payload?: any;
+    status: string;
+    deliveredAt?: number;
+    timestamp: number;
+  }): void {
+    if (this.isClosed) return;
+    try {
+      this.insertNotifLogStmt.run(
+        record.id,
+        record.channel,
+        record.recipient,
+        record.signalId || null,
+        record.messageType,
+        record.payload ? (typeof record.payload === 'string' ? record.payload : JSON.stringify(record.payload)) : null,
+        record.status,
+        record.deliveredAt || null,
+        record.timestamp
+      );
+    } catch {}
+  }
+
+  public getNotificationHistory(limit: number = 50): any[] {
+    if (this.isClosed) return [];
+    try {
+      const rows = this.selectNotifLogStmt.all(limit) as any[];
+      return rows.map((r) => ({
+        id: r.id,
+        channel: r.channel,
+        recipient: r.recipient,
+        signalId: r.signal_id,
+        messageType: r.message_type,
+        payload: r.payload,
+        status: r.status,
+        deliveredAt: r.delivered_at ? Number(r.delivered_at) : null,
+        timestamp: Number(r.timestamp),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  public updateSignalMetrics(
+    id: string,
+    metrics: {
+      status?: string;
+      simulatedEntryTime?: number;
+      exitTime?: number;
+      durationMs?: number;
+      exitPrice?: number;
+      mfePrice?: number;
+      mfeR?: number;
+      maePrice?: number;
+      maeR?: number;
+      realizedNetR?: number;
+      realizedNetPnlUsdt?: number;
+      entryMode?: string;
+    }
+  ): void {
+    if (this.isClosed) return;
+    try {
+      this.updateSignalMetricsStmt.run(
+        metrics.status ?? null,
+        metrics.simulatedEntryTime ?? null,
+        metrics.exitTime ?? null,
+        metrics.durationMs ?? null,
+        metrics.exitPrice ?? null,
+        metrics.mfePrice ?? null,
+        metrics.mfeR ?? null,
+        metrics.maePrice ?? null,
+        metrics.maeR ?? null,
+        metrics.realizedNetR ?? null,
+        metrics.realizedNetPnlUsdt ?? null,
+        metrics.entryMode ?? null,
+        id
+      );
+    } catch {}
+  }
+
+  public getActiveSignalsForRecovery(): any[] {
+    if (this.isClosed) return [];
+    try {
+      const rows = this.selectActiveSignalsStmt.all() as any[];
+      return rows.map((r) => ({
+        id: r.id,
+        setupId: r.setup_id,
+        timestamp: Number(r.timestamp),
+        symbol: r.symbol,
+        strategy: r.strategy,
+        direction: r.direction,
+        timeframe: r.timeframe,
+        entryPrice: Number(r.entry_price),
+        stopLoss: Number(r.stop_loss),
+        takeProfit: Number(r.take_profit),
+        rrNet: Number(r.rr_net),
+        consensusVerdict: r.consensus_verdict,
+        openaiVerdict: r.openai_verdict,
+        geminiVerdict: r.gemini_verdict,
+        status: r.status,
+        rejectionReason: r.rejection_reason,
+        snapshotId: r.snapshot_id,
+        createdAt: Number(r.created_at),
+        simulatedEntryTime: r.simulated_entry_time ? Number(r.simulated_entry_time) : null,
+        exitTime: r.exit_time ? Number(r.exit_time) : null,
+        durationMs: r.duration_ms ? Number(r.duration_ms) : null,
+        exitPrice: r.exit_price !== null && r.exit_price !== undefined ? Number(r.exit_price) : null,
+        mfePrice: r.mfe_price !== null && r.mfe_price !== undefined ? Number(r.mfe_price) : null,
+        mfeR: r.mfe_r !== null && r.mfe_r !== undefined ? Number(r.mfe_r) : null,
+        maePrice: r.mae_price !== null && r.mae_price !== undefined ? Number(r.mae_price) : null,
+        maeR: r.mae_r !== null && r.mae_r !== undefined ? Number(r.mae_r) : null,
+        realizedNetR: r.realized_net_r !== null && r.realized_net_r !== undefined ? Number(r.realized_net_r) : null,
+        realizedNetPnlUsdt: r.realized_net_pnl_usdt !== null && r.realized_net_pnl_usdt !== undefined ? Number(r.realized_net_pnl_usdt) : null,
+        entryMode: r.entry_mode || 'SIGNALS_ONLY',
+      }));
+    } catch {
+      return [];
+    }
   }
 
   public close(): void {

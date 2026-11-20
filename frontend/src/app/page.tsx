@@ -7,6 +7,8 @@ import { CandleChart, Timeframe, CandleData } from '../components/CandleChart';
 import { OrderBookWidget } from '../components/OrderBookWidget';
 import { MultiTimeframeMatrix } from '../components/MultiTimeframeMatrix';
 import { AiAnalystsCard } from '../components/AiAnalystsCard';
+import { SignalLifecycleMonitor } from '../components/SignalLifecycleMonitor';
+import { NotificationsModal } from '../components/NotificationsModal';
 import {
   Activity,
   Shield,
@@ -21,6 +23,9 @@ import {
   Crosshair,
   TrendingUp,
   AlertTriangle,
+  Bell,
+  Power,
+  Radio,
 } from 'lucide-react';
 
 interface TickerData {
@@ -41,22 +46,10 @@ interface TickerData {
   openInterest: number;
 }
 
-const getApiBase = (): string => {
-  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-  if (typeof window !== 'undefined') {
-    return `${window.location.protocol}//${window.location.hostname}:3001`;
-  }
-  return 'http://localhost:3001';
-};
+import { getApiBaseUrl, getWebSocketLiveUrl } from '../utils/api-config';
 
-const getWsUrl = (): string => {
-  if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
-  if (typeof window !== 'undefined') {
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    return `${proto}//${window.location.hostname}:3001/ws/live`;
-  }
-  return 'ws://localhost:3001/ws/live';
-};
+const getApiBase = getApiBaseUrl;
+const getWsUrl = getWebSocketLiveUrl;
 
 export default function DashboardPage() {
   const { palette, isDark, toggleDarkMode } = useERPTheme();
@@ -97,7 +90,55 @@ export default function DashboardPage() {
   const [signals, setSignals] = useState<any[]>([]);
   const [aiReviews, setAiReviews] = useState<any[]>([]);
 
+  // Phase 4 State Machine & Notifications
+  const [activeSignals, setActiveSignals] = useState<any[]>([]);
+  const [isNotificationsModalOpen, setIsNotificationsModalOpen] = useState<boolean>(false);
+  const [killSwitchActive, setKillSwitchActive] = useState<boolean>(false);
+
   const wsRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  }, []);
+
+  const handleCancelSignal = async (signalId: string) => {
+    try {
+      await fetch(`${getApiBase()}/api/v1/signals/${signalId}/cancel`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': 'nanolabs_admin_sec_2026',
+        },
+      });
+      setActiveSignals((prev) => prev.filter((s) => s.id !== signalId));
+    } catch {}
+  };
+
+  const handleToggleKillSwitch = async () => {
+    const nextState = !killSwitchActive;
+    const confirmMsg = nextState
+      ? '¿Confirmás activar el KILL SWITCH de emergencia? Se cancelarán todas las señales activas y se suspenderá la generación de nuevas señales.'
+      : '¿Confirmás desactivar el Kill Switch y volver a modo de observación 24/7?';
+
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/kill-switch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-key': 'nanolabs_admin_sec_2026',
+        },
+        body: JSON.stringify({ active: nextState, reason: 'Acción manual panel usuario' }),
+      });
+      if (res.ok) {
+        setKillSwitchActive(nextState);
+        fetchAnalysisAndSetups();
+      }
+    } catch {}
+  };
 
   useEffect(() => {
     const updateTime = () => {
@@ -130,12 +171,14 @@ export default function DashboardPage() {
 
   const fetchAnalysisAndSetups = async () => {
     try {
-      const [anRes, setRes, aiRes, sigRes, revRes] = await Promise.all([
+      const [anRes, setRes, aiRes, sigRes, revRes, actSigRes, stRes] = await Promise.all([
         fetch(`${getApiBase()}/api/v1/market/analysis`),
         fetch(`${getApiBase()}/api/v1/market/setups`),
         fetch(`${getApiBase()}/api/v1/ai/status`),
         fetch(`${getApiBase()}/api/v1/signals`),
         fetch(`${getApiBase()}/api/v1/ai/reviews`),
+        fetch(`${getApiBase()}/api/v1/signals/active`),
+        fetch(`${getApiBase()}/api/v1/market/state`),
       ]);
       if (anRes.ok) {
         const anData = await anRes.json();
@@ -156,6 +199,16 @@ export default function DashboardPage() {
       if (revRes.ok) {
         const revData = await revRes.json();
         if (revData.success) setAiReviews(revData.data);
+      }
+      if (actSigRes.ok) {
+        const actData = await actSigRes.json();
+        if (actData.success) setActiveSignals(actData.data);
+      }
+      if (stRes.ok) {
+        const stData = await stRes.json();
+        if (stData.success && stData.data) {
+          setKillSwitchActive(stData.data.killSwitchActive || false);
+        }
       }
     } catch {}
   };
@@ -251,10 +304,40 @@ export default function DashboardPage() {
               }
             } else if (msg.type === 'orderbook') {
               setOrderBook(msg.data);
+            } else if (msg.type === 'state') {
+              if (msg.data?.killSwitchActive !== undefined) {
+                setKillSwitchActive(msg.data.killSwitchActive);
+              }
             } else if (msg.type === 'setup_detected') {
               setSetups((prev) => [msg.data, ...prev]);
             } else if (msg.type === 'signal_evaluated') {
               setSignals((prev) => [msg.data, ...prev.filter((s) => s.id !== msg.data.id)]);
+            } else if (msg.type === 'signal_state_changed') {
+              const { signal } = msg.data;
+              setActiveSignals((prev) => {
+                if (['COMPLETED_TP', 'COMPLETED_SL', 'EXPIRED', 'INVALIDATED', 'CANCELLED'].includes(signal.state)) {
+                  return prev.filter((s) => s.id !== signal.id);
+                }
+                const idx = prev.findIndex((s) => s.id === signal.id);
+                if (idx >= 0) {
+                  const next = [...prev];
+                  next[idx] = signal;
+                  return next;
+                }
+                return [signal, ...prev];
+              });
+              setSignals((prev) => [signal, ...prev.filter((s) => s.id !== signal.id)]);
+            } else if (msg.type === 'signal_metrics_updated') {
+              const signal = msg.data;
+              setActiveSignals((prev) => {
+                const idx = prev.findIndex((s) => s.id === signal.id);
+                if (idx >= 0) {
+                  const next = [...prev];
+                  next[idx] = { ...next[idx], ...signal };
+                  return next;
+                }
+                return prev;
+              });
             }
           } catch {}
         };
@@ -316,11 +399,11 @@ export default function DashboardPage() {
                   NanoLabs AI Trading
                 </h1>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300">
-                  Fase 2 Activa
+                  Fase 4 Activa
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 font-mono">
-                BTCUSDT Perpetual · Motor Cuantitativo Determinista
+                BTCUSDT Perpetual · Motor Cuantitativo & IA 24/7
               </p>
             </div>
           </div>
@@ -341,6 +424,14 @@ export default function DashboardPage() {
         </div>
 
         <div className="flex items-center gap-2 sm:gap-3">
+          <button
+            onClick={() => setIsNotificationsModalOpen(true)}
+            className="p-2 rounded-xl border border-slate-800 bg-slate-900/80 text-amber-400 hover:text-amber-300 hover:border-slate-700 transition-all cursor-pointer relative"
+            title="Centro de Notificaciones 24/7 (Telegram & Web Push PWA)"
+          >
+            <Bell className="w-4 h-4" />
+          </button>
+
           <div className="hidden lg:flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-1.5 font-mono text-xs text-slate-300">
             <Clock className="w-3.5 h-3.5 text-slate-400" />
             <span>{argentinaTime || 'Hora AR'}</span>
@@ -371,9 +462,18 @@ export default function DashboardPage() {
             Ejecución Real: <strong className="text-rose-400">DESHABILITADA</strong>
           </span>
           <span className="text-slate-600 hidden md:inline">|</span>
-          <span className="text-slate-400 hidden md:inline">
-            Kill Switch: <strong className="text-emerald-400">STANDBY OK</strong>
-          </span>
+          <button
+            onClick={handleToggleKillSwitch}
+            className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-mono font-bold transition-all cursor-pointer ${
+              killSwitchActive
+                ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40 animate-pulse'
+                : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20'
+            }`}
+            title="Hacer clic para activar o desactivar parada de emergencia"
+          >
+            <Power className="w-3.5 h-3.5" />
+            Kill Switch: <strong>{killSwitchActive ? 'ACTIVADO (BLOQUEO)' : 'STANDBY OK'}</strong>
+          </button>
         </div>
         <div className="flex items-center gap-3 text-slate-400">
           <span>Riesgo/Op: <strong className="text-slate-200">0.5%</strong></span>
@@ -572,6 +672,13 @@ export default function DashboardPage() {
           onSelectTimeframe={setTimeframe}
         />
 
+        {/* Signal Lifecycle 24/7 Monitor (Phase 4) */}
+        <SignalLifecycleMonitor
+          activeSignals={activeSignals}
+          onCancelSignal={handleCancelSignal}
+          onRefresh={fetchAnalysisAndSetups}
+        />
+
         {/* AI Analysts Panel */}
         <AiAnalystsCard aiStatus={aiStatus} signals={signals} aiReviews={aiReviews} />
 
@@ -648,6 +755,12 @@ export default function DashboardPage() {
           <span>Powered by <strong>NanoLabs</strong></span>
         </div>
       </footer>
+
+      {/* Notifications Modal (Phase 4) */}
+      <NotificationsModal
+        isOpen={isNotificationsModalOpen}
+        onClose={() => setIsNotificationsModalOpen(false)}
+      />
     </div>
   );
 }

@@ -99,7 +99,7 @@ export class ConsensusEngine extends EventEmitter {
       return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'SPREAD_TOO_HIGH');
     }
 
-    // Step 7: Budget / Rate limit check
+    // Step 7: Budget / Rate limit check & Concurrency Reservation
     if (!this.costTracker.canMakeCalls(2)) {
       ruleViolations.push('Límite de presupuesto diario de IA alcanzado');
       return this.waitDecision(
@@ -112,11 +112,30 @@ export class ConsensusEngine extends EventEmitter {
       );
     }
 
+    const budgetReserved = this.costTracker.reserveBudget(2);
+    if (!budgetReserved) {
+      ruleViolations.push('Presupuesto de IA temporalmente bloqueado por concurrencia');
+      return this.waitDecision(
+        signalId,
+        setup,
+        snapshot.snapshotId,
+        evaluatedAt,
+        ruleViolations,
+        'AI_BUDGET_RESERVATION_BUSY'
+      );
+    }
+
     // Step 8: Parallel Dual AI Consultation
-    const [openaiRes, geminiRes] = await Promise.all([
-      this.openaiAdapter.evaluate(snapshot),
-      this.geminiAdapter.evaluate(snapshot),
-    ]);
+    let openaiRes: AiEvaluationResult;
+    let geminiRes: AiEvaluationResult;
+    try {
+      [openaiRes, geminiRes] = await Promise.all([
+        this.openaiAdapter.evaluate(snapshot),
+        this.geminiAdapter.evaluate(snapshot),
+      ]);
+    } finally {
+      this.costTracker.releaseReservation(2);
+    }
 
     // Record usage
     if (openaiRes.tokensPrompt > 0) {
@@ -173,12 +192,41 @@ export class ConsensusEngine extends EventEmitter {
       return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'CRITICAL_RISK_DETECTED', openaiRes, geminiRes);
     }
 
-    // Step 12: Post-Evaluation Price Drift Check
+    // Step 12: Post-Evaluation Pre-Breach & Dynamic Price Drift Checks
     const currentPrice = this.coordinator.getMarketState().ticker?.lastPrice || snapshot.ticker.lastPrice;
-    const priceDrift = Math.abs(currentPrice - setup.entryPrice) / setup.entryPrice;
-    if (priceDrift > this.maxPriceDriftPcnt) {
+
+    // 12a. Pre-breached Stop Loss check (technical invalidation)
+    if (setup.direction === 'LONG' && currentPrice <= setup.stopLossPrice) {
+      ruleViolations.push(`Stop Loss ya alcanzado antes de la entrada (Precio actual ${currentPrice} <= SL ${setup.stopLossPrice})`);
+      return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'STOP_LOSS_PRE_BREACHED', openaiRes, geminiRes);
+    }
+    if (setup.direction === 'SHORT' && currentPrice >= setup.stopLossPrice) {
+      ruleViolations.push(`Stop Loss ya alcanzado antes de la entrada (Precio actual ${currentPrice} >= SL ${setup.stopLossPrice})`);
+      return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'STOP_LOSS_PRE_BREACHED', openaiRes, geminiRes);
+    }
+
+    // 12b. Pre-reached Take Profit check
+    if (setup.direction === 'LONG' && currentPrice >= setup.takeProfitPrice) {
+      ruleViolations.push(`Take Profit ya alcanzado antes de la entrada (Precio actual ${currentPrice} >= TP ${setup.takeProfitPrice})`);
+      return this.expireDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'TAKE_PROFIT_PRE_REACHED', openaiRes, geminiRes);
+    }
+    if (setup.direction === 'SHORT' && currentPrice <= setup.takeProfitPrice) {
+      ruleViolations.push(`Take Profit ya alcanzado antes de la entrada (Precio actual ${currentPrice} <= TP ${setup.takeProfitPrice})`);
+      return this.expireDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'TAKE_PROFIT_PRE_REACHED', openaiRes, geminiRes);
+    }
+
+    // 12c. Dynamic Price Drift Calculation (ATR + Risk Distance Aware)
+    const riskDistance = Math.abs(setup.entryPrice - setup.stopLossPrice);
+    const atr15m = snapshot.multiTimeframe['15m']?.atr || snapshot.multiTimeframe['5m']?.atr || 50;
+    const maxDriftByCeiling = setup.entryPrice * this.maxPriceDriftPcnt; // 0.15% ceiling
+    const maxDriftByRisk = riskDistance * 0.10; // max 10% of risk distance
+    const maxDriftByAtr = atr15m * 0.05; // max 5% of ATR
+    const maxAllowedDriftUsdt = Math.max(0.5, Math.min(maxDriftByCeiling, maxDriftByRisk, maxDriftByAtr));
+    const actualDriftUsdt = Math.abs(currentPrice - setup.entryPrice);
+
+    if (actualDriftUsdt > maxAllowedDriftUsdt) {
       ruleViolations.push(
-        `Deslizamiento de precio post-análisis (${(priceDrift * 100).toFixed(3)}% > ${(this.maxPriceDriftPcnt * 100).toFixed(3)}%)`
+        `Desviación de precio post-análisis dinámica superada (desviación actual ${actualDriftUsdt.toFixed(2)} USDT > máximo permitido ${maxAllowedDriftUsdt.toFixed(2)} USDT; techo=${maxDriftByCeiling.toFixed(2)}, 10%R=${maxDriftByRisk.toFixed(2)}, 5%ATR=${maxDriftByAtr.toFixed(2)})`
       );
       return this.expireDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'PRICE_DRIFT_EXCEEDED', openaiRes, geminiRes);
     }
@@ -206,6 +254,11 @@ export class ConsensusEngine extends EventEmitter {
       executionMode: 'SIGNALS_ONLY',
       ruleViolations: [],
       confidenceScore,
+      confidenceDisclaimer: 'La confianza declarada por la IA es subjetiva y no constituye una probabilidad matemática de acierto. Prevalece la invalidación técnica.',
+      dynamicDrift: {
+        allowedUsdt: parseFloat(maxAllowedDriftUsdt.toFixed(2)),
+        actualUsdt: parseFloat(actualDriftUsdt.toFixed(2)),
+      },
       evaluatedAt,
     };
 

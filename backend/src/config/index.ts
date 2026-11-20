@@ -44,6 +44,28 @@ export interface AppConfig {
     maxRiskPerTradePercent: number;
     maxDailyLossPercent: number;
     minRrRatio: number;
+    adminApiKey: string;
+    corsAllowedOrigins: string[];
+    rateLimitPerMinute: number;
+  };
+  ai: {
+    openaiApiKey?: string;
+    openaiModel: string;
+    geminiApiKey?: string;
+    geminiModel: string;
+    maxDailySpendUsd: number;
+    maxMonthlySpendUsd: number;
+  };
+  telegram: {
+    enabled: boolean;
+    botToken?: string;
+    chatId?: string;
+  };
+  push: {
+    enabled: boolean;
+    vapidPublicKey?: string;
+    vapidPrivateKey?: string;
+    vapidSubject: string;
   };
 }
 
@@ -86,5 +108,27 @@ export const config: AppConfig = {
     maxRiskPerTradePercent: parseFloat(process.env.MAX_RISK_PER_TRADE_PERCENT || '0.5'),
     maxDailyLossPercent: parseFloat(process.env.MAX_DAILY_LOSS_PERCENT || '1.5'),
     minRrRatio: parseFloat(process.env.MIN_RR_RATIO || '4.0'),
+    adminApiKey: process.env.ADMIN_API_KEY || 'nanolabs_admin_sec_2026',
+    corsAllowedOrigins: (process.env.CORS_ALLOWED_ORIGINS || '*').split(',').map((s) => s.trim()),
+    rateLimitPerMinute: parseInt(process.env.RATE_LIMIT_PER_MINUTE || '10', 10),
+  },
+  ai: {
+    openaiApiKey: process.env.OPENAI_API_KEY,
+    openaiModel: process.env.OPENAI_MODEL || 'gpt-4o',
+    geminiApiKey: process.env.GEMINI_API_KEY,
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-2.0-flash',
+    maxDailySpendUsd: parseFloat(process.env.AI_MAX_DAILY_SPEND_USD || '5.0'),
+    maxMonthlySpendUsd: parseFloat(process.env.AI_MAX_MONTHLY_SPEND_USD || '50.0'),
+  },
+  telegram: {
+    enabled: process.env.TELEGRAM_ENABLED === 'true',
+    botToken: process.env.TELEGRAM_BOT_TOKEN,
+    chatId: process.env.TELEGRAM_CHAT_ID,
+  },
+  push: {
+    enabled: process.env.PUSH_ENABLED !== 'false',
+    vapidPublicKey: process.env.VAPID_PUBLIC_KEY,
+    vapidPrivateKey: process.env.VAPID_PRIVATE_KEY,
+    vapidSubject: process.env.VAPID_SUBJECT || 'mailto:trading-alerts@nanolabs.com',
   },
 };

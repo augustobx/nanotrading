@@ -113,6 +113,8 @@ export interface ConsensusResult {
   executionMode: 'SIGNALS_ONLY'; // Strictly guaranteed live trading disabled
   ruleViolations: string[];
   confidenceScore: number;
+  confidenceDisclaimer?: string;
+  dynamicDrift?: { allowedUsdt: number; actualUsdt: number };
   evaluatedAt: number;
 }
 

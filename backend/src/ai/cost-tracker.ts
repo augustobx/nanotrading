@@ -20,6 +20,7 @@ export interface CostTrackerBudgetConfig {
 export class CostTracker {
   private records: UsageRecord[] = [];
   private budget: CostTrackerBudgetConfig;
+  private reservedSpendUsd: number = 0;
 
   constructor(budget: CostTrackerBudgetConfig = { maxDailySpendUsd: 5.0, maxMonthlySpendUsd: 50.0 }) {
     this.budget = budget;
@@ -66,13 +67,33 @@ export class CostTracker {
     const currentDaily = this.getDailySpendUsd();
     const currentMonthly = this.getMonthlySpendUsd();
 
-    if (currentDaily + expectedAdditionalSpend > this.budget.maxDailySpendUsd) {
+    if (currentDaily + this.reservedSpendUsd + expectedAdditionalSpend > this.budget.maxDailySpendUsd) {
       return false;
     }
-    if (currentMonthly + expectedAdditionalSpend > this.budget.maxMonthlySpendUsd) {
+    if (currentMonthly + this.reservedSpendUsd + expectedAdditionalSpend > this.budget.maxMonthlySpendUsd) {
       return false;
     }
     return true;
+  }
+
+  public reserveBudget(estimatedCalls: number = 2, estimatedCostPerCall: number = 0.01): boolean {
+    const required = estimatedCalls * estimatedCostPerCall;
+    const currentDaily = this.getDailySpendUsd();
+    const currentMonthly = this.getMonthlySpendUsd();
+
+    if (currentDaily + this.reservedSpendUsd + required > this.budget.maxDailySpendUsd) {
+      return false;
+    }
+    if (currentMonthly + this.reservedSpendUsd + required > this.budget.maxMonthlySpendUsd) {
+      return false;
+    }
+    this.reservedSpendUsd += required;
+    return true;
+  }
+
+  public releaseReservation(estimatedCalls: number = 2, estimatedCostPerCall: number = 0.01): void {
+    const amount = estimatedCalls * estimatedCostPerCall;
+    this.reservedSpendUsd = Math.max(0, this.reservedSpendUsd - amount);
   }
 
   public getStats(): {

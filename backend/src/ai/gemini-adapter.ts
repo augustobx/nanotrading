@@ -1,5 +1,5 @@
 import { MarketSnapshot, AiEvaluationResult } from './types.js';
-import { calculateCallCost } from './models-catalog.js';
+import { calculateCallCost, getValidatedModel } from './models-catalog.js';
 
 export interface GeminiAdapterOptions {
   apiKey?: string;
@@ -16,7 +16,7 @@ export class GeminiAdapter {
 
   constructor(options: GeminiAdapterOptions = {}) {
     this.apiKey = options.apiKey || process.env.GEMINI_API_KEY || '';
-    this.model = options.model || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+    this.model = getValidatedModel(options.model || process.env.GEMINI_MODEL || 'gemini-2.0-flash', 'GEMINI');
     this.timeoutMs = options.timeoutMs || 8000;
     this.mockEvaluator = options.mockEvaluator;
   }
