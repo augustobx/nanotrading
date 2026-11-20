@@ -9,6 +9,7 @@ export interface BybitCredentialsRecord {
   environment: 'mainnet' | 'testnet';
   status: 'ACTIVE' | 'REVOKED' | 'UNVERIFIED' | 'INVALID_PERMISSIONS' | 'AUTH_FAILED';
   detectedPermissions: Record<string, string[]>;
+  hasTradePermissions?: boolean;
   ipRestrictions?: string[];
   accountBalanceUsdt?: number;
   actualMakerFeeRate?: number;
@@ -39,10 +40,12 @@ export class BybitCredentialsManager {
     if (!this.credentialsRecord) return null;
     return {
       id: this.credentialsRecord.id,
+      configured: true,
       apiKeyMasked: this.credentialsRecord.apiKeyMasked,
       environment: this.credentialsRecord.environment,
       status: this.credentialsRecord.status,
       detectedPermissions: this.credentialsRecord.detectedPermissions,
+      hasTradePermissions: this.credentialsRecord.hasTradePermissions || false,
       ipRestrictions: this.credentialsRecord.ipRestrictions || [],
       accountBalanceUsdt: this.credentialsRecord.accountBalanceUsdt,
       actualMakerFeeRate: this.credentialsRecord.actualMakerFeeRate,
@@ -63,7 +66,8 @@ export class BybitCredentialsManager {
   }
 
   /**
-   * Verifies credentials against Bybit V5 `/v5/user/query-api` and enforces READ-ONLY restriction.
+   * Verifies credentials against Bybit V5 `/v5/user/query-api` with clock sync.
+   * Trading permissions are audited and stored; actual order execution is governed centrally by system config.
    */
   public async verifyAndEnforceReadOnly(
     apiKey: string,
@@ -72,14 +76,29 @@ export class BybitCredentialsManager {
   ): Promise<{
     valid: boolean;
     permissions: Record<string, string[]>;
+    hasTradePermissions?: boolean;
     accountBalanceUsdt?: number;
     makerFeeRate?: number;
     takerFeeRate?: number;
     error?: string;
   }> {
     const baseUrl = environment === 'testnet' ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
-    const timestamp = Date.now();
-    const recvWindow = 5000;
+    
+    // Auto-sync clock with Bybit server time to eliminate clock drift (prevents error 10002/10003)
+    let timeOffset = 0;
+    try {
+      const timeRes = await fetch(`${baseUrl}/v5/market/time`);
+      if (timeRes.ok) {
+        const timeData = (await timeRes.json()) as any;
+        if (timeData?.time) {
+          timeOffset = parseInt(timeData.time, 10) - Date.now();
+        }
+      }
+    } catch {}
+
+    const getSyncedTs = () => Date.now() + timeOffset;
+    const recvWindow = 20000;
+    const timestamp = getSyncedTs();
     const signature = this.generateSignature(apiSecret, timestamp, apiKey, recvWindow, '');
 
     try {
@@ -106,8 +125,7 @@ export class BybitCredentialsManager {
       const result = data.result || {};
       const permissions: Record<string, string[]> = result.permissions || {};
 
-      // STRICT READ-ONLY SECURITY CHECK:
-      // In SIGNALS_ONLY mode, reject any API key with Order or Position writing capabilities
+      // Audit trade/write permissions for reporting and UI badges
       const writePermissionKeywords = ['Order', 'Position', 'Trade', 'Withdraw', 'Transfer', 'Exchange'];
       const detectedWritePermissions: string[] = [];
 
@@ -123,22 +141,16 @@ export class BybitCredentialsManager {
         }
       }
 
-      if (detectedWritePermissions.length > 0) {
-        return {
-          valid: false,
-          permissions,
-          error: `SEGURIDAD: La clave API contiene permisos de escritura o trading (${detectedWritePermissions.join(', ')}). En modo SIGNALS_ONLY sólo se permiten claves de sólo lectura.`,
-        };
-      }
+      const hasTradePermissions = detectedWritePermissions.length > 0;
 
-      // Read-only confirmed! Let's attempt to fetch actual fee rate
+      // Fees & balance queries using synced timestamps
       let makerFeeRate: number | undefined;
       let takerFeeRate: number | undefined;
       let accountBalanceUsdt: number | undefined;
 
       try {
         const feeQuery = 'category=linear&symbol=BTCUSDT';
-        const feeTs = Date.now();
+        const feeTs = getSyncedTs();
         const feeSign = this.generateSignature(apiSecret, feeTs, apiKey, recvWindow, feeQuery);
         const feeRes = await fetch(`${baseUrl}/v5/account/fee-rate?${feeQuery}`, {
           headers: {
@@ -158,10 +170,9 @@ export class BybitCredentialsManager {
         }
       } catch {}
 
-      // Attempt to fetch wallet balance (read-only query)
       try {
         const balQuery = 'accountType=UNIFIED';
-        const balTs = Date.now();
+        const balTs = getSyncedTs();
         const balSign = this.generateSignature(apiSecret, balTs, apiKey, recvWindow, balQuery);
         const balRes = await fetch(`${baseUrl}/v5/account/wallet-balance?${balQuery}`, {
           headers: {
@@ -185,6 +196,7 @@ export class BybitCredentialsManager {
       return {
         valid: true,
         permissions,
+        hasTradePermissions,
         accountBalanceUsdt,
         makerFeeRate,
         takerFeeRate,
@@ -203,10 +215,25 @@ export class BybitCredentialsManager {
     environment: 'mainnet' | 'testnet' = 'mainnet',
     bypassVerificationForTesting: boolean = false
   ): Promise<BybitCredentialsRecord> {
+    let detectedPermissions: Record<string, string[]> = { ReadOnly: ['GetUserInfo', 'GetAccountInfo'] };
+    let hasTradePermissions = false;
+    let makerFeeRate: number | undefined;
+    let takerFeeRate: number | undefined;
+    let accountBalanceUsdt: number | undefined;
+    let feeSource: 'BYBIT_API_ACCOUNT_FEE_RATE' | 'DEFAULT_BYBIT_LINEAR' = 'DEFAULT_BYBIT_LINEAR';
+
     if (!bypassVerificationForTesting) {
       const verification = await this.verifyAndEnforceReadOnly(apiKey, apiSecret, environment);
       if (!verification.valid) {
         throw new Error(verification.error || 'Verificación de credenciales Bybit fallida.');
+      }
+      detectedPermissions = verification.permissions;
+      hasTradePermissions = verification.hasTradePermissions || false;
+      makerFeeRate = verification.makerFeeRate;
+      takerFeeRate = verification.takerFeeRate;
+      accountBalanceUsdt = verification.accountBalanceUsdt;
+      if (makerFeeRate !== undefined && takerFeeRate !== undefined) {
+        feeSource = 'BYBIT_API_ACCOUNT_FEE_RATE';
       }
     }
 
@@ -220,8 +247,12 @@ export class BybitCredentialsManager {
       encryptedSecret,
       environment,
       status: 'ACTIVE',
-      detectedPermissions: { ReadOnly: ['GetUserInfo', 'GetAccountInfo'] },
-      feeSource: 'DEFAULT_BYBIT_LINEAR',
+      detectedPermissions,
+      hasTradePermissions,
+      feeSource,
+      accountBalanceUsdt,
+      actualMakerFeeRate: makerFeeRate,
+      actualTakerFeeRate: takerFeeRate,
       lastVerifiedAt: now,
       createdAt: this.credentialsRecord?.createdAt || now,
       updatedAt: now,

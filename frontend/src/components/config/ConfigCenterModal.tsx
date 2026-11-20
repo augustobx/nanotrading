@@ -419,7 +419,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
       const json = await res.json();
       if (json.success) {
         setBybitTestResult(json.data);
-        setBybitMsg({ type: 'success', text: 'Verificación exitosa: clave estrictamente de sólo lectura.' });
+        setBybitMsg({ type: 'success', text: 'Verificación exitosa: conexión y permisos de Bybit validados correctamente.' });
       } else {
         setBybitMsg({ type: 'error', text: json.error || 'Fallo en verificación Bybit' });
       }
@@ -1227,7 +1227,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                 <div>
                   <h3 className="text-base font-semibold text-white">Configuración de API Bybit V5 Linear</h3>
                   <p className="text-xs text-slate-400">
-                    Conexión de datos de mercado y validación estricta de permisos de sólo lectura.
+                    Conexión de cuenta Bybit (Mainnet o Testnet). La ejecución se controla centralmente desde el sistema.
                   </p>
                 </div>
 
@@ -1240,6 +1240,15 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                         <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300">
                           {bybitConfig.environment}
                         </span>
+                        {bybitConfig.hasTradePermissions ? (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-amber-950/80 text-amber-300 border border-amber-800">
+                            Trade Habilitado en API (Controlado en SIGNALS_ONLY)
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-950/80 text-emerald-300 border border-emerald-800">
+                            Sólo Lectura
+                          </span>
+                        )}
                       </div>
                       {isAdminAuthenticated && (
                         <button
@@ -1321,34 +1330,79 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-4">
-                    <label className="flex items-center gap-2 text-xs text-slate-300">
-                      <input
-                        type="radio"
-                        name="bybitEnv"
-                        value="mainnet"
-                        checked={bybitEnv === 'mainnet'}
-                        onChange={() => setBybitEnv('mainnet')}
-                        className="accent-orange-500"
-                      />
-                      <span>Bybit Mainnet Real</span>
-                    </label>
-                    <label className="flex items-center gap-2 text-xs text-slate-300">
-                      <input
-                        type="radio"
-                        name="bybitEnv"
-                        value="testnet"
-                        checked={bybitEnv === 'testnet'}
-                        onChange={() => setBybitEnv('testnet')}
-                        className="accent-orange-500"
-                      />
-                      <span>Bybit Testnet</span>
-                    </label>
+                  <div className="p-3 rounded bg-[#0a0d14] border border-[#21283b] space-y-2">
+                    <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider block">
+                      Entorno de la Clave API
+                    </span>
+                    <div className="flex items-center gap-6">
+                      <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="bybitEnv"
+                          value="mainnet"
+                          checked={bybitEnv === 'mainnet'}
+                          onChange={() => setBybitEnv('mainnet')}
+                          className="accent-orange-500 cursor-pointer"
+                        />
+                        <span className="font-medium">Bybit Mainnet Real</span>
+                      </label>
+                      <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                        <input
+                          type="radio"
+                          name="bybitEnv"
+                          value="testnet"
+                          checked={bybitEnv === 'testnet'}
+                          onChange={() => setBybitEnv('testnet')}
+                          className="accent-orange-500 cursor-pointer"
+                        />
+                        <span className="font-semibold text-amber-400">Bybit Testnet</span>
+                        <span className="px-1.5 py-0.5 text-[10px] rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-mono">
+                          api-testnet.bybit.com
+                        </span>
+                      </label>
+                    </div>
                   </div>
 
-                  <div className="p-3 rounded bg-amber-950/20 border border-amber-900/40 text-[11px] text-amber-300 leading-relaxed">
-                    <strong>Aviso de Seguridad Crítico:</strong> El sistema rechazará tajantemente cualquier clave que contenga permisos para crear órdenes, modificar posiciones o realizar retiros. Únicamente se aceptan permisos de sólo lectura para consulta de mercado y balance.
+                  <div className="p-3 rounded bg-blue-950/30 border border-blue-800/50 text-[11px] text-blue-200 leading-relaxed">
+                    <strong>Control de Ejecución Centralizado:</strong> Podés conectar claves API de Bybit con cualquier nivel de permisos. El sistema permite consultar balance y tarifas, y la ejecución de órdenes reales permanece estrictamente controlada desde la configuración del sistema (actualmente en modo protegido <strong>SIGNALS_ONLY</strong>).
                   </div>
+
+                  {bybitTestResult && (
+                    <div className="p-3.5 rounded-lg bg-[#0a0d14] border border-emerald-800/60 space-y-2 text-xs">
+                      <div className="flex items-center justify-between text-emerald-400 font-bold">
+                        <span className="flex items-center gap-1.5">
+                          <CheckCircle2 className="w-4 h-4" /> Conexión verificada exitosamente
+                        </span>
+                        <span className="text-[11px] font-mono uppercase text-slate-400">
+                          {bybitEnv}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-[11px] font-mono text-slate-300 pt-1">
+                        <div>
+                          <span className="text-slate-500 block">Balance Wallet:</span>
+                          <span className="text-white font-bold">
+                            {bybitTestResult.accountBalanceUsdt !== undefined
+                              ? `$${bybitTestResult.accountBalanceUsdt.toFixed(2)} USDT`
+                              : 'Consultado OK'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 block">Tarifa Maker/Taker:</span>
+                          <span>
+                            {bybitTestResult.makerFeeRate !== undefined
+                              ? `${(bybitTestResult.makerFeeRate * 100).toFixed(3)}% / ${(bybitTestResult.takerFeeRate * 100).toFixed(3)}%`
+                              : '0.020% / 0.055%'}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 block">Permisos en API:</span>
+                          <span className={bybitTestResult.hasTradePermissions ? 'text-amber-400 font-bold' : 'text-slate-300'}>
+                            {bybitTestResult.hasTradePermissions ? 'Comercio / Órdenes Habilitadas' : 'Sólo Lectura'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {isAdminAuthenticated && (
                     <div className="flex items-center justify-end gap-3 pt-2">
@@ -1356,7 +1410,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                         type="button"
                         onClick={handleTestBybit}
                         disabled={bybitTesting}
-                        className="px-4 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 flex items-center gap-2"
+                        className="px-4 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 flex items-center gap-2 cursor-pointer"
                       >
                         {bybitTesting && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
                         <span>Probar Conexión y Permisos</span>
@@ -1365,7 +1419,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                         type="button"
                         onClick={handleSaveBybit}
                         disabled={bybitSaving}
-                        className="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold shadow-md flex items-center gap-2"
+                        className="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold shadow-md flex items-center gap-2 cursor-pointer"
                       >
                         {bybitSaving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
                         <span>Guardar Credenciales Cifradas</span>

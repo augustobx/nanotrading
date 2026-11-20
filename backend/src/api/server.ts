@@ -702,6 +702,7 @@ export class ApiServer {
         return;
       }
       const result = await this.coordinator.getBybitCredentialsManager().saveCredentials(apiKey, apiSecret, environment || 'mainnet');
+      this.db.saveBybitCredentials(result);
       this.db.logConfigAudit({
         category: 'BYBIT_CREDENTIALS',
         action: 'SAVE',
