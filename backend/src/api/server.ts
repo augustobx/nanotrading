@@ -55,6 +55,10 @@ export class ApiServer {
         this.sendOrderBook(res);
       } else if (pathname === '/api/v1/market/instrument' && req.method === 'GET') {
         this.sendInstrumentInfo(res);
+      } else if (pathname === '/api/v1/market/analysis' && req.method === 'GET') {
+        this.sendMarketAnalysis(res);
+      } else if (pathname === '/api/v1/market/setups' && req.method === 'GET') {
+        this.sendActiveSetups(res);
       } else if (pathname === '/api/v1/events' && req.method === 'GET') {
         const limit = parseInt(url.searchParams.get('limit') || '50', 10);
         this.sendEvents(res, limit);
@@ -143,6 +147,18 @@ export class ApiServer {
     res.end(JSON.stringify({ success: true, data: info }));
   }
 
+  private sendMarketAnalysis(res: http.ServerResponse): void {
+    const analyses = this.coordinator.getAnalyses();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: analyses }));
+  }
+
+  private sendActiveSetups(res: http.ServerResponse): void {
+    const setups = this.coordinator.getActiveSetups();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, count: setups.length, data: setups }));
+  }
+
   private sendEvents(res: http.ServerResponse, limit: number): void {
     const events = this.db.getRecentEvents(limit);
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -206,6 +222,11 @@ export class ApiServer {
     // Broadcast state updates
     this.coordinator.on('state_updated', (state) => {
       this.broadcast({ type: 'state', data: state });
+    });
+
+    // Broadcast detected setups
+    this.coordinator.on('setup_detected', (setup) => {
+      this.broadcast({ type: 'setup_detected', data: setup });
     });
   }
 

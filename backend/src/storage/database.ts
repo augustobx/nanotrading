@@ -11,6 +11,8 @@ export class DatabaseService {
   private selectLatestCandleStmt: any;
   private insertEventStmt: any;
   private insertSnapshotStmt: any;
+  private upsertSetupStmt: any;
+  private selectSetupsStmt: any;
 
   constructor(customPath?: string) {
     const dbPath = customPath || config.storage.sqlitePath;
@@ -86,6 +88,25 @@ export class DatabaseService {
 
       CREATE INDEX IF NOT EXISTS idx_events_time 
       ON system_events(timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS setups (
+        id TEXT PRIMARY KEY,
+        timestamp INTEGER NOT NULL,
+        symbol TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        entry_price REAL NOT NULL,
+        stop_loss REAL NOT NULL,
+        take_profit REAL NOT NULL,
+        rr_ratio REAL NOT NULL,
+        status TEXT NOT NULL,
+        evidence TEXT,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_setups_time 
+      ON setups(timestamp DESC);
     `);
   }
 
@@ -127,6 +148,18 @@ export class DatabaseService {
     this.insertSnapshotStmt = this.db.prepare(`
       INSERT INTO market_snapshots (timestamp, symbol, last_price, mark_price, index_price, spread, funding_rate, open_interest, payload)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.upsertSetupStmt = this.db.prepare(`
+      INSERT INTO setups (id, timestamp, symbol, strategy, direction, timeframe, entry_price, stop_loss, take_profit, rr_ratio, status, evidence, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        evidence = excluded.evidence
+    `);
+
+    this.selectSetupsStmt = this.db.prepare(`
+      SELECT * FROM setups ORDER BY timestamp DESC LIMIT ?
     `);
   }
 
@@ -235,6 +268,43 @@ export class DatabaseService {
       SELECT * FROM system_events ORDER BY timestamp DESC LIMIT ?
     `);
     return stmt.all(limit);
+  }
+
+  public saveSetup(setup: any): void {
+    this.upsertSetupStmt.run(
+      setup.id,
+      setup.timestamp,
+      setup.symbol,
+      setup.strategy,
+      setup.direction,
+      setup.timeframe,
+      setup.entryPrice,
+      setup.stopLoss,
+      setup.takeProfit,
+      setup.rrRatio,
+      setup.status,
+      JSON.stringify(setup.evidence || {}),
+      Date.now()
+    );
+  }
+
+  public getSetups(limit: number = 50): any[] {
+    const rows = this.selectSetupsStmt.all(limit) as any[];
+    return rows.map((r) => ({
+      id: r.id,
+      timestamp: Number(r.timestamp),
+      symbol: r.symbol,
+      strategy: r.strategy,
+      direction: r.direction,
+      timeframe: r.timeframe,
+      entryPrice: Number(r.entry_price),
+      stopLoss: Number(r.stop_loss),
+      takeProfit: Number(r.take_profit),
+      rrRatio: Number(r.rr_ratio),
+      status: r.status,
+      evidence: r.evidence ? JSON.parse(r.evidence) : {},
+      createdAt: Number(r.created_at),
+    }));
   }
 
   public close(): void {

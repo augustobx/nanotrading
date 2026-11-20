@@ -14,7 +14,7 @@
 | :--- | :--- | :--- | :--- |
 | **Fase 0** | Auditoría, Arquitectura y Preparación | Estructura del proyecto, tipados, docker aislado, CI/scripts, base de datos | **COMPLETADA** |
 | **Fase 1** | Bybit y Mercado en Tiempo Real | Clientes V5 REST & WS, streams multitemporales, gaps, orderbook, server API, gráficos en vivo | **COMPLETADA** |
-| **Fase 2** | Motor Técnico Cuantitativo & SMC/ICT | Detección de Swings, BOS, CHoCH, FVG, OB, Liquidez, Estrategias A y B, R:R 1:4 estricto | PENDIENTE |
+| **Fase 2** | Motor Técnico Cuantitativo & SMC/ICT | Detección de Swings, BOS, CHoCH, FVG, OB, Liquidez, Estrategias A y B, R:R 1:4 estricto | **COMPLETADA** |
 | **Fase 3** | Integración de IA & Motor de Consenso | Proveedores OpenAI y Gemini independientes, schemas estructurados, consenso, control de costos | PENDIENTE |
 | **Fase 4** | Alertas, Máquina de Estados y PWA | Ciclo de vida completo de señales, Telegram Bot, Web Push PWA, UI con NanoLabs Theme 2 | PENDIENTE |
 | **Fase 5** | Backtesting, Paper Trading & Validación | Motor de backtesting sin look-ahead bias, simulador de paper trading en vivo, métricas reales | PENDIENTE |
@@ -115,8 +115,43 @@
 - Implementación de Estrategia A (Continuación de tendencia) y Estrategia B (Barrido y reversión).
 - Cálculo estricto de Stop Loss técnico, Take Profit estructural y filtro R:R $\ge$ 1:4 considerando comisiones y spread.
 
+### Tareas Detalladas
+- [x] Implementar indicadores técnicos complementarios (`indicators.ts`):
+  - RSI Wilder suavizado (período 14).
+  - ATR para volatilidad real (período 14).
+  - EMAs 20, 50 y 200 con convergencia ponderada.
+  - VWAP con reseteo diario a las 00:00 UTC.
+  - RVOL (Volumen relativo contra promedio de 20 velas).
+- [x] Implementar detector SMC/ICT sin look-ahead bias (`smc-detector.ts`):
+  - Detección de Swings High y Low confirmados estrictamente a $i + \text{rightBars}$.
+  - Clasificación de estructura: HH, HL, LH, LL, EQH, EQL.
+  - Detección de rupturas de estructura (BOS) y cambios de carácter (CHoCH) en velas cerradas.
+  - Detección y ciclo de vida de Fair Value Gaps (Activo, Mitigado, Invalidado).
+  - Identificación de Order Blocks candidatos con desplazamiento $\ge 1.5 \times$ cuerpo.
+  - Detección de barridos de liquidez (mecha de penetración con rechazo $\ge 25\%$).
+- [x] Implementar calculador estricto de riesgo/beneficio (`risk-calculator.ts`):
+  - Dimensionamiento de posición según capital configurado y riesgo (0.5% default).
+  - Deducción de comisiones Bybit (taker 0.055% entrada y salida).
+  - Deducción de spread real del Order Book y deslizamiento estimado (0.02%).
+  - Rechazo imperativo si el R:R neto $< 4.0$.
+- [x] Implementar Estrategias A y B (`strategy-a-trend.ts`, `strategy-b-sweep.ts`):
+  - Estrategia A: continuación de tendencia multitemporal (4H/1H sesgo + 15m zona + 5m confirmación).
+  - Estrategia B: barrido de liquidez y reversión (sweep 15m/1H + rechazo + 5m CHoCH).
+  - Cero señales forzadas: no operar es la decisión cuando no hay confluencia.
+- [x] Implementar orquestador de setups (`setup-engine.ts`):
+  - Evaluación continua ante cierre de velas.
+  - Persistencia de setups calificados e invalidados en SQLite / PostgreSQL.
+  - Endpoints `/api/v1/market/analysis` y `/api/v1/market/setups`.
+- [x] Integración visual en el gráfico (`CandleChart.tsx`):
+  - Marcadores de Swings (HH/HL/LH/LL).
+  - Marcadores de BOS y CHoCH.
+  - Líneas de FVG y Order Blocks.
+  - Líneas de Entrada, SL y TP (1:4) para setups activos.
+  - Barra de control de capas SMC / ICT.
+
 ### Criterios de Aceptación Fase 2
-- Se generan setups candidatos con justificación matemática y niveles exactos basados únicamente en datos pasados y velas cerradas.
+- Se generan setups candidatos con justificación matemática y niveles exactos basados únicamente en datos pasados y velas cerradas. (VERIFICADO)
+- Los 21 tests de unidad e integración pasan al 100%. (VERIFICADO)
 
 ---
 

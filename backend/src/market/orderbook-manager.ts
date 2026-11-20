@@ -34,7 +34,15 @@ export class OrderBookManager extends EventEmitter {
   }
 
   public handleDelta(bids: [string, string][], asks: [string, string][], seq: number, ts: number): OrderBook {
-    this.lastSeq = seq;
+    // Sequence protection: discard duplicate or out-of-order deltas
+    if (this.lastSeq > 0 && seq > 0 && seq < this.lastSeq) {
+      this.emit('out_of_order_delta', { receivedSeq: seq, lastSeq: this.lastSeq });
+      return this.buildOrderBook();
+    }
+
+    if (seq > 0) {
+      this.lastSeq = seq;
+    }
     this.lastUpdateTimestamp = ts || Date.now();
 
     for (const [p, s] of bids) {

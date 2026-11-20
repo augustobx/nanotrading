@@ -13,6 +13,7 @@ import { BybitWsClient } from '../bybit/bybit-ws-client.js';
 import { CandleManager, GapInfo } from './candle-manager.js';
 import { OrderBookManager } from './orderbook-manager.js';
 import { DatabaseService } from '../storage/database.js';
+import { SetupEngine } from '../engine/setup-engine.js';
 import { config } from '../config/index.js';
 
 export class MarketCoordinator extends EventEmitter {
@@ -20,6 +21,7 @@ export class MarketCoordinator extends EventEmitter {
   private wsClient: BybitWsClient;
   private candleManager: CandleManager;
   private orderBookManager: OrderBookManager;
+  private setupEngine: SetupEngine;
   private db: DatabaseService;
   private symbol: string;
   private instrumentInfo: InstrumentInfo | null = null;
@@ -42,6 +44,7 @@ export class MarketCoordinator extends EventEmitter {
     this.orderBookManager = orderBookManager;
     this.db = db;
     this.symbol = symbol;
+    this.setupEngine = new SetupEngine(this.candleManager, this.db);
 
     this.setupListeners();
   }
@@ -98,6 +101,11 @@ export class MarketCoordinator extends EventEmitter {
     this.orderBookManager.on('orderbook_updated', (ob) => {
       this.emit('orderbook_updated', ob);
     });
+
+    // Forward setup engine events
+    this.setupEngine.on('setup_detected', (setup) => {
+      this.emit('setup_detected', setup);
+    });
   }
 
   public async bootstrap(): Promise<void> {
@@ -135,7 +143,10 @@ export class MarketCoordinator extends EventEmitter {
       // 5. Connect WebSocket
       this.wsClient.connect();
 
-      // 6. Start periodic audit snapshot timer (every 60s)
+      // 6. Run quantitative setup engine analysis across loaded candles
+      this.setupEngine.runFullAnalysis(this.currentTicker?.spread || 0.1);
+
+      // 7. Start periodic audit snapshot timer (every 60s)
       this.startSnapshotTimer();
 
       this.isBootstrapped = true;
@@ -262,6 +273,14 @@ export class MarketCoordinator extends EventEmitter {
 
   public getInstrumentInfo(): InstrumentInfo | null {
     return this.instrumentInfo;
+  }
+
+  public getAnalyses(): Record<string, any> {
+    return this.setupEngine.getAllAnalyses();
+  }
+
+  public getActiveSetups(): any[] {
+    return this.setupEngine.getActiveSetups();
   }
 
   public stop(): void {

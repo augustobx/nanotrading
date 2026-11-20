@@ -3,7 +3,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { PaletteSelector } from '../nanolabs-components/PaletteSelector';
 import { useERPTheme } from '../nanolabs-components/ThemeContext';
-import { CandleChart, Timeframe } from '../components/CandleChart';
+import { CandleChart, Timeframe, CandleData } from '../components/CandleChart';
 import { OrderBookWidget } from '../components/OrderBookWidget';
 import { MultiTimeframeMatrix } from '../components/MultiTimeframeMatrix';
 import { AiAnalystsCard } from '../components/AiAnalystsCard';
@@ -18,18 +18,10 @@ import {
   RefreshCw,
   Sun,
   Moon,
+  Crosshair,
+  TrendingUp,
+  AlertTriangle,
 } from 'lucide-react';
-
-interface CandleData {
-  timestamp: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  turnover: number;
-  confirmed?: boolean;
-}
 
 interface TickerData {
   symbol: string;
@@ -57,7 +49,6 @@ export default function DashboardPage() {
 
   const [timeframe, setTimeframe] = useState<Timeframe>('15m');
   const [ticker, setTicker] = useState<TickerData | null>(null);
-  const [prevPrice, setPrevPrice] = useState<number>(0);
   const [priceFlash, setPriceFlash] = useState<'up' | 'down' | null>(null);
   const [orderBook, setOrderBook] = useState<any>(null);
   const [candles, setCandles] = useState<CandleData[]>([]);
@@ -80,13 +71,15 @@ export default function DashboardPage() {
 
   const [wsConnected, setWsConnected] = useState<boolean>(false);
   const [wsLatency, setWsLatency] = useState<number>(0);
-  const [systemStatus, setSystemStatus] = useState<string>('OBSERVING');
   const [systemEvents, setSystemEvents] = useState<any[]>([]);
   const [argentinaTime, setArgentinaTime] = useState<string>('');
 
+  // Phase 2 Quantitative Engine State
+  const [analyses, setAnalyses] = useState<Record<string, any>>({});
+  const [setups, setSetups] = useState<any[]>([]);
+
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Time clock update for America/Argentina/Buenos_Aires
   useEffect(() => {
     const updateTime = () => {
       const now = new Date();
@@ -104,7 +97,6 @@ export default function DashboardPage() {
     return () => clearInterval(timer);
   }, []);
 
-  // Fetch initial candles for active timeframe
   const fetchCandles = async (tf: Timeframe) => {
     try {
       const res = await fetch(`${API_BASE}/api/v1/market/candles?timeframe=${tf}&limit=150`);
@@ -117,7 +109,23 @@ export default function DashboardPage() {
     } catch {}
   };
 
-  // Fetch initial events
+  const fetchAnalysisAndSetups = async () => {
+    try {
+      const [anRes, setRes] = await Promise.all([
+        fetch(`${API_BASE}/api/v1/market/analysis`),
+        fetch(`${API_BASE}/api/v1/market/setups`),
+      ]);
+      if (anRes.ok) {
+        const anData = await anRes.json();
+        if (anData.success) setAnalyses(anData.data);
+      }
+      if (setRes.ok) {
+        const setData = await setRes.json();
+        if (setData.success) setSetups(setData.data);
+      }
+    } catch {}
+  };
+
   const fetchEvents = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/v1/events?limit=8`);
@@ -136,7 +144,11 @@ export default function DashboardPage() {
 
   useEffect(() => {
     fetchEvents();
-    const timer = setInterval(fetchEvents, 10000);
+    fetchAnalysisAndSetups();
+    const timer = setInterval(() => {
+      fetchEvents();
+      fetchAnalysisAndSetups();
+    }, 8000);
     return () => clearInterval(timer);
   }, []);
 
@@ -166,7 +178,6 @@ export default function DashboardPage() {
               if (state.currentCandle) setCurrentCandles(state.currentCandle);
               if (state.lastClosedCandle) setLastClosedCandles(state.lastClosedCandle);
               setWsLatency(state.wsLatencyMs || 0);
-              setSystemStatus(state.status || 'OBSERVING');
             } else if (msg.type === 'ticker') {
               setTicker((prev) => {
                 if (prev && msg.data.lastPrice !== prev.lastPrice) {
@@ -178,7 +189,6 @@ export default function DashboardPage() {
             } else if (msg.type === 'candle_updated') {
               const c = msg.data;
               setCurrentCandles((prev) => ({ ...prev, [c.timeframe]: c }));
-              // If this is the active timeframe, update candles
               if (c.timeframe === timeframe) {
                 setCandles((prev) => {
                   const idx = prev.findIndex((item) => item.timestamp === c.timestamp);
@@ -207,9 +217,8 @@ export default function DashboardPage() {
               }
             } else if (msg.type === 'orderbook') {
               setOrderBook(msg.data);
-            } else if (msg.type === 'state') {
-              setSystemStatus(msg.data.status);
-              setWsLatency(msg.data.wsLatencyMs);
+            } else if (msg.type === 'setup_detected') {
+              setSetups((prev) => [msg.data, ...prev]);
             }
           } catch {}
         };
@@ -247,12 +256,17 @@ export default function DashboardPage() {
 
   const is24hPositive = (ticker?.price24hPcnt || 0) >= 0;
 
+  // Active TF analysis
+  const currentTfAnalysis = analyses[timeframe];
+  const swings = currentTfAnalysis?.structure?.swings || [];
+  const structureBreaks = currentTfAnalysis?.structure?.structureBreaks || [];
+  const fvgs = currentTfAnalysis?.structure?.fvgs || [];
+
   return (
     <div className="min-h-screen bg-[#0c0f17] text-slate-100 flex flex-col">
       {/* NanoLabs Header Oficial (80px standard) */}
       <header className="h-20 border-b border-slate-800/80 bg-[#0f1422]/90 backdrop-blur-md px-4 sm:px-6 flex items-center justify-between sticky top-0 z-40">
         <div className="flex items-center gap-4">
-          {/* App Tile degradé con micro-rotación hover */}
           <div className="flex items-center gap-3">
             <div
               className="w-11 h-11 rounded-2xl flex items-center justify-center shadow-lg transition-transform hover:rotate-6 cursor-pointer"
@@ -266,16 +280,15 @@ export default function DashboardPage() {
                   NanoLabs AI Trading
                 </h1>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300">
-                  v1.0
+                  Fase 2 Activa
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 font-mono">
-                BTCUSDT Perpetual · Bybit V5 Linear
+                BTCUSDT Perpetual · Motor Cuantitativo Determinista
               </p>
             </div>
           </div>
 
-          {/* Connection Status Badge */}
           <div className="hidden md:flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-1.5 font-mono text-xs">
             <span
               className={`w-2.5 h-2.5 rounded-full ${
@@ -291,19 +304,15 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* Right Header Controls */}
         <div className="flex items-center gap-2 sm:gap-3">
-          {/* Buenos Aires Time Badge */}
           <div className="hidden lg:flex items-center gap-1.5 rounded-xl border border-slate-800 bg-slate-900/80 px-3 py-1.5 font-mono text-xs text-slate-300">
             <Clock className="w-3.5 h-3.5 text-slate-400" />
             <span>{argentinaTime || 'Hora AR'}</span>
             <span className="text-[10px] text-slate-500">ART</span>
           </div>
 
-          {/* Palette Selector Oficial */}
           <PaletteSelector />
 
-          {/* Dark Mode Toggle */}
           <button
             onClick={toggleDarkMode}
             className="p-2 rounded-xl border border-slate-800 bg-slate-900/80 text-slate-300 hover:text-white transition-all cursor-pointer"
@@ -333,15 +342,14 @@ export default function DashboardPage() {
         <div className="flex items-center gap-3 text-slate-400">
           <span>Riesgo/Op: <strong className="text-slate-200">0.5%</strong></span>
           <span>Pérdida Diaria: <strong className="text-slate-200">1.5%</strong></span>
-          <span>R:R Neto Mín: <strong className="text-amber-400">1:4</strong></span>
+          <span>R:R Neto Mín: <strong className="text-amber-400">1:4 (Neto)</strong></span>
         </div>
       </div>
 
       {/* Main Content Area */}
       <main className="flex-1 p-4 sm:p-6 space-y-5 max-w-[1700px] w-full mx-auto">
-        {/* Real-time Ticker Ribbon */}
+        {/* Ticker Ribbon */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          {/* Last Price Tile */}
           <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
             <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
               Precio Last
@@ -358,7 +366,6 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Mark & Index Price */}
           <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
             <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
               Mark / Index Price
@@ -371,7 +378,6 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          {/* Spread */}
           <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
             <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
               Spread Bid-Ask
@@ -384,20 +390,18 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          {/* 24h High / Low */}
           <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
             <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
-              24h High / Low
+              Indicadores ({timeframe})
             </p>
-            <div className="text-xs font-mono text-emerald-400 font-semibold">
-              H: ${ticker ? ticker.highPrice24h.toFixed(1) : '---'}
+            <div className="text-xs font-mono text-slate-200 font-semibold">
+              RSI: <span className="text-amber-400">{currentTfAnalysis?.rsi || '50.0'}</span>
             </div>
-            <div className="text-xs font-mono text-rose-400 font-semibold mt-1">
-              L: ${ticker ? ticker.lowPrice24h.toFixed(1) : '---'}
+            <div className="text-xs font-mono text-slate-400 mt-1">
+              ATR: ${currentTfAnalysis?.atr || '---'} | RVOL: {currentTfAnalysis?.relativeVolume || '1.0'}x
             </div>
           </div>
 
-          {/* Funding Rate */}
           <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
             <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
               Funding Rate
@@ -406,11 +410,10 @@ export default function DashboardPage() {
               {ticker ? `${(ticker.fundingRate * 100).toFixed(4)}%` : '---'}
             </div>
             <p className="text-xs font-mono text-slate-400 mt-1">
-              Intervalo 8h
+              Intervalo 8h Bybit
             </p>
           </div>
 
-          {/* Open Interest */}
           <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
             <p className="text-[11px] font-mono text-slate-400 uppercase tracking-wider mb-1">
               Open Interest
@@ -419,12 +422,12 @@ export default function DashboardPage() {
               {ticker ? `${ticker.openInterest.toFixed(0)} BTC` : '---'}
             </div>
             <p className="text-xs font-mono text-slate-400 mt-1">
-              Vol 24h: {ticker ? `${(ticker.volume24h / 1000).toFixed(1)}k BTC` : '---'}
+              Vol: {ticker ? `${(ticker.volume24h / 1000).toFixed(1)}k BTC` : '---'}
             </p>
           </div>
         </div>
 
-        {/* Central Grid: Chart (2/3) + Order Book (1/3) */}
+        {/* Central Grid: Interactive Chart + Order Book */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
           <div className="lg:col-span-2 space-y-5">
             <CandleChart
@@ -432,6 +435,10 @@ export default function DashboardPage() {
               currentCandle={currentCandles[timeframe]}
               timeframe={timeframe}
               onTimeframeChange={setTimeframe}
+              swings={swings}
+              structureBreaks={structureBreaks}
+              fvgs={fvgs}
+              setups={setups}
               symbol="BTCUSDT"
               isDark={isDark}
             />
@@ -440,6 +447,85 @@ export default function DashboardPage() {
           <div className="lg:col-span-1 space-y-5">
             <OrderBookWidget orderBook={orderBook} />
           </div>
+        </div>
+
+        {/* Oportunidades & Setups Cuantitativos (Fase 2) */}
+        <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-4 shadow-xl">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-3">
+            <div className="flex items-center gap-2">
+              <Crosshair className="w-4 h-4 text-[var(--color-brand,#FF6600)]" />
+              <h3 className="font-display font-bold text-sm text-slate-200 uppercase tracking-wider">
+                Oportunidades & Setups Cuantitativos (Estrategias A y B)
+              </h3>
+            </div>
+            <span className="text-[11px] font-mono bg-amber-500/10 text-amber-300 font-bold px-2 py-0.5 rounded border border-amber-500/30">
+              Filtro Estricto R:R $\ge$ 1:4 Neto
+            </span>
+          </div>
+
+          {setups.length > 0 ? (
+            <div className="overflow-x-auto custom-scrollbar">
+              <table className="w-full text-left font-mono text-xs">
+                <thead>
+                  <tr className="border-b border-slate-800 text-slate-500 text-[11px]">
+                    <th className="pb-2">Estrategia</th>
+                    <th className="pb-2">Dirección</th>
+                    <th className="pb-2">Entrada</th>
+                    <th className="pb-2">Stop Loss</th>
+                    <th className="pb-2">Take Profit</th>
+                    <th className="pb-2">R:R Neto</th>
+                    <th className="pb-2">Estado</th>
+                    <th className="pb-2">Justificación Técnica</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/50">
+                  {setups.map((s, i) => (
+                    <tr key={s.id || i} className="hover:bg-slate-900/40">
+                      <td className="py-2.5 font-bold text-slate-300">
+                        {s.strategy === 'STRATEGY_A_TREND_CONTINUATION'
+                          ? 'Estrategia A (Tendencia)'
+                          : 'Estrategia B (Barrido)'}
+                      </td>
+                      <td className="py-2.5">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            s.direction === 'LONG'
+                              ? 'bg-emerald-500/15 text-emerald-400'
+                              : 'bg-rose-500/15 text-rose-400'
+                          }`}
+                        >
+                          {s.direction}
+                        </span>
+                      </td>
+                      <td className="py-2.5 text-slate-100 font-semibold">${s.entryPrice.toFixed(1)}</td>
+                      <td className="py-2.5 text-rose-400 font-semibold">${s.stopLoss.toFixed(1)}</td>
+                      <td className="py-2.5 text-emerald-400 font-semibold">${s.takeProfit.toFixed(1)}</td>
+                      <td className="py-2.5 font-bold text-amber-400">
+                        1:{s.rrRatio?.toFixed(1) || '4.0'}
+                      </td>
+                      <td className="py-2.5">
+                        <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-300 font-bold border border-emerald-500/20">
+                          {s.status}
+                        </span>
+                      </td>
+                      <td className="py-2.5 text-slate-400 text-[11px] max-w-xs truncate">
+                        {s.evidence?.triggerReason || 'Confluencia técnica multitemporal'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="py-6 px-4 rounded-xl border border-slate-800/60 bg-slate-900/40 text-center">
+              <p className="text-sm font-semibold text-slate-300 mb-1">
+                Estado Actual: <span className="text-amber-400">ESPERAR (Sin setups 1:4 con confluencia)</span>
+              </p>
+              <p className="text-xs text-slate-500 font-mono max-w-2xl mx-auto">
+                El sistema no fuerza operaciones. No se detectó confluencia técnica estricta con R:R neto $\ge$ 1:4 sobre velas cerradas. No operar es una decisión válida y deliberada.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Multi-Timeframe Matrix */}
@@ -520,7 +606,7 @@ export default function DashboardPage() {
       <footer className="border-t border-slate-800/80 bg-[#0f1422] py-4 px-6 text-center text-xs text-slate-500 font-mono flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <span className="w-2 h-2 rounded-full bg-emerald-500" />
-          <span>NanoLabs AI Trading · Sistema Cuantitativo 24/7</span>
+          <span>NanoLabs AI Trading · Motor Cuantitativo 24/7</span>
         </div>
         <div>
           <span>Powered by <strong>NanoLabs</strong></span>

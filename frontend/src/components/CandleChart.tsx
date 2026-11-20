@@ -1,11 +1,20 @@
 'use client';
 
 import React, { useEffect, useRef, useState } from 'react';
-import { createChart, IChartApi, ISeriesApi, CandlestickData, HistogramData, Time } from 'lightweight-charts';
+import {
+  createChart,
+  IChartApi,
+  ISeriesApi,
+  CandlestickData,
+  HistogramData,
+  Time,
+  SeriesMarker,
+  IPriceLine,
+} from 'lightweight-charts';
 
 export type Timeframe = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
 
-interface CandleData {
+export interface CandleData {
   timestamp: number;
   open: number;
   high: number;
@@ -15,11 +24,51 @@ interface CandleData {
   confirmed?: boolean;
 }
 
+export interface SwingData {
+  timestamp: number;
+  price: number;
+  type: 'HIGH' | 'LOW';
+  label?: string;
+}
+
+export interface BreakData {
+  type: 'BOS' | 'CHoCH';
+  direction: 'BULLISH' | 'BEARISH';
+  brokenLevel: number;
+  candleTimestamp: number;
+}
+
+export interface FvgData {
+  id: string;
+  type: 'BULLISH' | 'BEARISH';
+  top: number;
+  bottom: number;
+  status: string;
+}
+
+export interface SetupData {
+  id: string;
+  strategy: string;
+  direction: 'LONG' | 'SHORT';
+  entryPrice: number;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+  riskReward?: {
+    netRR: number;
+    grossRR: number;
+  };
+  status: string;
+}
+
 interface CandleChartProps {
   candles: CandleData[];
   currentCandle: CandleData | null;
   timeframe: Timeframe;
   onTimeframeChange: (tf: Timeframe) => void;
+  swings?: SwingData[];
+  structureBreaks?: BreakData[];
+  fvgs?: FvgData[];
+  setups?: SetupData[];
   symbol?: string;
   isDark?: boolean;
 }
@@ -31,6 +80,10 @@ export function CandleChart({
   currentCandle,
   timeframe,
   onTimeframeChange,
+  swings = [],
+  structureBreaks = [],
+  fvgs = [],
+  setups = [],
   symbol = 'BTCUSDT',
   isDark = true,
 }: CandleChartProps) {
@@ -38,8 +91,15 @@ export function CandleChart({
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const priceLinesRef = useRef<IPriceLine[]>([]);
 
   const [hoverData, setHoverData] = useState<CandleData | null>(null);
+
+  // Layer toggles
+  const [showSwings, setShowSwings] = useState(true);
+  const [showBreaks, setShowBreaks] = useState(true);
+  const [showFvg, setShowFvg] = useState(true);
+  const [showSetups, setShowSetups] = useState(true);
 
   // Initialize Lightweight Chart
   useEffect(() => {
@@ -62,7 +122,7 @@ export function CandleChart({
         horzLines: { color: isDark ? 'rgba(30, 41, 59, 0.4)' : 'rgba(226, 232, 240, 0.6)' },
       },
       crosshair: {
-        mode: 1, // Magnet
+        mode: 1,
       },
       rightPriceScale: {
         borderColor: isDark ? '#1e293b' : '#cbd5e1',
@@ -79,8 +139,8 @@ export function CandleChart({
     });
 
     const candleSeries = chart.addCandlestickSeries({
-      upColor: '#10b981', // Emerald green
-      downColor: '#ef4444', // Red
+      upColor: '#10b981',
+      downColor: '#ef4444',
       borderVisible: false,
       wickUpColor: '#10b981',
       wickDownColor: '#ef4444',
@@ -91,12 +151,12 @@ export function CandleChart({
       priceFormat: {
         type: 'volume',
       },
-      priceScaleId: '', // Set as overlay
+      priceScaleId: '',
     });
 
     volumeSeries.priceScale().applyOptions({
       scaleMargins: {
-        top: 0.8, // Places volume at the bottom 20%
+        top: 0.8,
         bottom: 0,
       },
     });
@@ -105,7 +165,6 @@ export function CandleChart({
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
 
-    // Crosshair move handler
     chart.subscribeCrosshairMove((param) => {
       if (!param.time || !param.seriesData.get(candleSeries)) {
         setHoverData(null);
@@ -124,7 +183,6 @@ export function CandleChart({
       }
     });
 
-    // Handle responsive resize
     const resizeObserver = new ResizeObserver((entries) => {
       if (entries.length === 0 || !entries[0].contentRect) return;
       chart.applyOptions({ width: entries[0].contentRect.width });
@@ -140,14 +198,13 @@ export function CandleChart({
     };
   }, [isDark]);
 
-  // Set initial and updated historical candles
+  // Set historical candles
   useEffect(() => {
     if (!candleSeriesRef.current || !volumeSeriesRef.current || candles.length === 0) return;
 
     const formattedCandles: CandlestickData<Time>[] = [];
     const formattedVolume: HistogramData<Time>[] = [];
 
-    // Deduplicate and sort by timestamp
     const sorted = [...candles].sort((a, b) => a.timestamp - b.timestamp);
     const seenTimes = new Set<number>();
 
@@ -178,7 +235,7 @@ export function CandleChart({
     } catch {}
   }, [candles, timeframe]);
 
-  // Update current ticking candle
+  // Update ticking candle
   useEffect(() => {
     if (!currentCandle || !candleSeriesRef.current || !volumeSeriesRef.current) return;
 
@@ -200,13 +257,142 @@ export function CandleChart({
     } catch {}
   }, [currentCandle]);
 
+  // Render SMC Markers (Swings, BOS, CHoCH)
+  useEffect(() => {
+    if (!candleSeriesRef.current || candles.length === 0) return;
+
+    const markers: SeriesMarker<Time>[] = [];
+    const candleTimes = new Set(candles.map((c) => Math.floor(c.timestamp / 1000)));
+
+    if (showSwings && swings) {
+      for (const s of swings) {
+        const timeInSec = Math.floor(s.timestamp / 1000) as Time;
+        if (!candleTimes.has(timeInSec as number)) continue;
+
+        if (s.type === 'HIGH') {
+          markers.push({
+            time: timeInSec,
+            position: 'aboveBar',
+            color: '#38bdf8',
+            shape: 'arrowDown',
+            text: s.label || 'SH',
+          });
+        } else {
+          markers.push({
+            time: timeInSec,
+            position: 'belowBar',
+            color: '#c084fc',
+            shape: 'arrowUp',
+            text: s.label || 'SL',
+          });
+        }
+      }
+    }
+
+    if (showBreaks && structureBreaks) {
+      for (const b of structureBreaks) {
+        const timeInSec = Math.floor(b.candleTimestamp / 1000) as Time;
+        if (!candleTimes.has(timeInSec as number)) continue;
+
+        markers.push({
+          time: timeInSec,
+          position: b.direction === 'BULLISH' ? 'aboveBar' : 'belowBar',
+          color: b.type === 'CHoCH' ? '#f59e0b' : '#10b981',
+          shape: 'circle',
+          text: `${b.type}`,
+        });
+      }
+    }
+
+    // Sort markers chronologically
+    markers.sort((a, b) => (a.time as number) - (b.time as number));
+
+    try {
+      candleSeriesRef.current.setMarkers(markers);
+    } catch {}
+  }, [candles, swings, structureBreaks, showSwings, showBreaks]);
+
+  // Render Price Lines (FVG, OrderBlocks, Setups)
+  useEffect(() => {
+    if (!candleSeriesRef.current) return;
+
+    // Remove previous price lines
+    for (const pl of priceLinesRef.current) {
+      try {
+        candleSeriesRef.current.removePriceLine(pl);
+      } catch {}
+    }
+    priceLinesRef.current = [];
+
+    // FVG Lines
+    if (showFvg && fvgs) {
+      const activeFvgs = fvgs.filter((f) => f.status === 'ACTIVE').slice(-2);
+      for (const fvg of activeFvgs) {
+        try {
+          const topLine = candleSeriesRef.current.createPriceLine({
+            price: fvg.top,
+            color: fvg.type === 'BULLISH' ? '#10b981' : '#ef4444',
+            lineWidth: 1,
+            lineStyle: 2, // Dashed
+            axisLabelVisible: true,
+            title: `FVG Top`,
+          });
+          const botLine = candleSeriesRef.current.createPriceLine({
+            price: fvg.bottom,
+            color: fvg.type === 'BULLISH' ? '#10b981' : '#ef4444',
+            lineWidth: 1,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: `FVG Bottom`,
+          });
+          priceLinesRef.current.push(topLine, botLine);
+        } catch {}
+      }
+    }
+
+    // Setups Lines (Entry, SL, TP 1:4)
+    if (showSetups && setups && setups.length > 0) {
+      const activeSetup = setups[setups.length - 1];
+      try {
+        const entryLine = candleSeriesRef.current.createPriceLine({
+          price: activeSetup.entryPrice,
+          color: '#3b82f6', // Blue
+          lineWidth: 2,
+          lineStyle: 0, // Solid
+          axisLabelVisible: true,
+          title: `ENTRADA ($${activeSetup.entryPrice})`,
+        });
+
+        const slLine = candleSeriesRef.current.createPriceLine({
+          price: activeSetup.stopLossPrice,
+          color: '#ef4444', // Red
+          lineWidth: 2,
+          lineStyle: 0,
+          axisLabelVisible: true,
+          title: `SL ($${activeSetup.stopLossPrice})`,
+        });
+
+        const tpLine = candleSeriesRef.current.createPriceLine({
+          price: activeSetup.takeProfitPrice,
+          color: '#10b981', // Green
+          lineWidth: 2,
+          lineStyle: 0,
+          axisLabelVisible: true,
+          title: `TP [1:4] ($${activeSetup.takeProfitPrice})`,
+        });
+
+        priceLinesRef.current.push(entryLine, slLine, tpLine);
+      } catch {}
+    }
+  }, [fvgs, setups, showFvg, showSetups]);
+
   const activeCandle = hoverData || currentCandle || (candles.length > 0 ? candles[candles.length - 1] : null);
   const priceColor =
     activeCandle && activeCandle.close >= activeCandle.open ? 'text-emerald-400' : 'text-rose-400';
 
   return (
     <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-4 shadow-xl">
-      {/* Header Bar */}
+      {/* Top Header Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
@@ -218,7 +404,7 @@ export function CandleChart({
             </span>
           </div>
 
-          {/* Timeframe Buttons */}
+          {/* Timeframe Selector */}
           <div className="flex items-center gap-1 rounded-xl bg-slate-900/90 p-1 border border-slate-800">
             {TIMEFRAMES.map((tf) => (
               <button
@@ -261,6 +447,53 @@ export function CandleChart({
             </div>
           </div>
         )}
+      </div>
+
+      {/* Layer Toggles Toolbar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-slate-800/50 text-[11px] font-mono">
+        <span className="text-slate-400 font-semibold uppercase tracking-wider">Capas SMC / ICT:</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setShowSwings(!showSwings)}
+            className={`px-2 py-0.5 rounded-md border transition-all ${
+              showSwings
+                ? 'border-sky-500/40 bg-sky-500/10 text-sky-400 font-bold'
+                : 'border-slate-800 text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            ● Swings (HH/LL)
+          </button>
+          <button
+            onClick={() => setShowBreaks(!showBreaks)}
+            className={`px-2 py-0.5 rounded-md border transition-all ${
+              showBreaks
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400 font-bold'
+                : 'border-slate-800 text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            ● BOS / CHoCH
+          </button>
+          <button
+            onClick={() => setShowFvg(!showFvg)}
+            className={`px-2 py-0.5 rounded-md border transition-all ${
+              showFvg
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-400 font-bold'
+                : 'border-slate-800 text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            ● FVG / Zonas
+          </button>
+          <button
+            onClick={() => setShowSetups(!showSetups)}
+            className={`px-2 py-0.5 rounded-md border transition-all ${
+              showSetups
+                ? 'border-[var(--color-brand,#FF6600)] bg-[var(--color-brand,#FF6600)]/10 text-[var(--color-brand,#FF6600)] font-bold'
+                : 'border-slate-800 text-slate-500 hover:text-slate-300'
+            }`}
+          >
+            ● Setups 1:4 (SL/TP)
+          </button>
+        </div>
       </div>
 
       {/* Candlestick Canvas Container */}
