@@ -205,6 +205,81 @@ export class DatabaseService {
 
       CREATE INDEX IF NOT EXISTS idx_notif_time 
       ON notifications_log(timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS risk_policies (
+        id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL,
+        is_active INTEGER NOT NULL,
+        policy_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        created_by TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS bybit_credentials (
+        id TEXT PRIMARY KEY,
+        api_key TEXT NOT NULL,
+        api_key_masked TEXT NOT NULL,
+        encrypted_secret TEXT NOT NULL,
+        environment TEXT NOT NULL,
+        status TEXT NOT NULL,
+        detected_permissions TEXT,
+        fee_source TEXT,
+        actual_maker_fee REAL,
+        actual_taker_fee REAL,
+        account_balance_usdt REAL,
+        last_verified_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS ai_provider_credentials (
+        provider TEXT PRIMARY KEY,
+        api_key_masked TEXT NOT NULL,
+        encrypted_secret TEXT NOT NULL,
+        model TEXT NOT NULL,
+        status TEXT NOT NULL,
+        last_verified_at INTEGER,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS ai_router_config (
+        id TEXT PRIMARY KEY,
+        mode TEXT NOT NULL,
+        profile TEXT NOT NULL,
+        config_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS ai_consumption_logs (
+        id TEXT PRIMARY KEY,
+        timestamp INTEGER NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        task TEXT NOT NULL,
+        tokens_prompt INTEGER NOT NULL,
+        tokens_completion INTEGER NOT NULL,
+        tokens_cached INTEGER NOT NULL,
+        cost_usd REAL NOT NULL,
+        latency_ms INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        analysis_id TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ai_cons_time 
+      ON ai_consumption_logs(timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS config_audit_logs (
+        id TEXT PRIMARY KEY,
+        timestamp INTEGER NOT NULL,
+        admin_user TEXT NOT NULL,
+        category TEXT NOT NULL,
+        action TEXT NOT NULL,
+        details_json TEXT,
+        ip_address TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_audit_time 
+      ON config_audit_logs(timestamp DESC);
     `);
 
     // Signal columns migration for tracking metrics
@@ -843,6 +918,331 @@ export class DatabaseService {
         realizedNetR: r.realized_net_r !== null && r.realized_net_r !== undefined ? Number(r.realized_net_r) : null,
         realizedNetPnlUsdt: r.realized_net_pnl_usdt !== null && r.realized_net_pnl_usdt !== undefined ? Number(r.realized_net_pnl_usdt) : null,
         entryMode: r.entry_mode || 'SIGNALS_ONLY',
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  // --- FASE 4.5 CONFIGURATION & RISK PERSISTENCE ---
+
+  public saveRiskPolicy(policy: any): void {
+    if (this.isClosed) return;
+    try {
+      this.db.exec('BEGIN TRANSACTION;');
+      // Deactivate previous active policies
+      this.db.prepare('UPDATE risk_policies SET is_active = 0').run();
+      const id = policy.id || `risk_pol_${Date.now()}`;
+      this.db.prepare(`
+        INSERT INTO risk_policies (id, version, is_active, policy_json, created_at, created_by)
+        VALUES (?, ?, 1, ?, ?, ?)
+      `).run(id, policy.version || 1, JSON.stringify(policy), policy.updatedAt || Date.now(), policy.updatedBy || 'admin');
+      this.db.exec('COMMIT;');
+    } catch (err) {
+      try { this.db.exec('ROLLBACK;'); } catch {}
+    }
+  }
+
+  public getActiveRiskPolicy(): any | null {
+    if (this.isClosed) return null;
+    try {
+      const row = this.db.prepare('SELECT * FROM risk_policies WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1').get() as any;
+      if (!row) return null;
+      return JSON.parse(row.policy_json);
+    } catch {
+      return null;
+    }
+  }
+
+  public saveBybitCredentials(record: any): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO bybit_credentials (id, api_key, api_key_masked, encrypted_secret, environment, status, detected_permissions, fee_source, actual_maker_fee, actual_taker_fee, account_balance_usdt, last_verified_at, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          api_key = excluded.api_key,
+          api_key_masked = excluded.api_key_masked,
+          encrypted_secret = excluded.encrypted_secret,
+          environment = excluded.environment,
+          status = excluded.status,
+          detected_permissions = excluded.detected_permissions,
+          fee_source = excluded.fee_source,
+          actual_maker_fee = excluded.actual_maker_fee,
+          actual_taker_fee = excluded.actual_taker_fee,
+          account_balance_usdt = excluded.account_balance_usdt,
+          last_verified_at = excluded.last_verified_at,
+          updated_at = excluded.updated_at
+      `).run(
+        record.id,
+        record.apiKey,
+        record.apiKeyMasked,
+        JSON.stringify(record.encryptedSecret),
+        record.environment,
+        record.status,
+        JSON.stringify(record.detectedPermissions || {}),
+        record.feeSource || 'DEFAULT_BYBIT_LINEAR',
+        record.actualMakerFeeRate ?? null,
+        record.actualTakerFeeRate ?? null,
+        record.accountBalanceUsdt ?? null,
+        record.lastVerifiedAt ?? null,
+        record.createdAt || Date.now(),
+        record.updatedAt || Date.now()
+      );
+    } catch {}
+  }
+
+  public getBybitCredentials(): any | null {
+    if (this.isClosed) return null;
+    try {
+      const row = this.db.prepare('SELECT * FROM bybit_credentials ORDER BY updated_at DESC LIMIT 1').get() as any;
+      if (!row) return null;
+      return {
+        id: row.id,
+        apiKey: row.api_key,
+        apiKeyMasked: row.api_key_masked,
+        encryptedSecret: JSON.parse(row.encrypted_secret),
+        environment: row.environment,
+        status: row.status,
+        detectedPermissions: JSON.parse(row.detected_permissions || '{}'),
+        feeSource: row.fee_source,
+        actualMakerFeeRate: row.actual_maker_fee !== null ? Number(row.actual_maker_fee) : undefined,
+        actualTakerFeeRate: row.actual_taker_fee !== null ? Number(row.actual_taker_fee) : undefined,
+        accountBalanceUsdt: row.account_balance_usdt !== null ? Number(row.account_balance_usdt) : undefined,
+        lastVerifiedAt: row.last_verified_at ? Number(row.last_verified_at) : undefined,
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public deleteBybitCredentials(): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare('DELETE FROM bybit_credentials').run();
+    } catch {}
+  }
+
+  public saveAiCredentials(record: { provider: string; apiKeyMasked: string; encryptedSecret: any; model: string; status: string }): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO ai_provider_credentials (provider, api_key_masked, encrypted_secret, model, status, last_verified_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(provider) DO UPDATE SET
+          api_key_masked = excluded.api_key_masked,
+          encrypted_secret = excluded.encrypted_secret,
+          model = excluded.model,
+          status = excluded.status,
+          last_verified_at = excluded.last_verified_at,
+          updated_at = excluded.updated_at
+      `).run(
+        record.provider,
+        record.apiKeyMasked,
+        JSON.stringify(record.encryptedSecret),
+        record.model,
+        record.status,
+        Date.now(),
+        Date.now()
+      );
+    } catch {}
+  }
+
+  public getAiCredentials(provider: string): any | null {
+    if (this.isClosed) return null;
+    try {
+      const row = this.db.prepare('SELECT * FROM ai_provider_credentials WHERE provider = ?').get(provider) as any;
+      if (!row) return null;
+      return {
+        provider: row.provider,
+        apiKeyMasked: row.api_key_masked,
+        encryptedSecret: JSON.parse(row.encrypted_secret),
+        model: row.model,
+        status: row.status,
+        lastVerifiedAt: row.last_verified_at ? Number(row.last_verified_at) : undefined,
+        updatedAt: Number(row.updated_at),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public deleteAiCredentials(provider: string): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare('DELETE FROM ai_provider_credentials WHERE provider = ?').run(provider);
+    } catch {}
+  }
+
+  public saveRouterConfig(config: any): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO ai_router_config (id, mode, profile, config_json, updated_at)
+        VALUES ('primary_router_config', ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          mode = excluded.mode,
+          profile = excluded.profile,
+          config_json = excluded.config_json,
+          updated_at = excluded.updated_at
+      `).run(config.mode, config.profile, JSON.stringify(config), config.updatedAt || Date.now());
+    } catch {}
+  }
+
+  public getRouterConfig(): any | null {
+    if (this.isClosed) return null;
+    try {
+      const row = this.db.prepare("SELECT * FROM ai_router_config WHERE id = 'primary_router_config'").get() as any;
+      if (!row) return null;
+      return JSON.parse(row.config_json);
+    } catch {
+      return null;
+    }
+  }
+
+  public logAiConsumption(log: {
+    id?: string;
+    timestamp?: number;
+    provider: string;
+    model: string;
+    task: string;
+    tokensPrompt: number;
+    tokensCompletion: number;
+    tokensCached?: number;
+    costUsd: number;
+    latencyMs: number;
+    status: string;
+    analysisId?: string;
+  }): void {
+    if (this.isClosed) return;
+    try {
+      const id = log.id || `cons_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      this.db.prepare(`
+        INSERT INTO ai_consumption_logs (id, timestamp, provider, model, task, tokens_prompt, tokens_completion, tokens_cached, cost_usd, latency_ms, status, analysis_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        log.timestamp || Date.now(),
+        log.provider,
+        log.model,
+        log.task,
+        log.tokensPrompt || 0,
+        log.tokensCompletion || 0,
+        log.tokensCached || 0,
+        log.costUsd || 0,
+        log.latencyMs || 0,
+        log.status || 'SUCCESS',
+        log.analysisId || null
+      );
+    } catch {}
+  }
+
+  public getAiConsumptionLogs(limit: number = 100, provider?: string): any[] {
+    if (this.isClosed) return [];
+    try {
+      const stmt = provider
+        ? this.db.prepare('SELECT * FROM ai_consumption_logs WHERE provider = ? ORDER BY timestamp DESC LIMIT ?')
+        : this.db.prepare('SELECT * FROM ai_consumption_logs ORDER BY timestamp DESC LIMIT ?');
+      const rows = (provider ? stmt.all(provider, limit) : stmt.all(limit)) as any[];
+      return rows.map((r) => ({
+        id: r.id,
+        timestamp: Number(r.timestamp),
+        provider: r.provider,
+        model: r.model,
+        task: r.task,
+        tokensPrompt: Number(r.tokens_prompt),
+        tokensCompletion: Number(r.tokens_completion),
+        tokensCached: Number(r.tokens_cached),
+        costUsd: Number(r.cost_usd),
+        latencyMs: Number(r.latency_ms),
+        status: r.status,
+        analysisId: r.analysis_id,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  public getAiConsumptionStats(): any {
+    if (this.isClosed) return {};
+    try {
+      const now = Date.now();
+      const startOfToday = new Date().setHours(0, 0, 0, 0);
+      const startOfYesterday = startOfToday - 86400000;
+      const startOfLast7Days = now - 7 * 86400000;
+      const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+
+      const todayRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend, COUNT(*) as calls FROM ai_consumption_logs WHERE timestamp >= ?').get(startOfToday) as any;
+      const yesterdayRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend FROM ai_consumption_logs WHERE timestamp >= ? AND timestamp < ?').get(startOfYesterday, startOfToday) as any;
+      const weekRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend FROM ai_consumption_logs WHERE timestamp >= ?').get(startOfLast7Days) as any;
+      const monthRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend FROM ai_consumption_logs WHERE timestamp >= ?').get(startOfMonth) as any;
+      const totalRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend, COALESCE(SUM(tokens_prompt), 0) as prompt, COALESCE(SUM(tokens_completion), 0) as comp, COALESCE(SUM(tokens_cached), 0) as cached, COUNT(*) as calls, COALESCE(AVG(latency_ms), 0) as avgLat FROM ai_consumption_logs').get() as any;
+
+      const byProviderRows = this.db.prepare('SELECT provider, COALESCE(SUM(cost_usd), 0) as spend, COUNT(*) as calls FROM ai_consumption_logs GROUP BY provider').all() as any[];
+      const byModelRows = this.db.prepare('SELECT model, COALESCE(SUM(cost_usd), 0) as spend, COUNT(*) as calls FROM ai_consumption_logs GROUP BY model ORDER BY spend DESC LIMIT 10').all() as any[];
+      const byTaskRows = this.db.prepare('SELECT task, COALESCE(SUM(cost_usd), 0) as spend, COUNT(*) as calls FROM ai_consumption_logs GROUP BY task ORDER BY spend DESC').all() as any[];
+
+      return {
+        todaySpendUsd: Number(todayRow?.spend || 0),
+        todayCalls: Number(todayRow?.calls || 0),
+        yesterdaySpendUsd: Number(yesterdayRow?.spend || 0),
+        last7DaysSpendUsd: Number(weekRow?.spend || 0),
+        monthSpendUsd: Number(monthRow?.spend || 0),
+        totalSpendUsd: Number(totalRow?.spend || 0),
+        totalPromptTokens: Number(totalRow?.prompt || 0),
+        totalCompletionTokens: Number(totalRow?.comp || 0),
+        totalCachedTokens: Number(totalRow?.cached || 0),
+        totalCalls: Number(totalRow?.calls || 0),
+        avgLatencyMs: Math.round(Number(totalRow?.avgLat || 0)),
+        byProvider: byProviderRows,
+        byModel: byModelRows,
+        byTask: byTaskRows,
+      };
+    } catch {
+      return {};
+    }
+  }
+
+  public logConfigAudit(record: {
+    id?: string;
+    adminUser?: string;
+    category: string;
+    action: string;
+    details?: any;
+    ipAddress?: string;
+  }): void {
+    if (this.isClosed) return;
+    try {
+      const id = record.id || `aud_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+      this.db.prepare(`
+        INSERT INTO config_audit_logs (id, timestamp, admin_user, category, action, details_json, ip_address)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        Date.now(),
+        record.adminUser || 'admin',
+        record.category,
+        record.action,
+        record.details ? JSON.stringify(record.details) : null,
+        record.ipAddress || null
+      );
+    } catch {}
+  }
+
+  public getConfigAuditLogs(limit: number = 50): any[] {
+    if (this.isClosed) return [];
+    try {
+      const rows = this.db.prepare('SELECT * FROM config_audit_logs ORDER BY timestamp DESC LIMIT ?').all(limit) as any[];
+      return rows.map((r) => ({
+        id: r.id,
+        timestamp: Number(r.timestamp),
+        adminUser: r.admin_user,
+        category: r.category,
+        action: r.action,
+        details: r.details_json ? JSON.parse(r.details_json) : null,
+        ipAddress: r.ip_address,
       }));
     } catch {
       return [];

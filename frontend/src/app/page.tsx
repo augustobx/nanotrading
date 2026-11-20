@@ -9,6 +9,7 @@ import { MultiTimeframeMatrix } from '../components/MultiTimeframeMatrix';
 import { AiAnalystsCard } from '../components/AiAnalystsCard';
 import { SignalLifecycleMonitor } from '../components/SignalLifecycleMonitor';
 import { NotificationsModal } from '../components/NotificationsModal';
+import { ConfigCenterModal } from '../components/config/ConfigCenterModal';
 import {
   Activity,
   Shield,
@@ -26,6 +27,7 @@ import {
   Bell,
   Power,
   Radio,
+  Settings,
 } from 'lucide-react';
 
 interface TickerData {
@@ -94,6 +96,26 @@ export default function DashboardPage() {
   const [activeSignals, setActiveSignals] = useState<any[]>([]);
   const [isNotificationsModalOpen, setIsNotificationsModalOpen] = useState<boolean>(false);
   const [killSwitchActive, setKillSwitchActive] = useState<boolean>(false);
+
+  // Phase 4.5 Configuration Center & AI Router
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
+  const [configSummary, setConfigSummary] = useState<any>(null);
+
+  const fetchConfigSummary = async () => {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/config/summary`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success) setConfigSummary(json.data);
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    fetchConfigSummary();
+    const interval = setInterval(fetchConfigSummary, 15000);
+    return () => clearInterval(interval);
+  }, []);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -425,6 +447,20 @@ export default function DashboardPage() {
 
         <div className="flex items-center gap-2 sm:gap-3">
           <button
+            onClick={() => setIsConfigModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-orange-500/30 bg-orange-500/10 hover:bg-orange-500/20 text-orange-400 hover:text-orange-300 transition-all cursor-pointer text-xs font-semibold shadow-sm"
+            title="Centro de Configuración y Riesgo (Fase 4.5)"
+          >
+            <Settings className="w-4 h-4" />
+            <span className="hidden sm:inline">Configuración</span>
+            {configSummary?.routerMode && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-orange-950/80 border border-orange-800 text-orange-300">
+                {configSummary.routerMode === 'AUTOMATIC' ? 'AUTO' : configSummary.routerMode}
+              </span>
+            )}
+          </button>
+
+          <button
             onClick={() => setIsNotificationsModalOpen(true)}
             className="p-2 rounded-xl border border-slate-800 bg-slate-900/80 text-amber-400 hover:text-amber-300 hover:border-slate-700 transition-all cursor-pointer relative"
             title="Centro de Notificaciones 24/7 (Telegram & Web Push PWA)"
@@ -475,10 +511,24 @@ export default function DashboardPage() {
             Kill Switch: <strong>{killSwitchActive ? 'ACTIVADO (BLOQUEO)' : 'STANDBY OK'}</strong>
           </button>
         </div>
-        <div className="flex items-center gap-3 text-slate-400">
-          <span>Riesgo/Op: <strong className="text-slate-200">0.5%</strong></span>
-          <span>Pérdida Diaria: <strong className="text-slate-200">1.5%</strong></span>
-          <span>R:R Neto Mín: <strong className="text-amber-400">1:4 (Neto)</strong></span>
+        <div className="flex items-center flex-wrap gap-3 text-slate-400">
+          <div className="hidden lg:flex items-center gap-1.5 text-slate-300">
+            <span className="text-slate-500">Router:</span>
+            <span className="text-orange-400 font-bold">{configSummary?.routerMode || 'AUTOMATIC'}</span>
+            <span className="text-[11px] text-slate-500">({configSummary?.activeProfile || 'BALANCED'})</span>
+          </div>
+          <span className="text-slate-600 hidden lg:inline">|</span>
+          <div className="hidden xl:flex items-center gap-1.5 text-slate-300">
+            <span className="text-slate-500">Presupuesto IA:</span>
+            <span className="text-white font-mono">${(configSummary?.spentTodayUsd || 0).toFixed(3)}</span>
+            <span className="text-slate-500">/ ${configSummary?.dailyBudgetUsd || 5.0}</span>
+          </div>
+          <span className="text-slate-600 hidden xl:inline">|</span>
+          <span>Riesgo Máx: <strong className="text-slate-200">{configSummary?.maxRiskPerTradePercentage || 0.5}% (${configSummary?.maxRiskPerTradeUsdt || 50} USDT)</strong></span>
+          <span className="text-slate-600 hidden sm:inline">|</span>
+          <span>Tope SL: <strong className="text-amber-400">≤ {configSummary?.maxStopLossPercentage || 1.5}%</strong></span>
+          <span className="text-slate-600 hidden sm:inline">|</span>
+          <span>R:R Neto: <strong className="text-emerald-400">≥ 1:{configSummary?.minNetRiskReward || 4.0}</strong></span>
         </div>
       </div>
 
@@ -760,6 +810,13 @@ export default function DashboardPage() {
       <NotificationsModal
         isOpen={isNotificationsModalOpen}
         onClose={() => setIsNotificationsModalOpen(false)}
+      />
+
+      {/* Configuration & Risk Center Modal (Phase 4.5) */}
+      <ConfigCenterModal
+        isOpen={isConfigModalOpen}
+        onClose={() => setIsConfigModalOpen(false)}
+        onConfigChanged={fetchConfigSummary}
       />
     </div>
   );

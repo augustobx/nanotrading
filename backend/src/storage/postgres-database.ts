@@ -172,6 +172,81 @@ export class PostgresDatabaseService {
         CREATE INDEX IF NOT EXISTS idx_pg_notif_time 
         ON notifications_log(timestamp DESC);
 
+        CREATE TABLE IF NOT EXISTS risk_policies (
+          id VARCHAR(64) PRIMARY KEY,
+          version INTEGER NOT NULL,
+          is_active INTEGER NOT NULL,
+          policy_json JSONB NOT NULL,
+          created_at BIGINT NOT NULL,
+          created_by VARCHAR(50) NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS bybit_credentials (
+          id VARCHAR(64) PRIMARY KEY,
+          api_key VARCHAR(100) NOT NULL,
+          api_key_masked VARCHAR(50) NOT NULL,
+          encrypted_secret JSONB NOT NULL,
+          environment VARCHAR(20) NOT NULL,
+          status VARCHAR(30) NOT NULL,
+          detected_permissions JSONB,
+          fee_source VARCHAR(50),
+          actual_maker_fee DOUBLE PRECISION,
+          actual_taker_fee DOUBLE PRECISION,
+          account_balance_usdt DOUBLE PRECISION,
+          last_verified_at BIGINT,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_provider_credentials (
+          provider VARCHAR(20) PRIMARY KEY,
+          api_key_masked VARCHAR(50) NOT NULL,
+          encrypted_secret JSONB NOT NULL,
+          model VARCHAR(50) NOT NULL,
+          status VARCHAR(30) NOT NULL,
+          last_verified_at BIGINT,
+          updated_at BIGINT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_router_config (
+          id VARCHAR(64) PRIMARY KEY,
+          mode VARCHAR(30) NOT NULL,
+          profile VARCHAR(30) NOT NULL,
+          config_json JSONB NOT NULL,
+          updated_at BIGINT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS ai_consumption_logs (
+          id VARCHAR(64) PRIMARY KEY,
+          timestamp BIGINT NOT NULL,
+          provider VARCHAR(20) NOT NULL,
+          model VARCHAR(50) NOT NULL,
+          task VARCHAR(50) NOT NULL,
+          tokens_prompt INTEGER NOT NULL,
+          tokens_completion INTEGER NOT NULL,
+          tokens_cached INTEGER NOT NULL,
+          cost_usd DOUBLE PRECISION NOT NULL,
+          latency_ms INTEGER NOT NULL,
+          status VARCHAR(20) NOT NULL,
+          analysis_id VARCHAR(64)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pg_ai_cons_time 
+        ON ai_consumption_logs(timestamp DESC);
+
+        CREATE TABLE IF NOT EXISTS config_audit_logs (
+          id VARCHAR(64) PRIMARY KEY,
+          timestamp BIGINT NOT NULL,
+          admin_user VARCHAR(50) NOT NULL,
+          category VARCHAR(30) NOT NULL,
+          action VARCHAR(50) NOT NULL,
+          details_json JSONB,
+          ip_address VARCHAR(50)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pg_audit_time 
+        ON config_audit_logs(timestamp DESC);
+
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS simulated_entry_time BIGINT;
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS exit_time BIGINT;
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS duration_ms BIGINT;
@@ -737,6 +812,125 @@ export class PostgresDatabaseService {
       realizedNetR: r.realized_net_r !== null && r.realized_net_r !== undefined ? Number(r.realized_net_r) : null,
       realizedNetPnlUsdt: r.realized_net_pnl_usdt !== null && r.realized_net_pnl_usdt !== undefined ? Number(r.realized_net_pnl_usdt) : null,
       entryMode: r.entry_mode || 'SIGNALS_ONLY',
+    }));
+  }
+
+  public async saveRiskPolicy(policy: any): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('UPDATE risk_policies SET is_active = 0');
+      const id = policy.id || `risk_pol_${Date.now()}`;
+      await client.query(
+        `INSERT INTO risk_policies (id, version, is_active, policy_json, created_at, created_by)
+         VALUES ($1, $2, 1, $3, $4, $5)`,
+        [id, policy.version || 1, JSON.stringify(policy), policy.updatedAt || Date.now(), policy.updatedBy || 'admin']
+      );
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async getActiveRiskPolicy(): Promise<any | null> {
+    const res = await this.pool.query('SELECT * FROM risk_policies WHERE is_active = 1 ORDER BY created_at DESC LIMIT 1');
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return typeof r.policy_json === 'string' ? JSON.parse(r.policy_json) : r.policy_json;
+  }
+
+  public async saveBybitCredentials(record: any): Promise<void> {
+    const query = `
+      INSERT INTO bybit_credentials (id, api_key, api_key_masked, encrypted_secret, environment, status, detected_permissions, fee_source, actual_maker_fee, actual_taker_fee, account_balance_usdt, last_verified_at, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      ON CONFLICT (id) DO UPDATE SET
+        api_key = EXCLUDED.api_key,
+        api_key_masked = EXCLUDED.api_key_masked,
+        encrypted_secret = EXCLUDED.encrypted_secret,
+        environment = EXCLUDED.environment,
+        status = EXCLUDED.status,
+        detected_permissions = EXCLUDED.detected_permissions,
+        fee_source = EXCLUDED.fee_source,
+        actual_maker_fee = EXCLUDED.actual_maker_fee,
+        actual_taker_fee = EXCLUDED.actual_taker_fee,
+        account_balance_usdt = EXCLUDED.account_balance_usdt,
+        last_verified_at = EXCLUDED.last_verified_at,
+        updated_at = EXCLUDED.updated_at
+    `;
+    await this.pool.query(query, [
+      record.id,
+      record.apiKey,
+      record.apiKeyMasked,
+      JSON.stringify(record.encryptedSecret),
+      record.environment,
+      record.status,
+      JSON.stringify(record.detectedPermissions || {}),
+      record.feeSource || 'DEFAULT_BYBIT_LINEAR',
+      record.actualMakerFeeRate ?? null,
+      record.actualTakerFeeRate ?? null,
+      record.accountBalanceUsdt ?? null,
+      record.lastVerifiedAt ?? null,
+      record.createdAt || Date.now(),
+      record.updatedAt || Date.now(),
+    ]);
+  }
+
+  public async getBybitCredentials(): Promise<any | null> {
+    const res = await this.pool.query('SELECT * FROM bybit_credentials ORDER BY updated_at DESC LIMIT 1');
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      apiKey: r.api_key,
+      apiKeyMasked: r.api_key_masked,
+      encryptedSecret: typeof r.encrypted_secret === 'string' ? JSON.parse(r.encrypted_secret) : r.encrypted_secret,
+      environment: r.environment,
+      status: r.status,
+      detectedPermissions: typeof r.detected_permissions === 'string' ? JSON.parse(r.detected_permissions) : r.detected_permissions || {},
+      feeSource: r.fee_source,
+      actualMakerFeeRate: r.actual_maker_fee !== null ? Number(r.actual_maker_fee) : undefined,
+      actualTakerFeeRate: r.actual_taker_fee !== null ? Number(r.actual_taker_fee) : undefined,
+      accountBalanceUsdt: r.account_balance_usdt !== null ? Number(r.account_balance_usdt) : undefined,
+      lastVerifiedAt: r.last_verified_at ? Number(r.last_verified_at) : undefined,
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+    };
+  }
+
+  public async deleteBybitCredentials(): Promise<void> {
+    await this.pool.query('DELETE FROM bybit_credentials');
+  }
+
+  public async logConfigAudit(record: any): Promise<void> {
+    const id = record.id || `aud_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    await this.pool.query(
+      `INSERT INTO config_audit_logs (id, timestamp, admin_user, category, action, details_json, ip_address)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        id,
+        Date.now(),
+        record.adminUser || 'admin',
+        record.category,
+        record.action,
+        record.details ? JSON.stringify(record.details) : null,
+        record.ipAddress || null,
+      ]
+    );
+  }
+
+  public async getConfigAuditLogs(limit: number = 50): Promise<any[]> {
+    const res = await this.pool.query('SELECT * FROM config_audit_logs ORDER BY timestamp DESC LIMIT $1', [limit]);
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      timestamp: Number(r.timestamp),
+      adminUser: r.admin_user,
+      category: r.category,
+      action: r.action,
+      details: typeof r.details_json === 'string' ? JSON.parse(r.details_json) : r.details_json,
+      ipAddress: r.ip_address,
     }));
   }
 

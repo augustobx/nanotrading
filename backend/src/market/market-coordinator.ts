@@ -19,6 +19,9 @@ import { SignalStateMachine } from '../engine/signal-state-machine.js';
 import { TelegramNotifier } from '../notifications/telegram-notifier.js';
 import { WebPushNotifier } from '../notifications/web-push-notifier.js';
 import { MarketMonitorWorker } from '../engine/market-monitor-worker.js';
+import { RiskPolicyManager } from '../engine/risk-policy.js';
+import { BybitCredentialsManager } from '../bybit/bybit-credentials.js';
+import { AiModelRouter } from '../ai/router/ai-router.js';
 import { config } from '../config/index.js';
 
 export class MarketCoordinator extends EventEmitter {
@@ -32,6 +35,9 @@ export class MarketCoordinator extends EventEmitter {
   private telegramNotifier: TelegramNotifier;
   private webPushNotifier: WebPushNotifier;
   private marketMonitorWorker: MarketMonitorWorker;
+  private riskPolicyManager: RiskPolicyManager;
+  private bybitCredentialsManager: BybitCredentialsManager;
+  private aiRouter: AiModelRouter;
   private db: DatabaseService;
   private symbol: string;
   private instrumentInfo: InstrumentInfo | null = null;
@@ -63,6 +69,9 @@ export class MarketCoordinator extends EventEmitter {
     this.signalStateMachine = new SignalStateMachine(this.db);
     this.telegramNotifier = new TelegramNotifier(this.db);
     this.webPushNotifier = new WebPushNotifier(this.db);
+    this.riskPolicyManager = new RiskPolicyManager(this.db.getActiveRiskPolicy() || undefined);
+    this.bybitCredentialsManager = new BybitCredentialsManager(this.db.getBybitCredentials() || undefined);
+    this.aiRouter = new AiModelRouter(this.db.getRouterConfig() || undefined);
     this.marketMonitorWorker = new MarketMonitorWorker({
       coordinator: this,
       stateMachine: this.signalStateMachine,
@@ -365,6 +374,18 @@ export class MarketCoordinator extends EventEmitter {
 
   public getWebPushNotifier(): WebPushNotifier {
     return this.webPushNotifier;
+  }
+
+  public getRiskPolicyManager(): RiskPolicyManager {
+    return this.riskPolicyManager;
+  }
+
+  public getBybitCredentialsManager(): BybitCredentialsManager {
+    return this.bybitCredentialsManager;
+  }
+
+  public getAiRouter(): AiModelRouter {
+    return this.aiRouter;
   }
 
   public setKillSwitch(active: boolean, reason?: string): void {

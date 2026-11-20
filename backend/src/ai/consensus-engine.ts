@@ -95,13 +95,30 @@ export class ConsensusEngine extends EventEmitter {
       return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'INSUFFICIENT_NET_RR');
     }
 
-    // Step 6: Spread / Volatility filter
+    // Step 6: Risk Policy & Stop Loss Ceilings Evaluation (Fase 4.5)
+    const riskPolicyMgr = this.coordinator.getRiskPolicyManager?.();
+    if (riskPolicyMgr) {
+      const atr15m = snapshot.multiTimeframe?.['15m']?.atr || snapshot.multiTimeframe?.['5m']?.atr || 100;
+      const activeSignalsCount = this.activeSignals.size;
+      const riskEval = riskPolicyMgr.evaluateSetupRisk(
+        setup,
+        atr15m,
+        snapshot.ticker.spreadPcnt,
+        activeSignalsCount
+      );
+      if (!riskEval.passed) {
+        ruleViolations.push(...riskEval.violations);
+        return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'RISK_POLICY_VIOLATION');
+      }
+    }
+
+    // Step 7: Spread / Volatility filter
     if (snapshot.ticker.spreadPcnt > 0.05) {
       ruleViolations.push(`Spread excesivo (${snapshot.ticker.spreadPcnt.toFixed(4)}% > 0.05%)`);
       return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'SPREAD_TOO_HIGH');
     }
 
-    // Step 7: Budget / Rate limit check & Concurrency Reservation
+    // Step 8: Budget / Rate limit check & Concurrency Reservation
     if (!this.costTracker.canMakeCalls(2)) {
       ruleViolations.push('Límite de presupuesto diario de IA alcanzado');
       return this.waitDecision(
@@ -150,6 +167,30 @@ export class ConsensusEngine extends EventEmitter {
     // Persist reviews to database
     this.saveAiReview(setup.id, openaiRes);
     this.saveAiReview(setup.id, geminiRes);
+
+    // Persist detailed consumption logs (Fase 4.5)
+    this.db.logAiConsumption({
+      provider: 'OPENAI',
+      model: openaiRes.model,
+      task: 'SETUP_EVALUATION',
+      tokensPrompt: openaiRes.tokensPrompt,
+      tokensCompletion: openaiRes.tokensCompletion,
+      costUsd: openaiRes.estimatedCostUsd,
+      latencyMs: openaiRes.latencyMs,
+      status: openaiRes.error ? 'ERROR' : 'SUCCESS',
+      analysisId: setup.id,
+    });
+    this.db.logAiConsumption({
+      provider: 'GEMINI',
+      model: geminiRes.model,
+      task: 'RISK_AUDIT',
+      tokensPrompt: geminiRes.tokensPrompt,
+      tokensCompletion: geminiRes.tokensCompletion,
+      costUsd: geminiRes.estimatedCostUsd,
+      latencyMs: geminiRes.latencyMs,
+      status: geminiRes.error ? 'ERROR' : 'SUCCESS',
+      analysisId: setup.id,
+    });
 
     // Step 9: Determine Evaluation Mode & Fallback
     const isOpenAiAvailable = !openaiRes.error && openaiRes.availabilityStatus === 'AVAILABLE';

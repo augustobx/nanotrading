@@ -17,6 +17,7 @@
 | **Fase 2** | Motor Técnico Cuantitativo & SMC/ICT | Detección de Swings, BOS, CHoCH, FVG, OB, Liquidez, Estrategias A y B, R:R 1:4 estricto | **COMPLETADA** |
 | **Fase 3** | Integración de IA & Motor de Consenso | Proveedores OpenAI y Gemini independientes, schemas estructurados, consenso, control de costos | **COMPLETADA** |
 | **Fase 4** | Alertas, Máquina de Estados y PWA | Ciclo de vida completo de señales, Telegram Bot, Web Push PWA, UI con NanoLabs Theme 2 | **COMPLETADA** |
+| **Fase 4.5** | Centro de Configuración, Riesgo y Router de IA | Gestión de capital, techos de SL, credenciales Bybit/IA, router multimodelo, auditoría | **COMPLETADA** |
 | **Fase 5** | Backtesting, Paper Trading & Validación | Motor de backtesting sin look-ahead bias, simulador de paper trading en vivo, métricas reales | PENDIENTE |
 | **Fase 6** | Preparación para Ejecución Asistida | Abstracción de ejecución privada, reconciliación, kill switch avanzado (modo deshabilitado por defecto) | PENDIENTE |
 
@@ -128,3 +129,39 @@
 - [x] **Cobertura Integral de Pruebas**:
   - 57 pruebas unitarias pasando al 100% (incluyendo transiciones de máquina de estados, worker 24/7, deduplicación de alertas, VAPID y seguridad de endpoints).
   - Test de integración E2E con Bybit V5 en vivo verificado exitosamente.
+
+---
+
+## FASE 4.5: Centro de Configuración, Riesgo y Router Inteligente de IA
+- [x] **Seguridad Criptográfica y Autenticación Administrativa**:
+  - `encryption.ts`: Cifrado y descifrado autenticado AES-256-GCM con derivación de clave maestra PBKDF2 (100.000 iteraciones SHA-256) y enmascaramiento seguro de secretos (`maskSecret`).
+  - `auth-manager.ts`: Autenticación timing-safe con `crypto.timingSafeEqual`, gestión de sesiones con expiración TTL (8 horas), rate limiting estricto y bloqueo temporal tras 5 intentos fallidos.
+- [x] **Política de Gestión de Capital y Riesgo Cuantitativo (`risk-policy.ts`)**:
+  - `RiskPolicyManager`: Gestión de capital operativo USDT, riesgo máximo por operación (% y USDT con aplicación imperativa del valor más restrictivo).
+  - Límites de pérdida diaria y semanal (% y USDT), límite de señales simultáneas activas, límite de entradas diarias y corte por pérdidas consecutivas.
+  - Techos máximos de Stop Loss estructural: techo por distancia porcentual, techo por distancia absoluta USDT, techo por múltiplo de ATR 15m y techo por pérdida monetaria máxima.
+  - Regla fundamental inviolable: Descarte estructural de cualquier setup que requiera un SL mayor al tope permitido (prohibida la compresión artificial de SL).
+  - `RiskCalculator.calculateInteractive`: Cálculo interactivo en tiempo real con quantización por `tickSize` (0.1) y `qtyStep` (0.001 BTC), desglose de comisiones taker/maker y validación de R:R neto $\ge 1:4.0$.
+- [x] **Gestión de Credenciales Bybit V5 (`bybit-credentials.ts`)**:
+  - Almacenamiento cifrado de API Key y API Secret para Mainnet y Testnet.
+  - Consulta y verificación obligatoria contra `/v5/user/query-api`.
+  - Detección y rechazo tajante de claves con permisos de escritura, órdenes, posiciones, trading o transferencias (enforcement estricto de sólo lectura).
+  - Consulta automática de saldo en USDT y tarifas reales de cuenta (`/v5/account/fee-rate`).
+- [x] **Enrutador Multimodelo de Inteligencia Artificial (`ai-router.ts`)**:
+  - 4 modos de selección: `AUTOMATIC`, `MANUAL_GLOBAL`, `MANUAL_BY_TASK`, `HYBRID`.
+  - 4 perfiles de enrutamiento: `ECONOMIC`, `BALANCED`, `MAX_QUALITY`, `CUSTOM`.
+  - Asignación específica por tarea (evaluación de setups, auditoría de riesgo, consenso, explicaciones en lenguaje natural, resúmenes periódicos, contexto multitemporal).
+  - Fallback automático por presupuesto: degradación transparente a modelos económicos (`gpt-4o-mini`, `gemini-2.0-flash`) cuando el presupuesto restante es $< \$0.50$.
+  - Preservación íntegra del motor de consenso y del fallback de 4 modos (`DUAL_AI`, `SINGLE_AI_OPENAI`, `SINGLE_AI_GEMINI`, `AI_UNAVAILABLE`).
+- [x] **Panel y Métricas de Consumo de IA**:
+  - Registro cronológico inmutable de consumo (`ai_consumption_logs`): tokens de entrada, salida, en caché, costo estimado USD y latencia en milisegundos.
+  - Estadísticas agregadas: gasto de hoy, ayer, últimos 7 días, mes, total histórico, desglose por proveedor, modelo y tarea.
+  - Exportación directa a archivo CSV descargable (`GET /api/v1/config/ai/consumption/export`).
+- [x] **Persistencia y Paridad de Base de Datos**:
+  - Tablas creadas con paridad completa en SQLite WAL y PostgreSQL: `risk_policies`, `bybit_credentials`, `ai_provider_credentials`, `ai_router_config`, `ai_consumption_logs`, `config_audit_logs`.
+- [x] **Centro de Configuración Frontend en PWA (`ConfigCenterModal.tsx`, `page.tsx`)**:
+  - Modal profesional adaptado a NanoLabs Visual Theme 2 accesible desde cabecera.
+  - 9 pestañas interactivas completas: General, Gestión de Riesgo, Bybit, OpenAI, Gemini, Router de IA, Gastos y Consumo, Notificaciones, Seguridad y Auditoría.
+  - Barra superior de resumen en tiempo real: Modo de Router, Presupuesto consumido/límite, Riesgo máximo, Techo de SL y estado del Kill Switch.
+- [x] **Cobertura de Pruebas Automatizadas**:
+  - 72 pruebas unitarias pasando al 100% (incluyendo 8 pruebas exhaustivas de cifrado, login timing-safe, rate limiting, techos de SL, calculadora interactiva, rechazo de permisos de trading en Bybit, routing multimodelo y agregación de consumo).

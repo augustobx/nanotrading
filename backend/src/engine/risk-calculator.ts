@@ -198,6 +198,57 @@ export class RiskCalculator {
     };
   }
 
+  /**
+   * Interactive calculator helper for UI and administration.
+   * Calculates suggested BTC, fees, spread, slippage, and gross/net R:R.
+   */
+  public static calculateInteractive(params: {
+    capitalUsdt: number;
+    entryPrice: number;
+    stopLossPrice: number;
+    takeProfitPrice: number;
+    maxRiskPercent?: number;
+    maxRiskUsdt?: number;
+    makerFeeRate?: number;
+    takerFeeRate?: number;
+    spread?: number;
+    slippageRate?: number;
+    tickSize?: number;
+    qtyStep?: number;
+    minRequiredRR?: number;
+  }): RiskCalculationResult & { slDistanceUsdt: number; slDistancePercent: number } {
+    const direction = params.takeProfitPrice > params.entryPrice ? 'LONG' : 'SHORT';
+    const effectiveRiskByPercent = (params.capitalUsdt * (params.maxRiskPercent || 0.5)) / 100;
+    const effectiveRiskUsdt = params.maxRiskUsdt ? Math.min(effectiveRiskByPercent, params.maxRiskUsdt) : effectiveRiskByPercent;
+
+    const baseResult = this.calculate({
+      direction,
+      entryPrice: params.entryPrice,
+      stopLossPrice: params.stopLossPrice,
+      takeProfitPrice: params.takeProfitPrice,
+      accountBalance: params.capitalUsdt,
+      riskPercent: (effectiveRiskUsdt / params.capitalUsdt) * 100,
+      tickSize: params.tickSize || 0.1,
+      qtyStep: params.qtyStep || 0.001,
+      spread: params.spread || 0.1,
+      slippageRate: params.slippageRate || 0.0002,
+      minRequiredRR: params.minRequiredRR || 4.0,
+      feeStructure: {
+        makerFeeRate: params.makerFeeRate || 0.0002,
+        takerFeeRate: params.takerFeeRate || 0.00055,
+      },
+    });
+
+    const slDistanceUsdt = Math.abs(params.entryPrice - params.stopLossPrice);
+    const slDistancePercent = params.entryPrice > 0 ? (slDistanceUsdt / params.entryPrice) * 100 : 0;
+
+    return {
+      ...baseResult,
+      slDistanceUsdt: parseFloat(slDistanceUsdt.toFixed(2)),
+      slDistancePercent: parseFloat(slDistancePercent.toFixed(2)),
+    };
+  }
+
   private static invalidResult(
     direction: 'LONG' | 'SHORT',
     entry: number,

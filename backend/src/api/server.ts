@@ -4,6 +4,10 @@ import { MarketCoordinator } from '../market/market-coordinator.js';
 import { DatabaseService } from '../storage/database.js';
 import { config } from '../config/index.js';
 import { Timeframe, SUPPORTED_TIMEFRAMES } from '../types/market.js';
+import { authManager } from '../security/auth-manager.js';
+import { maskSecret, encryptSecret } from '../security/encryption.js';
+import { RiskCalculator } from '../engine/risk-calculator.js';
+import { AI_MODELS_CATALOG } from '../ai/models-catalog.js';
 
 export class ApiServer {
   private server: http.Server;
@@ -31,8 +35,13 @@ export class ApiServer {
 
   private isAuthenticated(req: http.IncomingMessage): boolean {
     const authHeader = (req.headers['authorization'] as string) || '';
-    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
     const apiKeyHeader = (req.headers['x-admin-key'] as string) || '';
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+
+    if (authManager.validateAuth(authHeader || apiKeyHeader, clientIp)) {
+      return true;
+    }
+    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
     return token === config.security.adminApiKey || apiKeyHeader === config.security.adminApiKey;
   }
 
@@ -53,7 +62,7 @@ export class ApiServer {
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
     // Enable CORS for frontend PWA
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-key');
 
     if (req.method === 'OPTIONS') {
@@ -118,6 +127,45 @@ export class ApiServer {
       } else if (pathname === '/api/v1/notifications/history' && req.method === 'GET') {
         const limit = parseInt(url.searchParams.get('limit') || '50', 10);
         this.sendNotificationHistory(res, limit);
+      } else if (pathname === '/api/v1/auth/login' && req.method === 'POST') {
+        this.handleAuthLogin(req, res);
+      } else if (pathname === '/api/v1/auth/verify' && req.method === 'GET') {
+        this.handleAuthVerify(req, res);
+      } else if (pathname === '/api/v1/auth/logout' && req.method === 'POST') {
+        this.handleAuthLogout(req, res);
+      } else if (pathname === '/api/v1/config/risk' && req.method === 'GET') {
+        this.sendRiskPolicy(res);
+      } else if (pathname === '/api/v1/config/risk' && req.method === 'POST') {
+        this.handleUpdateRiskPolicy(req, res);
+      } else if (pathname === '/api/v1/risk/calculate' && req.method === 'POST') {
+        this.handleCalculateRisk(req, res);
+      } else if (pathname === '/api/v1/config/bybit' && req.method === 'GET') {
+        this.sendBybitConfig(res);
+      } else if (pathname === '/api/v1/config/bybit' && req.method === 'POST') {
+        this.handleSaveBybitConfig(req, res);
+      } else if (pathname === '/api/v1/config/bybit' && req.method === 'DELETE') {
+        this.handleDeleteBybitConfig(req, res);
+      } else if (pathname === '/api/v1/config/bybit/test' && req.method === 'POST') {
+        this.handleTestBybitConfig(req, res);
+      } else if (pathname === '/api/v1/config/ai/router' && req.method === 'GET') {
+        this.sendAiRouterConfig(res);
+      } else if (pathname === '/api/v1/config/ai/router' && req.method === 'POST') {
+        this.handleUpdateAiRouterConfig(req, res);
+      } else if (pathname === '/api/v1/config/ai/credentials' && req.method === 'GET') {
+        this.sendAiCredentials(res);
+      } else if (pathname === '/api/v1/config/ai/credentials' && req.method === 'POST') {
+        this.handleSaveAiCredentials(req, res);
+      } else if (pathname.startsWith('/api/v1/config/ai/credentials/') && req.method === 'DELETE') {
+        const provider = pathname.split('/')[5];
+        this.handleDeleteAiCredentials(req, res, provider);
+      } else if (pathname === '/api/v1/config/ai/consumption' && req.method === 'GET') {
+        this.sendAiConsumption(req, res);
+      } else if (pathname === '/api/v1/config/ai/consumption/export' && req.method === 'GET') {
+        this.handleExportAiConsumption(res);
+      } else if (pathname === '/api/v1/config/audit' && req.method === 'GET') {
+        this.sendConfigAudit(req, res);
+      } else if (pathname === '/api/v1/config/summary' && req.method === 'GET') {
+        this.sendConfigSummary(res);
       } else if (pathname === '/api/v1/events' && req.method === 'GET') {
         const limit = parseInt(url.searchParams.get('limit') || '50', 10);
         this.sendEvents(res, limit);
@@ -504,6 +552,403 @@ export class ApiServer {
         );
       }
     });
+  }
+
+  private parseJsonBody<T>(req: http.IncomingMessage, maxBytes = 50000): Promise<T> {
+    return new Promise((resolve, reject) => {
+      let body = '';
+      req.on('data', (chunk) => {
+        body += chunk;
+        if (body.length > maxBytes) {
+          req.destroy();
+          reject(new Error('Payload demasiado grande'));
+        }
+      });
+      req.on('end', () => {
+        try {
+          resolve(JSON.parse(body || '{}'));
+        } catch {
+          reject(new Error('Formato JSON inválido'));
+        }
+      });
+      req.on('error', (err) => reject(err));
+    });
+  }
+
+  // --- Auth Handlers ---
+
+  private async handleAuthLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    try {
+      const payload = await this.parseJsonBody<{ key?: string }>(req);
+      if (!payload.key) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'La clave de administración es obligatoria' }));
+        return;
+      }
+      const result = authManager.login(payload.key, clientIp);
+      if (result.success) {
+        this.db.logConfigAudit({
+          category: 'AUTH',
+          action: 'LOGIN_SUCCESS',
+          details: { clientIp },
+          ipAddress: clientIp,
+        });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, token: result.token, expiresAt: result.expiresAt }));
+      } else {
+        this.db.logConfigAudit({
+          category: 'AUTH',
+          action: 'LOGIN_FAILED',
+          details: { clientIp, error: result.error },
+          ipAddress: clientIp,
+        });
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: result.error, lockedUntil: result.lockedUntil }));
+      }
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Error en autenticación' }));
+    }
+  }
+
+  private handleAuthVerify(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const isAuth = this.isAuthenticated(req);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, authenticated: isAuth }));
+  }
+
+  private async handleAuthLogout(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const authHeader = (req.headers['authorization'] as string) || '';
+    const tokenFromHeader = authHeader.replace(/^Bearer\s+/i, '').trim();
+    let tokenFromBody = '';
+    try {
+      const payload = await this.parseJsonBody<{ token?: string }>(req);
+      tokenFromBody = payload.token || '';
+    } catch {}
+    const token = tokenFromHeader || tokenFromBody;
+    if (token) {
+      authManager.logout(token);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, message: 'Sesión cerrada correctamente' }));
+  }
+
+  // --- Risk Policy Handlers ---
+
+  private sendRiskPolicy(res: http.ServerResponse): void {
+    const policy = this.coordinator.getRiskPolicyManager().getPolicy();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: policy }));
+  }
+
+  private async handleUpdateRiskPolicy(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+    try {
+      const updates = await this.parseJsonBody<any>(req);
+      const updated = this.coordinator.getRiskPolicyManager().updatePolicy(updates);
+      this.db.logConfigAudit({
+        category: 'RISK_POLICY',
+        action: 'UPDATE',
+        details: updates,
+        ipAddress: clientIp,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: updated }));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Error actualizando política de riesgo' }));
+    }
+  }
+
+  private async handleCalculateRisk(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    try {
+      const payload = await this.parseJsonBody<any>(req);
+      const result = RiskCalculator.calculateInteractive(payload);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: result }));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Error en cálculo interactivo de riesgo' }));
+    }
+  }
+
+  // --- Bybit Credentials Handlers ---
+
+  private sendBybitConfig(res: http.ServerResponse): void {
+    const sanitized = this.coordinator.getBybitCredentialsManager().getSanitizedView();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: sanitized }));
+  }
+
+  private async handleSaveBybitConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+    try {
+      const payload = await this.parseJsonBody<any>(req);
+      const { apiKey, apiSecret, environment } = payload;
+      if (!apiKey || !apiSecret) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'apiKey y apiSecret son requeridos' }));
+        return;
+      }
+      const result = await this.coordinator.getBybitCredentialsManager().saveCredentials(apiKey, apiSecret, environment || 'mainnet');
+      this.db.logConfigAudit({
+        category: 'BYBIT_CREDENTIALS',
+        action: 'SAVE',
+        details: { environment: environment || 'mainnet', apiKeyMasked: maskSecret(apiKey), permissions: result.detectedPermissions },
+        ipAddress: clientIp,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: result }));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Error guardando credenciales Bybit' }));
+    }
+  }
+
+  private handleDeleteBybitConfig(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+    this.coordinator.getBybitCredentialsManager().revokeCredentials();
+    this.db.logConfigAudit({
+      category: 'BYBIT_CREDENTIALS',
+      action: 'REVOKE',
+      details: { reason: 'Revocadas por administrador' },
+      ipAddress: clientIp,
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, message: 'Credenciales Bybit revocadas correctamente' }));
+  }
+
+  private async handleTestBybitConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+    try {
+      const payload = await this.parseJsonBody<any>(req);
+      const { apiKey, apiSecret, environment } = payload;
+      if (!apiKey || !apiSecret) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'apiKey y apiSecret son requeridos' }));
+        return;
+      }
+      const result = await this.coordinator.getBybitCredentialsManager().verifyAndEnforceReadOnly(apiKey, apiSecret, environment || 'mainnet');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: result }));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Error verificando API key de Bybit' }));
+    }
+  }
+
+  // --- AI Router & Credentials Handlers ---
+
+  private sendAiRouterConfig(res: http.ServerResponse): void {
+    const routerConfig = this.coordinator.getAiRouter().getConfig();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: { routerConfig, modelsCatalog: AI_MODELS_CATALOG } }));
+  }
+
+  private async handleUpdateAiRouterConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+    try {
+      const updates = await this.parseJsonBody<any>(req);
+      const updated = this.coordinator.getAiRouter().updateConfig(updates);
+      this.db.logConfigAudit({
+        category: 'AI_ROUTER',
+        action: 'UPDATE',
+        details: updates,
+        ipAddress: clientIp,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: updated }));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Error actualizando router IA' }));
+    }
+  }
+
+  private sendAiCredentials(res: http.ServerResponse): void {
+    const openai = this.db.getAiCredentials('openai');
+    const gemini = this.db.getAiCredentials('gemini');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        success: true,
+        data: {
+          openai: openai
+            ? { provider: 'openai', configured: true, apiKeyMasked: openai.apiKeyMasked, model: openai.model, lastVerifiedAt: openai.lastVerifiedAt }
+            : { provider: 'openai', configured: !!config.ai.openaiApiKey, apiKeyMasked: config.ai.openaiApiKey ? maskSecret(config.ai.openaiApiKey) : null, model: config.ai.openaiModel },
+          gemini: gemini
+            ? { provider: 'gemini', configured: true, apiKeyMasked: gemini.apiKeyMasked, model: gemini.model, lastVerifiedAt: gemini.lastVerifiedAt }
+            : { provider: 'gemini', configured: !!config.ai.geminiApiKey, apiKeyMasked: config.ai.geminiApiKey ? maskSecret(config.ai.geminiApiKey) : null, model: config.ai.geminiModel },
+        },
+      })
+    );
+  }
+
+  private async handleSaveAiCredentials(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+    try {
+      const payload = await this.parseJsonBody<any>(req);
+      const { provider, apiKey, model } = payload;
+      if (!provider || !apiKey) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'provider y apiKey son requeridos' }));
+        return;
+      }
+      const providerNorm = provider.toLowerCase();
+      if (providerNorm !== 'openai' && providerNorm !== 'gemini') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Provider debe ser "openai" o "gemini"' }));
+        return;
+      }
+      const encryptedSecret = encryptSecret(apiKey);
+      const apiKeyMasked = maskSecret(apiKey);
+      this.db.saveAiCredentials({
+        provider: providerNorm,
+        apiKeyMasked,
+        encryptedSecret,
+        model: model || (providerNorm === 'openai' ? 'gpt-4o' : 'gemini-2.5-flash'),
+        status: 'CONFIGURED',
+      });
+      this.db.logConfigAudit({
+        category: 'AI_CREDENTIALS',
+        action: 'SAVE',
+        details: { provider: providerNorm, model, apiKeyMasked },
+        ipAddress: clientIp,
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, message: `Credenciales de ${providerNorm} guardadas correctamente` }));
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Error guardando credenciales IA' }));
+    }
+  }
+
+  private handleDeleteAiCredentials(req: http.IncomingMessage, res: http.ServerResponse, provider: string): void {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+    const providerNorm = provider.toLowerCase();
+    this.db.deleteAiCredentials(providerNorm);
+    this.db.logConfigAudit({
+      category: 'AI_CREDENTIALS',
+      action: 'DELETE',
+      details: { provider: providerNorm },
+      ipAddress: clientIp,
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, message: `Credenciales de ${providerNorm} eliminadas correctamente` }));
+  }
+
+  private sendAiConsumption(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+    const provider = url.searchParams.get('provider') || undefined;
+    const stats = this.db.getAiConsumptionStats();
+    const logs = this.db.getAiConsumptionLogs(limit, provider);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: { stats, logs } }));
+  }
+
+  private handleExportAiConsumption(res: http.ServerResponse): void {
+    const logs = this.db.getAiConsumptionLogs(5000);
+    const headers = ['id', 'timestamp', 'timestamp_iso', 'provider', 'model', 'task', 'tokens_prompt', 'tokens_completion', 'tokens_cached', 'cost_usd', 'latency_ms', 'status', 'analysis_id'];
+    const rows = logs.map((l) => [
+      l.id,
+      l.timestamp,
+      new Date(l.timestamp).toISOString(),
+      `"${l.provider}"`,
+      `"${l.model}"`,
+      `"${l.task}"`,
+      l.tokensPrompt,
+      l.tokensCompletion,
+      l.tokensCached,
+      l.costUsd.toFixed(6),
+      l.latencyMs,
+      `"${l.status}"`,
+      l.analysisId ? `"${l.analysisId}"` : '""',
+    ]);
+    const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
+    res.writeHead(200, {
+      'Content-Type': 'text/csv; charset=utf-8',
+      'Content-Disposition': 'attachment; filename="ai-consumption.csv"',
+    });
+    res.end(csv);
+  }
+
+  // --- Audit & Summary Handlers ---
+
+  private sendConfigAudit(req: http.IncomingMessage, res: http.ServerResponse): void {
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+    const logs = this.db.getConfigAuditLogs(limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, count: logs.length, data: logs }));
+  }
+
+  private sendConfigSummary(res: http.ServerResponse): void {
+    const routerCfg = this.coordinator.getAiRouter().getConfig();
+    const riskPolicy = this.coordinator.getRiskPolicyManager().getPolicy();
+    const bybitView = this.coordinator.getBybitCredentialsManager().getSanitizedView();
+    const stats = this.db.getAiConsumptionStats();
+    const openai = this.db.getAiCredentials('openai');
+    const gemini = this.db.getAiCredentials('gemini');
+
+    const summary = {
+      routerMode: routerCfg.mode,
+      activeProfile: routerCfg.profile,
+      openaiConfigured: !!openai || !!config.ai.openaiApiKey,
+      geminiConfigured: !!gemini || !!config.ai.geminiApiKey,
+      dailyBudgetUsd: routerCfg.dailyBudgetLimitUsd || 5.0,
+      spentTodayUsd: stats.todaySpendUsd || 0,
+      budgetRemainingUsd: Math.max(0, (routerCfg.dailyBudgetLimitUsd || 5.0) - (stats.todaySpendUsd || 0)),
+      capitalUsdt: riskPolicy.capitalUsdt,
+      maxRiskPerTradePercentage: riskPolicy.maxRiskPerTradePercent,
+      maxRiskPerTradeUsdt: riskPolicy.maxRiskPerTradeUsdt,
+      maxStopLossPercentage: riskPolicy.stopLossCeilings?.maxSlDistancePercent?.value ?? 1.5,
+      minNetRiskReward: riskPolicy.minNetRR,
+      bybitStatus: bybitView?.status || 'UNCONFIGURED',
+      killSwitchActive: config.security.killSwitchActive,
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: summary }));
   }
 
   private setupUpgradeHandler(): void {
