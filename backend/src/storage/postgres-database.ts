@@ -87,6 +87,52 @@ export class PostgresDatabaseService {
 
         CREATE INDEX IF NOT EXISTS idx_pg_setups_time 
         ON setups(timestamp DESC);
+
+        CREATE TABLE IF NOT EXISTS ai_reviews (
+          id VARCHAR(64) PRIMARY KEY,
+          setup_id VARCHAR(64) NOT NULL,
+          provider VARCHAR(20) NOT NULL,
+          model VARCHAR(50) NOT NULL,
+          verdict VARCHAR(20) NOT NULL,
+          confidence DOUBLE PRECISION NOT NULL,
+          reasoning TEXT NOT NULL,
+          arguments_for JSONB,
+          arguments_against JSONB,
+          invalidation_trigger TEXT,
+          risk_score DOUBLE PRECISION,
+          latency_ms INTEGER,
+          tokens_used INTEGER,
+          cost_usd DOUBLE PRECISION,
+          raw_response JSONB,
+          timestamp BIGINT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pg_ai_reviews_setup 
+        ON ai_reviews(setup_id, timestamp DESC);
+
+        CREATE TABLE IF NOT EXISTS signals (
+          id VARCHAR(64) PRIMARY KEY,
+          setup_id VARCHAR(64) NOT NULL,
+          timestamp BIGINT NOT NULL,
+          symbol VARCHAR(20) NOT NULL,
+          strategy VARCHAR(50) NOT NULL,
+          direction VARCHAR(10) NOT NULL,
+          timeframe VARCHAR(10) NOT NULL,
+          entry_price DOUBLE PRECISION NOT NULL,
+          stop_loss DOUBLE PRECISION NOT NULL,
+          take_profit DOUBLE PRECISION NOT NULL,
+          rr_net DOUBLE PRECISION NOT NULL,
+          consensus_verdict VARCHAR(30) NOT NULL,
+          openai_verdict VARCHAR(20),
+          gemini_verdict VARCHAR(20),
+          status VARCHAR(30) NOT NULL,
+          rejection_reason TEXT,
+          snapshot_id VARCHAR(64),
+          created_at BIGINT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pg_signals_time 
+        ON signals(timestamp DESC);
       `);
     } finally {
       client.release();
@@ -163,9 +209,9 @@ export class PostgresDatabaseService {
   public async getCandles(
     symbol: string,
     timeframe: Timeframe,
-    startTime: number = 0,
-    endTime: number = Date.now(),
-    limit: number = 200
+    fromTimestamp: number = 0,
+    toTimestamp: number = Number.MAX_SAFE_INTEGER,
+    limit: number = 1000
   ): Promise<Candle[]> {
     const query = `
       SELECT symbol, timeframe, timestamp, open, high, low, close, volume, turnover, confirmed
@@ -174,8 +220,8 @@ export class PostgresDatabaseService {
       ORDER BY timestamp ASC
       LIMIT $5
     `;
-    const res = await this.pool.query(query, [symbol, timeframe, startTime, endTime, limit]);
-    return res.rows.map((r) => ({
+    const res = await this.pool.query(query, [symbol, timeframe, fromTimestamp, toTimestamp, limit]);
+    return res.rows.map((r: any) => ({
       symbol: r.symbol,
       timeframe: r.timeframe as Timeframe,
       timestamp: Number(r.timestamp),
@@ -214,12 +260,23 @@ export class PostgresDatabaseService {
     };
   }
 
-  public async logEvent(level: string, component: string, message: string, metadata?: any): Promise<void> {
+  public async logEvent(
+    level: 'INFO' | 'WARN' | 'ERROR' | 'CRITICAL',
+    component: string,
+    message: string,
+    metadata?: any
+  ): Promise<void> {
     const query = `
       INSERT INTO system_events (timestamp, level, component, message, metadata)
       VALUES ($1, $2, $3, $4, $5)
     `;
-    await this.pool.query(query, [Date.now(), level, component, message, metadata ? JSON.stringify(metadata) : null]);
+    await this.pool.query(query, [
+      Date.now(),
+      level,
+      component,
+      message,
+      metadata ? JSON.stringify(metadata) : null,
+    ]);
   }
 
   public async saveSnapshot(
@@ -249,11 +306,6 @@ export class PostgresDatabaseService {
     ]);
   }
 
-  public async getRecentEvents(limit: number = 50): Promise<any[]> {
-    const res = await this.pool.query(`SELECT * FROM system_events ORDER BY timestamp DESC LIMIT $1`, [limit]);
-    return res.rows;
-  }
-
   public async saveSetup(setup: any): Promise<void> {
     const query = `
       INSERT INTO setups (id, timestamp, symbol, strategy, direction, timeframe, entry_price, stop_loss, take_profit, rr_ratio, status, evidence, created_at)
@@ -280,8 +332,129 @@ export class PostgresDatabaseService {
   }
 
   public async getSetups(limit: number = 50): Promise<any[]> {
-    const res = await this.pool.query(`SELECT * FROM setups ORDER BY timestamp DESC LIMIT $1`, [limit]);
-    return res.rows;
+    const query = `SELECT * FROM setups ORDER BY timestamp DESC LIMIT $1`;
+    const res = await this.pool.query(query, [limit]);
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      timestamp: Number(r.timestamp),
+      symbol: r.symbol,
+      strategy: r.strategy,
+      direction: r.direction,
+      timeframe: r.timeframe,
+      entryPrice: Number(r.entry_price),
+      stopLoss: Number(r.stop_loss),
+      takeProfit: Number(r.take_profit),
+      rrRatio: Number(r.rr_ratio),
+      status: r.status,
+      evidence: typeof r.evidence === 'string' ? JSON.parse(r.evidence) : r.evidence || {},
+      createdAt: Number(r.created_at),
+    }));
+  }
+
+  public async saveAiReview(review: any): Promise<void> {
+    const query = `
+      INSERT INTO ai_reviews (id, setup_id, provider, model, verdict, confidence, reasoning, arguments_for, arguments_against, invalidation_trigger, risk_score, latency_ms, tokens_used, cost_usd, raw_response, timestamp)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+    `;
+    await this.pool.query(query, [
+      review.id,
+      review.setupId,
+      review.provider,
+      review.model,
+      review.verdict,
+      review.confidence,
+      review.reasoning,
+      JSON.stringify(review.argumentsFor || []),
+      JSON.stringify(review.argumentsAgainst || []),
+      review.invalidationTrigger || null,
+      review.riskScore ?? 0.5,
+      review.latencyMs ?? 0,
+      review.tokensUsed ?? 0,
+      review.costUsd ?? 0,
+      review.rawResponse ? JSON.stringify(review.rawResponse) : null,
+      review.timestamp || Date.now(),
+    ]);
+  }
+
+  public async getAiReviews(setupId?: string, limit: number = 50): Promise<any[]> {
+    const query = setupId
+      ? `SELECT * FROM ai_reviews WHERE setup_id = $1 ORDER BY timestamp DESC LIMIT $2`
+      : `SELECT * FROM ai_reviews ORDER BY timestamp DESC LIMIT $1`;
+    const params = setupId ? [setupId, limit] : [limit];
+    const res = await this.pool.query(query, params);
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      setupId: r.setup_id,
+      provider: r.provider,
+      model: r.model,
+      verdict: r.verdict,
+      confidence: Number(r.confidence),
+      reasoning: r.reasoning,
+      argumentsFor: typeof r.arguments_for === 'string' ? JSON.parse(r.arguments_for) : r.arguments_for || [],
+      argumentsAgainst: typeof r.arguments_against === 'string' ? JSON.parse(r.arguments_against) : r.arguments_against || [],
+      invalidationTrigger: r.invalidation_trigger,
+      riskScore: Number(r.risk_score),
+      latencyMs: Number(r.latency_ms),
+      tokensUsed: Number(r.tokens_used),
+      costUsd: Number(r.cost_usd),
+      rawResponse: typeof r.raw_response === 'string' ? JSON.parse(r.raw_response) : r.raw_response || null,
+      timestamp: Number(r.timestamp),
+    }));
+  }
+
+  public async saveSignal(signal: any): Promise<void> {
+    const query = `
+      INSERT INTO signals (id, setup_id, timestamp, symbol, strategy, direction, timeframe, entry_price, stop_loss, take_profit, rr_net, consensus_verdict, openai_verdict, gemini_verdict, status, rejection_reason, snapshot_id, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+      ON CONFLICT (id) DO UPDATE SET
+        status = EXCLUDED.status,
+        rejection_reason = EXCLUDED.rejection_reason
+    `;
+    await this.pool.query(query, [
+      signal.id,
+      signal.setupId,
+      signal.timestamp,
+      signal.symbol,
+      signal.strategy,
+      signal.direction,
+      signal.timeframe,
+      signal.entryPrice,
+      signal.stopLoss,
+      signal.takeProfit,
+      signal.rrNet,
+      signal.consensusVerdict,
+      signal.openaiVerdict || null,
+      signal.geminiVerdict || null,
+      signal.status,
+      signal.rejectionReason || null,
+      signal.snapshotId || null,
+      signal.createdAt || Date.now(),
+    ]);
+  }
+
+  public async getSignals(limit: number = 50): Promise<any[]> {
+    const query = `SELECT * FROM signals ORDER BY timestamp DESC LIMIT $1`;
+    const res = await this.pool.query(query, [limit]);
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      setupId: r.setup_id,
+      timestamp: Number(r.timestamp),
+      symbol: r.symbol,
+      strategy: r.strategy,
+      direction: r.direction,
+      timeframe: r.timeframe,
+      entryPrice: Number(r.entry_price),
+      stopLoss: Number(r.stop_loss),
+      takeProfit: Number(r.take_profit),
+      rrNet: Number(r.rr_net),
+      consensusVerdict: r.consensus_verdict,
+      openaiVerdict: r.openai_verdict,
+      geminiVerdict: r.gemini_verdict,
+      status: r.status,
+      rejectionReason: r.rejection_reason,
+      snapshotId: r.snapshot_id,
+      createdAt: Number(r.created_at),
+    }));
   }
 
   public async close(): Promise<void> {

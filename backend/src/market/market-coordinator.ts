@@ -14,6 +14,7 @@ import { CandleManager, GapInfo } from './candle-manager.js';
 import { OrderBookManager } from './orderbook-manager.js';
 import { DatabaseService } from '../storage/database.js';
 import { SetupEngine } from '../engine/setup-engine.js';
+import { ConsensusEngine } from '../ai/consensus-engine.js';
 import { config } from '../config/index.js';
 
 export class MarketCoordinator extends EventEmitter {
@@ -22,11 +23,13 @@ export class MarketCoordinator extends EventEmitter {
   private candleManager: CandleManager;
   private orderBookManager: OrderBookManager;
   private setupEngine: SetupEngine;
+  private consensusEngine: ConsensusEngine;
   private db: DatabaseService;
   private symbol: string;
   private instrumentInfo: InstrumentInfo | null = null;
   private currentTicker: Ticker | null = null;
   private isBootstrapped: boolean = false;
+  private isStopped: boolean = false;
   private snapshotIntervalTimer: NodeJS.Timeout | null = null;
 
   constructor(
@@ -45,6 +48,10 @@ export class MarketCoordinator extends EventEmitter {
     this.db = db;
     this.symbol = symbol;
     this.setupEngine = new SetupEngine(this.candleManager, this.db);
+    this.consensusEngine = new ConsensusEngine({
+      coordinator: this,
+      db: this.db,
+    });
 
     this.setupListeners();
   }
@@ -75,9 +82,29 @@ export class MarketCoordinator extends EventEmitter {
       if (!data) return;
 
       if (type === 'snapshot') {
-        this.orderBookManager.handleSnapshot(data.b || [], data.a || [], data.seq || msg.cts, data.t || msg.cts);
+        this.orderBookManager.handleSnapshot(data.b || [], data.a || [], data.seq || msg.cts, data.t || msg.cts, data.u);
       } else {
-        this.orderBookManager.handleDelta(data.b || [], data.a || [], data.seq || msg.cts, data.t || msg.cts);
+        this.orderBookManager.handleDelta(data.b || [], data.a || [], data.seq || msg.cts, data.t || msg.cts, data.u);
+      }
+    });
+
+    this.wsClient.on('disconnected', () => {
+      this.orderBookManager.markDesynced('WS_DISCONNECTED');
+    });
+
+    this.orderBookManager.on('desync_detected', async (info: any) => {
+      this.db.logEvent('WARN', 'OrderBook', `OrderBook desync detected (${info.reason}), requesting fresh REST snapshot`, info);
+      try {
+        const ob = await this.restClient.getOrderBook(this.symbol, 50);
+        this.orderBookManager.handleSnapshot(
+          ob.bids.map((b) => [String(b[0]), String(b[1])]),
+          ob.asks.map((a) => [String(a[0]), String(a[1])]),
+          ob.seq,
+          ob.timestamp
+        );
+        this.db.logEvent('INFO', 'OrderBook', 'OrderBook resynced successfully via REST snapshot');
+      } catch (err: any) {
+        this.db.logEvent('ERROR', 'OrderBook', `Failed to resync orderbook via REST: ${err.message}`);
       }
     });
 
@@ -102,9 +129,17 @@ export class MarketCoordinator extends EventEmitter {
       this.emit('orderbook_updated', ob);
     });
 
-    // Forward setup engine events
-    this.setupEngine.on('setup_detected', (setup) => {
+    // Forward setup engine events and trigger dual AI consensus evaluation
+    this.setupEngine.on('setup_detected', async (setup) => {
       this.emit('setup_detected', setup);
+      try {
+        const signal = await this.consensusEngine.evaluateSetup(setup);
+        this.emit('signal_evaluated', signal);
+      } catch (err: any) {
+        if (!this.isStopped) {
+          this.db.logEvent('ERROR', 'ConsensusEngine', `Error evaluating setup: ${err.message}`, { setupId: setup.id });
+        }
+      }
     });
   }
 
@@ -283,7 +318,12 @@ export class MarketCoordinator extends EventEmitter {
     return this.setupEngine.getActiveSetups();
   }
 
+  public getConsensusEngine(): ConsensusEngine {
+    return this.consensusEngine;
+  }
+
   public stop(): void {
+    this.isStopped = true;
     if (this.snapshotIntervalTimer) {
       clearInterval(this.snapshotIntervalTimer);
       this.snapshotIntervalTimer = null;

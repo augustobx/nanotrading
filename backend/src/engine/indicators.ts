@@ -98,7 +98,7 @@ export class TechnicalIndicators {
    * @param period EMA period (e.g. 20, 50, 200)
    */
   public static ema(data: number[], period: number): number[] {
-    const result: number[] = new Array(data.length).fill(0);
+    const result: number[] = new Array(data.length).fill(NaN);
     if (data.length < period) return result;
 
     const multiplier = 2 / (period + 1);
@@ -118,6 +118,10 @@ export class TechnicalIndicators {
     }
 
     return result;
+  }
+
+  public static isEmaReady(data: number[], period: number): boolean {
+    return Array.isArray(data) && data.length >= period;
   }
 
   /**

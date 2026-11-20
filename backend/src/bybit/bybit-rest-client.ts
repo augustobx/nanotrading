@@ -206,6 +206,8 @@ export class BybitRestClient {
       asks,
       timestamp: res.ts || Date.now(),
       seq: res.seq || 0,
+      lastUpdateId: res.u || 0,
+      isSynced: true,
       bestBid,
       bestAsk,
       spread,

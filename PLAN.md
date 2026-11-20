@@ -4,7 +4,7 @@
 **Instrumento:** BTCUSDT Perpetual (Bybit V5 Linear)  
 **Entorno de Producción:** Servidor Dedicado Debian (`/opt/apps/nanolabs-ai-trading`)  
 **Zona Horaria de Referencia:** `America/Argentina/Buenos_Aires`  
-**Última Actualización:** 2026-11-19
+**Última Actualización:** 2026-11-20
 
 ---
 
@@ -15,7 +15,7 @@
 | **Fase 0** | Auditoría, Arquitectura y Preparación | Estructura del proyecto, tipados, docker aislado, CI/scripts, base de datos | **COMPLETADA** |
 | **Fase 1** | Bybit y Mercado en Tiempo Real | Clientes V5 REST & WS, streams multitemporales, gaps, orderbook, server API, gráficos en vivo | **COMPLETADA** |
 | **Fase 2** | Motor Técnico Cuantitativo & SMC/ICT | Detección de Swings, BOS, CHoCH, FVG, OB, Liquidez, Estrategias A y B, R:R 1:4 estricto | **COMPLETADA** |
-| **Fase 3** | Integración de IA & Motor de Consenso | Proveedores OpenAI y Gemini independientes, schemas estructurados, consenso, control de costos | PENDIENTE |
+| **Fase 3** | Integración de IA & Motor de Consenso | Proveedores OpenAI y Gemini independientes, schemas estructurados, consenso, control de costos | **COMPLETADA** |
 | **Fase 4** | Alertas, Máquina de Estados y PWA | Ciclo de vida completo de señales, Telegram Bot, Web Push PWA, UI con NanoLabs Theme 2 | PENDIENTE |
 | **Fase 5** | Backtesting, Paper Trading & Validación | Motor de backtesting sin look-ahead bias, simulador de paper trading en vivo, métricas reales | PENDIENTE |
 | **Fase 6** | Preparación para Ejecución Asistida | Abstracción de ejecución privada, reconciliación, kill switch avanzado (modo deshabilitado por defecto) | PENDIENTE |
@@ -23,181 +23,76 @@
 ---
 
 ## FASE 0: Auditoría, Arquitectura y Preparación
-
-### Objetivos
-- Configurar el entorno de desarrollo y estructura monorepo/modular desacoplada.
-- Definir modelos de datos, esquemas de persistencia y tipado estricto.
-- Crear configuración aislada de Docker Compose para despliegue en servidor dedicado NanoLabs.
-- Configurar linters, scripts de test y arranque.
-
-### Tareas Detalladas
 - [x] Inicializar repositorio Git y `.gitignore`.
 - [x] Documentar `AGENTS.md` con reglas permanentes.
 - [x] Crear `PLAN.md` maestro.
-- [x] Configurar `package.json` raíz y estructura de directorios:
-  - `backend/`: Core de trading, ingestion de mercado, cálculo cuantitativo, persistencia, servidor HTTP/WS.
-  - `frontend/`: Aplicación Next.js PWA con Tailwind CSS, componentes oficiales NanoLabs Theme 2 y visualizador financiero.
-  - `docker/`: Configuración Docker Compose aislada para PostgreSQL, Redis, backend y frontend.
-- [x] Definir esquemas de base de datos para velas (`candles`), libros (`orderbook_snapshots`), eventos (`market_events`), configuraciones (`trading_config`), setups, señales y auditoría.
-- [x] Configurar capa de base de datos compatible (PostgreSQL para producción/docker y SQLite WAL para desarrollo y tests locales inmediatos sin dependencias externas obligatorias).
-- [x] Verificar healthcheck básico y scripts de compilación TypeScript.
-
-### Criterios de Aceptación Fase 0
-- El proyecto compila sin errores de tipos TypeScript en modo estricto. (VERIFICADO)
-- Se cuenta con entorno ejecutable de backend y frontend. (VERIFICADO)
-- Los contenedores Docker están aislados y no interfieren con ningún servicio existente de NanoLabs. (VERIFICADO)
+- [x] Configurar `package.json` raíz y estructura monorepo backend / frontend / docker.
+- [x] Esquemas de base de datos (`candles`, `market_snapshots`, `system_events`, `setups`).
+- [x] Capa dual SQLite WAL (desarrollo/tests) y PostgreSQL (producción/docker).
+- [x] Configuración Docker Compose aislada en red `nanolabs_trading_net`.
 
 ---
 
 ## FASE 1: Bybit y Mercado en Tiempo Real
-
-### Objetivos
-- Conectar con la API V5 de Bybit (`linear`, `BTCUSDT`) en tiempo real.
-- Soportar streaming y consultas REST de velas en las 6 temporalidades requeridas: 1D, 4H, 1H, 15m, 5m, 1m.
-- Procesar tickers, Mark Price, Index Price, Funding Rate, Open Interest, Order Book (L2 depth 50) y liquidaciones.
-- Implementar reconexión automática resiliente, heartbeats y detección de gaps con backfilling REST.
-- Exponer API HTTP y WebSocket interno para el panel PWA y alimentar el gráfico interactivo con velas reales.
-
-### Tareas Detalladas
-- [x] Implementar `BybitRestClient`:
-  - `getKlines(category, symbol, interval, limit, start, end)`
-  - `getTicker(category, symbol)`
-  - `getOrderBook(category, symbol, limit)`
-  - `getInstrumentsInfo(category, symbol)`
-  - `getRecentTrades(category, symbol, limit)`
-  - Manejo de rate limits (header tracking) y backoff exponencial con jitter ante errores 429/5xx.
-- [x] Implementar `BybitWsClient`:
-  - Conexión a `wss://stream.bybit.com/v5/public/linear`
-  - Heartbeat ping cada 20 segundos con verificación de pong.
-  - Suscripción dinámica a tópicos: `tickers.BTCUSDT`, `kline.{interval}.BTCUSDT`, `orderbook.50.BTCUSDT`, `publicTrade.BTCUSDT`, `allLiquidation.BTCUSDT`.
-  - Detección de stream congelado (watchdog timer).
-  - Reconexión automática sin pérdida de estado.
-- [x] Implementar `CandleManager`:
-  - Soporte para 1m, 5m, 15m, 1h, 4h, 1d.
-  - Distinción estricta de vela abierta (`confirm: false`) vs vela cerrada (`confirm: true`).
-  - Detección de gaps temporales y sincronización automática vía REST.
-  - Almacenamiento eficiente en memoria (buffer circular) y persistencia en DB.
-- [x] Implementar `OrderBookManager`:
-  - Procesamiento de snapshots y deltas Bybit V5 con validación de secuencia.
-  - Cálculo de spread (Bid-Ask), Best Bid, Best Ask y desequilibrio de liquidez (order book imbalance).
-- [x] Implementar API Server (HTTP + WebSocket):
-  - `GET /health`: Estado detallado de conectividad Bybit, latencia, último mensaje WS, tiempo de última vela cerrada por temporalidad.
-  - `GET /api/v1/market/state`: Ticker en vivo, mark price, spread, funding, open interest.
-  - `GET /api/v1/market/candles`: Velas históricas verificables por temporalidad.
-  - `GET /api/v1/market/orderbook`: Snapshot del libro y spread.
-  - WebSocket interno `/ws/live`: Emisión en tiempo real de ticks, velas actualizadas y estado para el frontend.
-- [x] Implementar Frontend PWA con datos reales:
-  - Gráfico profesional de velas japonesas interactivas (TradingView Lightweight Charts).
-  - Selector de temporalidades (1m, 5m, 15m, 1h, 4h, 1d).
-  - Indicadores de conexión en vivo con Bybit (latencia en ms, timestamp UTC y AR).
-  - Tarjetas de métricas en tiempo real: Last, Mark, Index, Spread, 24h Vol, Funding Rate, Open Interest.
-  - Header NanoLabs oficial de 80px con selector de 7 paletas y dark mode.
-- [x] Batería de Tests de Fase 1:
-  - Test unitario: parsing de mensajes WS Bybit y normalización de velas.
-  - Test unitario: detección de gaps en secuencia de velas y disparador de backfill.
-  - Test de integración: conectividad REST real con Bybit V5.
-  - Test de integración: streaming de WebSocket real y recepción de tickers y velas.
-  - Test de integración end-to-end de servidor HTTP y WebSocket interno.
-
-### Criterios de Aceptación Fase 1
-- El usuario puede abrir la aplicación y ver BTCUSDT en vivo con velas reales de Bybit en los 6 marcos temporales. (VERIFICADO)
-- Al forzar una desconexión de red o reinicio del servicio, el sistema se reconecta automáticamente y rellena cualquier gap detectado sin duplicar velas. (VERIFICADO)
-- Las cotizaciones y métricas de Bybit coinciden exactamente con la realidad del exchange. (VERIFICADO)
+- [x] `BybitRestClient`: Klines, Ticker, OrderBook, InstrumentsInfo con backoff exponencial.
+- [x] `BybitWsClient`: Conexión persistente, heartbeat 20s, watchdog 40s, reconexión automática.
+- [x] `CandleManager`: 6 temporalidades (1m, 5m, 15m, 1h, 4h, 1d), confirmación de velas, detección y backfill de gaps.
+- [x] `OrderBookManager`: Profundidad L2 (50 niveles), sequence guard, spreads, desequilibrio (imbalance).
+- [x] Servidor API interno (HTTP + WebSocket) y frontend PWA interactivo con NanoLabs Visual Theme 2.
 
 ---
 
 ## FASE 2: Motor Técnico Cuantitativo & SMC/ICT
-
-### Objetivos
-- Motor determinista multitemporal sin dependencia de IA.
-- Detección algorítmica de swings, BOS, CHoCH, Fair Value Gaps (FVG), Order Blocks (OB) y barridos de liquidez.
-- Indicadores complementarios: RSI, ATR, EMAs (20, 50, 200), VWAP, volumen relativo.
-- Implementación de Estrategia A (Continuación de tendencia) y Estrategia B (Barrido y reversión).
-- Cálculo estricto de Stop Loss técnico, Take Profit estructural y filtro R:R $\ge$ 1:4 considerando comisiones y spread.
-
-### Tareas Detalladas
-- [x] Implementar indicadores técnicos complementarios (`indicators.ts`):
-  - RSI Wilder suavizado (período 14).
-  - ATR para volatilidad real (período 14).
-  - EMAs 20, 50 y 200 con convergencia ponderada.
-  - VWAP con reseteo diario a las 00:00 UTC.
-  - RVOL (Volumen relativo contra promedio de 20 velas).
-- [x] Implementar detector SMC/ICT sin look-ahead bias (`smc-detector.ts`):
-  - Detección de Swings High y Low confirmados estrictamente a $i + \text{rightBars}$.
-  - Clasificación de estructura: HH, HL, LH, LL, EQH, EQL.
-  - Detección de rupturas de estructura (BOS) y cambios de carácter (CHoCH) en velas cerradas.
-  - Detección y ciclo de vida de Fair Value Gaps (Activo, Mitigado, Invalidado).
-  - Identificación de Order Blocks candidatos con desplazamiento $\ge 1.5 \times$ cuerpo.
-  - Detección de barridos de liquidez (mecha de penetración con rechazo $\ge 25\%$).
-- [x] Implementar calculador estricto de riesgo/beneficio (`risk-calculator.ts`):
-  - Dimensionamiento de posición según capital configurado y riesgo (0.5% default).
-  - Deducción de comisiones Bybit (taker 0.055% entrada y salida).
-  - Deducción de spread real del Order Book y deslizamiento estimado (0.02%).
-  - Rechazo imperativo si el R:R neto $< 4.0$.
-- [x] Implementar Estrategias A y B (`strategy-a-trend.ts`, `strategy-b-sweep.ts`):
-  - Estrategia A: continuación de tendencia multitemporal (4H/1H sesgo + 15m zona + 5m confirmación).
-  - Estrategia B: barrido de liquidez y reversión (sweep 15m/1H + rechazo + 5m CHoCH).
-  - Cero señales forzadas: no operar es la decisión cuando no hay confluencia.
-- [x] Implementar orquestador de setups (`setup-engine.ts`):
-  - Evaluación continua ante cierre de velas.
-  - Persistencia de setups calificados e invalidados en SQLite / PostgreSQL.
-  - Endpoints `/api/v1/market/analysis` y `/api/v1/market/setups`.
-- [x] Integración visual en el gráfico (`CandleChart.tsx`):
-  - Marcadores de Swings (HH/HL/LH/LL).
-  - Marcadores de BOS y CHoCH.
-  - Líneas de FVG y Order Blocks.
-  - Líneas de Entrada, SL y TP (1:4) para setups activos.
-  - Barra de control de capas SMC / ICT.
-
-### Criterios de Aceptación Fase 2
-- Se generan setups candidatos con justificación matemática y niveles exactos basados únicamente en datos pasados y velas cerradas. (VERIFICADO)
-- Los 21 tests de unidad e integración pasan al 100%. (VERIFICADO)
+- [x] `SmcDetector`: Detección sin look-ahead bias de Swing Highs/Lows, BOS, CHoCH, Fair Value Gaps (FVG), Order Blocks (OB) con desplazamiento y barridos de liquidez.
+- [x] Registro explícito de timestamps: `patternOriginTimestamp`, `confirmedAtTimestamp`, `operationalAvailableTimestamp`.
+- [x] `TechnicalIndicators`: RSI Wilder con neutralidad en precio plano, ATR, EMA con salvaguarda de suficiencia de histórico (EMA 200), VWAP intradía con reinicio a las 00:00 UTC, RVOL.
+- [x] `RiskCalculator`: Cálculo cuantitativo de riesgo para LONG y SHORT, tamaño de posición quantizado por `qtyStep`, comisiones maker/taker por valor nocional, deslizamiento, cruce de spread, costo de funding, redondeo por `tickSize` y filtro estricto de R:R neto $\ge$ 1:4.
+- [x] Estrategias A (Continuación de Tendencia) y B (Barrido de Liquidez y Reversión).
 
 ---
 
 ## FASE 3: Integración de IA & Motor de Consenso
-
-### Objetivos
-- Conexión con OpenAI API y Google Gemini API mediante esquemas estructurados estrictos (JSON Schema / Structured Outputs).
-- Ambas IA evalúan de forma independiente el mismo snapshot cuantitativo sin conocer la opinión de la otra.
-- Motor de consenso que requiere doble aprobación antes de validar una oportunidad.
-- Control estricto de costos de IA: invocación únicamente ante setups calificados, seguimiento de tokens y presupuesto diario.
-
-### Criterios de Aceptación Fase 3
-- Respuestas de IA auditables y almacenadas con hash del snapshot; una respuesta inválida o contradictoria descarta la señal de inmediato.
+- [x] **Catálogo de Modelos (`models-catalog.ts`)**:
+  - OpenAI: `gpt-4o`, `gpt-4o-mini`, `o3-mini`.
+  - Google Gemini: `gemini-2.5-flash`, `gemini-1.5-pro`, `gemini-2.0-flash`.
+  - Costos por 1M de tokens (input/output) y parámetros de inferencia determinista (`temperature: 0.1`).
+- [x] **Snapshot Inmutable (`snapshot-builder.ts`)**:
+  - Hash criptográfico SHA-256 (`snapshotId`), timestamp UTC, ticker Bybit, libro L2 top 5, contexto multitemporal (6 temporalidades), setup candidato y estado de integridad de datos.
+- [x] **Adaptador OpenAI (`openai-adapter.ts`)**:
+  - Rol: Analista Cuantitativo y de Estructura de Mercado.
+  - Salida estructurada JSON (schema estricto): veredicto, confianza, razonamiento, argumentos a favor/en contra, evaluación de riesgo, verosimilitud de target.
+  - Soporte para mock evaluator para pruebas unitarias deterministas.
+- [x] **Adaptador Gemini (`gemini-adapter.ts`)**:
+  - Rol: Auditor Crítico de Riesgos e Invalidaciones ("abogado del diablo").
+  - Salida estructurada JSON idéntica para comparación paritaria.
+  - Detección de trampas de liquidez, contradicciones de flujo de órdenes y objetivos ficticios.
+- [x] **Control de Presupuesto y Costos (`cost-tracker.ts`)**:
+  - Registro de tokens de entrada/salida y cálculo exacto en USD por consulta.
+  - Control de presupuesto diario ($5.00/día) y mensual ($50.00/mes) con bloqueo automático.
+- [x] **Motor de Consenso Determinista (`consensus-engine.ts`)**:
+  - Flujo de decisión jerárquico en 14 pasos.
+  - **Doble Aprobación Obligatoria**: Ambos analistas deben emitir `APPROVE` con confianza $\ge 70\%$.
+  - Si una IA rechaza $\to$ `DISCARDED`. Si una IA aconseja esperar $\to$ `WAITING_CONDITIONS`.
+  - **Determinismo Absoluto**: El filtro de R:R neto $\ge$ 1:4, la sincronización del orderbook y la integridad de datos tienen prioridad total sobre cualquier opinión de IA.
+  - Comprobación de deslizamiento de precio post-análisis (máx 0.15% de drift).
+  - Garantía `SIGNALS_ONLY`: sin dinero real ni claves de ejecución privadas.
+- [x] **Persistencia en SQLite y PostgreSQL (`database.ts`, `postgres-database.ts`)**:
+  - Tablas `ai_reviews` y `signals` implementadas con paridad estricta y consultas optimizadas.
+- [x] **Endpoints Internos de API y WebSocket (`server.ts`)**:
+  - `GET /api/v1/ai/status`: Estado de proveedores, modelos, presupuesto y consumo.
+  - `GET /api/v1/ai/reviews`: Revisiones de analistas IA con filtrado por setup.
+  - `GET /api/v1/signals`: Historial de señales evaluadas por consenso.
+  - `POST /api/v1/ai/evaluate`: Disparador de auditoría de consenso sobre setup activo.
+  - Emisión en tiempo real de `signal_evaluated` por WebSocket interno.
+- [x] **Frontend PWA con NanoLabs Theme 2 (`AiAnalystsCard.tsx`, `page.tsx`)**:
+  - Panel interactivo con tres pestañas: Modelos & Presupuesto, Señales Evaluadas y Auditorías Históricas.
+  - Comparativa paritaria OpenAI vs. Gemini con badges de consenso y justificaciones completas.
+  - URLs dinámicas basadas en `window.location.hostname` para compatibilidad de servidor.
 
 ---
 
-## FASE 4: Alertas, Máquina de Estados y PWA
-
-### Objetivos
-- Máquina de estados completa para señales (`OBSERVING` a `COMPLETED_TP`/`COMPLETED_SL`/`INVALIDATED`).
-- Canal de notificaciones push PWA y Bot de Telegram con niveles de alerta 1 a 6.
-- Panel de oportunidades y seguimiento en vivo con NanoLabs Theme 2.
-
-### Criterios de Aceptación Fase 4
-- Ciclo completo de vida de una señal trazable en UI y notificado a Telegram en tiempo real.
-
----
-
-## FASE 5: Backtesting, Paper Trading & Validación
-
-### Objetivos
-- Motor de backtesting determinista sin look-ahead bias con deducción de comisiones y deslizamiento.
-- Módulo de Paper Trading en tiempo real con simulación de ejecución de órdenes y registro auditado.
-- Métricas estadísticas verificables (Win Rate, Profit Factor, Expectancy, Max Drawdown, MFE/MAE, R neto).
-- Comparativa de rendimiento: Técnico puro vs Técnico + OpenAI vs Técnico + Gemini vs Consenso Dual.
-
-### Criterios de Aceptación Fase 5
-- Reportes reproducibles y separación explícita entre datos históricos y forward-testing en vivo.
-
----
-
-## FASE 6: Preparación para Ejecución Asistida
-
-### Objetivos
-- Abstracción de ejecución privada con Bybit V5 autenticada (solo lectura por defecto).
-- Reconciliación de balances y posiciones, modo manual asistido, Kill Switch de emergencia.
-
-### Criterios de Aceptación Fase 6
-- La arquitectura permite enchufar ejecución autenticada sin alterar la lógica de análisis, manteniendo `LIVE_TRADING` bloqueado por seguridad.
+## FASE 4: Alertas, Máquina de Estados y PWA (Próxima Fase)
+- [ ] Máquina de estados formal de señales (`OBSERVING` $\to$ `SETUP_DETECTED` $\to$ `AI_REVIEW` $\to$ `ENTRY_VALIDATED` $\to$ `ALERT_SENT` $\to$ `TRACKING` $\to$ `COMPLETED_TP`/`COMPLETED_SL`/`INVALIDATED`/`EXPIRED`).
+- [ ] Bot de Telegram con formato Markdown profesional, niveles de alerta 1 a 6 y botones interactivos.
+- [ ] Servicio de Web Push Notifications en la PWA.
+- [ ] Panel de auditoría de ciclo de vida de señales en vivo.

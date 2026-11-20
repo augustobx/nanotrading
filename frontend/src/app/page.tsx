@@ -41,8 +41,22 @@ interface TickerData {
   openInterest: number;
 }
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001/ws/live';
+const getApiBase = (): string => {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:3001`;
+  }
+  return 'http://localhost:3001';
+};
+
+const getWsUrl = (): string => {
+  if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
+  if (typeof window !== 'undefined') {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${window.location.hostname}:3001/ws/live`;
+  }
+  return 'ws://localhost:3001/ws/live';
+};
 
 export default function DashboardPage() {
   const { palette, isDark, toggleDarkMode } = useERPTheme();
@@ -78,6 +92,11 @@ export default function DashboardPage() {
   const [analyses, setAnalyses] = useState<Record<string, any>>({});
   const [setups, setSetups] = useState<any[]>([]);
 
+  // Phase 3 Dual AI & Consensus State
+  const [aiStatus, setAiStatus] = useState<any | null>(null);
+  const [signals, setSignals] = useState<any[]>([]);
+  const [aiReviews, setAiReviews] = useState<any[]>([]);
+
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -99,7 +118,7 @@ export default function DashboardPage() {
 
   const fetchCandles = async (tf: Timeframe) => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/market/candles?timeframe=${tf}&limit=150`);
+      const res = await fetch(`${getApiBase()}/api/v1/market/candles?timeframe=${tf}&limit=150`);
       if (res.ok) {
         const json = await res.json();
         if (json.success && json.data) {
@@ -111,9 +130,12 @@ export default function DashboardPage() {
 
   const fetchAnalysisAndSetups = async () => {
     try {
-      const [anRes, setRes] = await Promise.all([
-        fetch(`${API_BASE}/api/v1/market/analysis`),
-        fetch(`${API_BASE}/api/v1/market/setups`),
+      const [anRes, setRes, aiRes, sigRes, revRes] = await Promise.all([
+        fetch(`${getApiBase()}/api/v1/market/analysis`),
+        fetch(`${getApiBase()}/api/v1/market/setups`),
+        fetch(`${getApiBase()}/api/v1/ai/status`),
+        fetch(`${getApiBase()}/api/v1/signals`),
+        fetch(`${getApiBase()}/api/v1/ai/reviews`),
       ]);
       if (anRes.ok) {
         const anData = await anRes.json();
@@ -123,12 +145,24 @@ export default function DashboardPage() {
         const setData = await setRes.json();
         if (setData.success) setSetups(setData.data);
       }
+      if (aiRes.ok) {
+        const aiData = await aiRes.json();
+        if (aiData.success) setAiStatus(aiData.data);
+      }
+      if (sigRes.ok) {
+        const sigData = await sigRes.json();
+        if (sigData.success) setSignals(sigData.data);
+      }
+      if (revRes.ok) {
+        const revData = await revRes.json();
+        if (revData.success) setAiReviews(revData.data);
+      }
     } catch {}
   };
 
   const fetchEvents = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/v1/events?limit=8`);
+      const res = await fetch(`${getApiBase()}/api/v1/events?limit=8`);
       if (res.ok) {
         const json = await res.json();
         if (json.success && json.data) {
@@ -158,7 +192,7 @@ export default function DashboardPage() {
 
     const connectWs = () => {
       try {
-        const ws = new WebSocket(WS_URL);
+        const ws = new WebSocket(getWsUrl());
         wsRef.current = ws;
 
         ws.onopen = () => {
@@ -219,6 +253,8 @@ export default function DashboardPage() {
               setOrderBook(msg.data);
             } else if (msg.type === 'setup_detected') {
               setSetups((prev) => [msg.data, ...prev]);
+            } else if (msg.type === 'signal_evaluated') {
+              setSignals((prev) => [msg.data, ...prev.filter((s) => s.id !== msg.data.id)]);
             }
           } catch {}
         };
@@ -537,7 +573,7 @@ export default function DashboardPage() {
         />
 
         {/* AI Analysts Panel */}
-        <AiAnalystsCard />
+        <AiAnalystsCard aiStatus={aiStatus} signals={signals} aiReviews={aiReviews} />
 
         {/* Audit & System Event Log */}
         <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-4 shadow-xl">

@@ -14,7 +14,8 @@ export interface MultiTimeframeAnalysis {
   atr: number;
   ema20: number;
   ema50: number;
-  ema200: number;
+  ema200?: number;
+  ema200Ready: boolean;
   vwap: number;
   relativeVolume: number;
   structure: MarketStructureResult;
@@ -92,14 +93,18 @@ export class SetupEngine extends EventEmitter {
     const structure = SmcDetector.analyzeStructure(candles, tf);
 
     const lastIdx = candles.length - 1;
+    const ema200Ready = TechnicalIndicators.isEmaReady(closes, 200);
+    const ema200Val = ema200Ready && !isNaN(ema200Series[lastIdx]) ? ema200Series[lastIdx] : undefined;
+
     const analysis: MultiTimeframeAnalysis = {
       timeframe: tf,
       trend: structure.trend,
       rsi: rsiSeries[lastIdx] || 50,
       atr: atrSeries[lastIdx] || 0,
-      ema20: ema20Series[lastIdx] || closes[lastIdx],
-      ema50: ema50Series[lastIdx] || closes[lastIdx],
-      ema200: ema200Series[lastIdx] || closes[lastIdx],
+      ema20: !isNaN(ema20Series[lastIdx]) ? ema20Series[lastIdx] : closes[lastIdx],
+      ema50: !isNaN(ema50Series[lastIdx]) ? ema50Series[lastIdx] : closes[lastIdx],
+      ema200: ema200Val,
+      ema200Ready,
       vwap: vwapSeries[lastIdx] || closes[lastIdx],
       relativeVolume: rvol,
       structure,

@@ -59,6 +59,17 @@ export class ApiServer {
         this.sendMarketAnalysis(res);
       } else if (pathname === '/api/v1/market/setups' && req.method === 'GET') {
         this.sendActiveSetups(res);
+      } else if (pathname === '/api/v1/ai/status' && req.method === 'GET') {
+        this.sendAiStatus(res);
+      } else if (pathname === '/api/v1/ai/reviews' && req.method === 'GET') {
+        const setupId = url.searchParams.get('setupId');
+        const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+        this.sendAiReviews(res, setupId, limit);
+      } else if (pathname === '/api/v1/signals' && req.method === 'GET') {
+        const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+        this.sendSignals(res, limit);
+      } else if (pathname === '/api/v1/ai/evaluate' && req.method === 'POST') {
+        this.handleEvaluateSetup(req, res);
       } else if (pathname === '/api/v1/events' && req.method === 'GET') {
         const limit = parseInt(url.searchParams.get('limit') || '50', 10);
         this.sendEvents(res, limit);
@@ -165,6 +176,82 @@ export class ApiServer {
     res.end(JSON.stringify({ success: true, count: events.length, data: events }));
   }
 
+  private sendAiStatus(res: http.ServerResponse): void {
+    const costTracker = this.coordinator.getConsensusEngine().getCostTracker();
+    const stats = costTracker.getStats();
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        success: true,
+        data: {
+          providers: {
+            openai: {
+              configured: !!process.env.OPENAI_API_KEY,
+              model: process.env.OPENAI_MODEL || 'gpt-4o',
+              role: 'Analista Cuantitativo y de Estructura de Mercado',
+            },
+            gemini: {
+              configured: !!process.env.GEMINI_API_KEY,
+              model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+              role: 'Auditor Crítico de Riesgo e Invalidación',
+            },
+          },
+          costTracker: stats,
+          consensusRule: 'DOBLE_VALIDACION_OBLIGATORIA (Ambas IAs deben APPROVE con confianza >= 70%)',
+          executionMode: 'SIGNALS_ONLY',
+        },
+      })
+    );
+  }
+
+  private sendAiReviews(res: http.ServerResponse, setupId: string | null, limit: number): void {
+    const reviews = this.db.getAiReviews(setupId || undefined, limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, count: reviews.length, data: reviews }));
+  }
+
+  private sendSignals(res: http.ServerResponse, limit: number): void {
+    const signals = this.db.getSignals(limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, count: signals.length, data: signals }));
+  }
+
+  private handleEvaluateSetup(req: http.IncomingMessage, res: http.ServerResponse): void {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 100000) req.destroy();
+    });
+
+    req.on('end', async () => {
+      try {
+        const payload = JSON.parse(body || '{}');
+        const setupId = payload.setupId;
+        if (!setupId) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Falta parámetro setupId' }));
+          return;
+        }
+
+        const setups = this.coordinator.getActiveSetups();
+        const setup = setups.find((s: any) => s.id === setupId);
+        if (!setup) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Setup con id ${setupId} no encontrado entre setups activos` }));
+          return;
+        }
+
+        const result = await this.coordinator.getConsensusEngine().evaluateSetup(setup);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: result }));
+      } catch (err: any) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Error durante la evaluación de consenso', message: err.message }));
+      }
+    });
+  }
+
   private setupUpgradeHandler(): void {
     this.server.on('upgrade', (request, socket, head) => {
       const pathname = new URL(request.url || '/', `http://${request.headers.host}`).pathname;
@@ -227,6 +314,11 @@ export class ApiServer {
     // Broadcast detected setups
     this.coordinator.on('setup_detected', (setup) => {
       this.broadcast({ type: 'setup_detected', data: setup });
+    });
+
+    // Broadcast consensus signals
+    this.coordinator.on('signal_evaluated', (signal) => {
+      this.broadcast({ type: 'signal_evaluated', data: signal });
     });
   }
 

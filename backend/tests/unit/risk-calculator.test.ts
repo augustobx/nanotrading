@@ -2,64 +2,198 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RiskCalculator } from '../../src/engine/risk-calculator.js';
 
-test('RiskCalculator - validates genuine 1:4 Net R:R with Bybit fees and slippage', () => {
-  // Long setup: Entry 60000, SL 59800 (risk 200), TP 61500 (reward 1500)
-  // Gross R:R = 1500 / 200 = 7.5
-  // After taker fees (0.11% round-trip on $15k notional) and slippage, Net R:R is ~4.8 >= 4.0
-  const result = RiskCalculator.calculate({
+test('RiskCalculator - Exact mathematical analytical comparison for LONG', () => {
+  // Analytical scenario:
+  // Entry: $60,000.00, SL: $59,800.00, TP: $61,500.00
+  // Price risk: $200.00 per BTC. Price reward: $1,500.00 per BTC.
+  // Gross R:R = 1500 / 200 = 7.50
+  // Capital: $10,000, 0.5% risk = $50.00 target risk budget.
+  // Raw position = 50 / 200 = 0.25 BTC. Steps (qtyStep 0.001) = 250 -> positionSizeBTC = 0.2500 BTC.
+  // Notional = 0.25 * 60,000 = $15,000.00
+  // Fees (Taker entry 0.055%, Maker TP exit 0.02%, Taker SL exit 0.055%):
+  // Entry fee = 15000 * 0.00055 = $8.25
+  // Exit fee TP = (0.25 * 61500) * 0.0002 = 15375 * 0.0002 = $3.075
+  // Exit fee SL = (0.25 * 59800) * 0.00055 = 14950 * 0.00055 = $8.2225
+  // Slippage (0.02% on entry taker) = 15000 * 0.0002 = $3.00
+  // Spread crossing factor (taker entry only = 0.5) = 0.25 * 0.1 * 0.5 = $0.0125
+  // Net Loss (SL hit) = (0.25 * 200) + 8.25 + 8.2225 + 0.0125 + 3.00 = 50 + 19.485 = $69.49
+  // Net Reward (TP hit) = (0.25 * 1500) - 8.25 - 3.075 - 0.0125 - 3.00 = 375 - 14.3375 = $360.66
+  // Expected Net R:R = 360.66 / 69.49 = 5.19 >= 4.0
+
+  const res = RiskCalculator.calculate({
     direction: 'LONG',
     entryPrice: 60000,
     stopLossPrice: 59800,
     takeProfitPrice: 61500,
     accountBalance: 10000,
-    riskPercent: 0.5, // $50 risk budget
+    riskPercent: 0.5,
     spread: 0.1,
-    takerFeeRate: 0.00055,
+    tickSize: 0.1,
+    qtyStep: 0.001,
+    minOrderQty: 0.001,
+    entryOrderType: 'TAKER',
+    exitOrderTypeSL: 'TAKER',
+    exitOrderTypeTP: 'MAKER',
+    feeStructure: {
+      makerFeeRate: 0.0002,
+      takerFeeRate: 0.00055,
+      feeRateSource: 'DEFAULT_BYBIT_LINEAR',
+    },
     slippageRate: 0.0002,
     minRequiredRR: 4.0,
   });
 
-  assert.equal(result.isValid, true);
-  assert.ok(result.netRR >= 4.0, `Expected netRR >= 4.0, got ${result.netRR}`);
-  assert.ok(result.totalFeesUSDT > 0, 'Must deduct trading fees');
-  assert.ok(result.slippageCostUSDT > 0, 'Must deduct slippage');
-  assert.ok(result.positionSizeBTC >= 0.001, 'Must satisfy Bybit minOrderQty');
+  assert.equal(res.isValid, true);
+  assert.equal(res.positionSizeBTC, 0.25);
+  assert.equal(res.notionalValueUSDT, 15000);
+  assert.equal(res.grossRiskUSDT, 50);
+  assert.equal(res.grossRewardUSDT, 375);
+  assert.equal(res.grossRR, 7.5);
+  assert.equal(res.entryFeeUSDT, 8.25);
+  assert.equal(res.exitFeeTPUSDT, 3.075);
+  assert.ok(Math.abs(res.netLossUSDT - 69.49) <= 0.05, `netLossUSDT expected ~69.49, got ${res.netLossUSDT}`);
+  assert.ok(Math.abs(res.netRewardUSDT - 360.66) <= 0.05, `netRewardUSDT expected ~360.66, got ${res.netRewardUSDT}`);
+  assert.ok(res.netRR >= 5.1 && res.netRR <= 5.3, `netRR expected ~5.19, got ${res.netRR}`);
 });
 
-test('RiskCalculator - rejects setup when Net R:R falls below 1:4 due to costs', () => {
-  // Long setup: Entry 60000, SL 59750 (risk 250), TP 60800 (reward 800)
-  // Gross R:R = 800 / 250 = 3.2 (less than 4)
-  const result = RiskCalculator.calculate({
-    direction: 'LONG',
-    entryPrice: 60000,
-    stopLossPrice: 59750,
-    takeProfitPrice: 60800,
+test('RiskCalculator - Exact mathematical analytical comparison for SHORT', () => {
+  // Analytical scenario SHORT:
+  // Entry: $65,000.00, SL: $65,250.00, TP: $63,000.00
+  // Price risk: $250.00. Price reward: $2,000.00.
+  // Gross R:R = 2000 / 250 = 8.0
+  // Capital: $10,000, 0.5% risk = $50.00 budget.
+  // Raw position = 50 / 250 = 0.20 BTC.
+  // Notional = 0.20 * 65,000 = $13,000.00
+  // Expected net R:R >= 4.0
+
+  const res = RiskCalculator.calculate({
+    direction: 'SHORT',
+    entryPrice: 65000,
+    stopLossPrice: 65250,
+    takeProfitPrice: 63000,
     accountBalance: 10000,
     riskPercent: 0.5,
+    spread: 0.1,
+    tickSize: 0.1,
+    qtyStep: 0.001,
+    minOrderQty: 0.001,
+    entryOrderType: 'TAKER',
+    exitOrderTypeSL: 'TAKER',
+    exitOrderTypeTP: 'MAKER',
+    feeStructure: {
+      makerFeeRate: 0.0002,
+      takerFeeRate: 0.00055,
+    },
+    slippageRate: 0.0002,
     minRequiredRR: 4.0,
   });
 
-  assert.equal(result.isValid, false);
-  assert.ok(result.netRR < 4.0);
-  assert.ok(result.rejectionReason?.includes('insuficiente'));
+  assert.equal(res.isValid, true);
+  assert.equal(res.direction, 'SHORT');
+  assert.equal(res.positionSizeBTC, 0.2);
+  assert.equal(res.grossRR, 8.0);
+  assert.ok(res.netRR >= 4.0, `netRR expected >= 4.0, got ${res.netRR}`);
+  assert.ok(res.netRewardUSDT > 0);
+  assert.ok(res.netLossUSDT > 0);
 });
 
-test('RiskCalculator - rejects inverted Stop Loss for SHORT and LONG', () => {
-  // Long setup with SL above entry
+test('RiskCalculator - Maker vs Taker fee impact test', () => {
+  // If entry is MAKER instead of TAKER, fees drop from 0.055% to 0.02% and slippage is 0
+  const takerEntry = RiskCalculator.calculate({
+    direction: 'LONG',
+    entryPrice: 60000,
+    stopLossPrice: 59800,
+    takeProfitPrice: 61500,
+    entryOrderType: 'TAKER',
+  });
+
+  const makerEntry = RiskCalculator.calculate({
+    direction: 'LONG',
+    entryPrice: 60000,
+    stopLossPrice: 59800,
+    takeProfitPrice: 61500,
+    entryOrderType: 'MAKER',
+  });
+
+  assert.ok(makerEntry.entryFeeUSDT < takerEntry.entryFeeUSDT, 'Maker entry fee must be lower than Taker');
+  assert.ok(makerEntry.netRR > takerEntry.netRR, 'Maker entry should result in higher net R:R');
+});
+
+test('RiskCalculator - Funding rate cost impact test', () => {
+  // Long holding across 2 funding settlements with positive funding rate (0.01% = 0.0001) pays funding
+  const resWithFunding = RiskCalculator.calculate({
+    direction: 'LONG',
+    entryPrice: 60000,
+    stopLossPrice: 59800,
+    takeProfitPrice: 61500,
+    fundingRate: 0.0001, // 0.01%
+    fundingSettlementsExpected: 2,
+  });
+
+  assert.ok(resWithFunding.fundingCostUSDT > 0, 'Long must pay positive funding rate');
+  assert.equal(resWithFunding.fundingCostUSDT, 3.0); // 15000 * 0.0001 * 1 * 2 = $3.00
+
+  // Short holding across 2 funding settlements receives funding (negative cost)
+  const shortWithFunding = RiskCalculator.calculate({
+    direction: 'SHORT',
+    entryPrice: 60000,
+    stopLossPrice: 60200,
+    takeProfitPrice: 58500,
+    fundingRate: 0.0001,
+    fundingSettlementsExpected: 2,
+  });
+
+  assert.ok(shortWithFunding.fundingCostUSDT < 0, 'Short must receive funding when funding rate is positive');
+});
+
+test('RiskCalculator - Precision tickSize (0.1) and qtyStep (0.001) rounding impact', () => {
+  const res = RiskCalculator.calculate({
+    direction: 'LONG',
+    entryPrice: 60000.0847, // Should round to 60000.1
+    stopLossPrice: 59799.932, // Should round to 59799.9
+    takeProfitPrice: 61500.049, // Should round to 61500.0
+    tickSize: 0.1,
+    qtyStep: 0.001,
+  });
+
+  assert.equal(res.entryPrice, 60000.1);
+  assert.equal(res.stopLossPrice, 59799.9);
+  assert.equal(res.takeProfitPrice, 61500.0);
+  assert.equal(Number.isInteger(Math.round(res.positionSizeBTC * 1000)), true, 'Position size must be an exact multiple of qtyStep');
+});
+
+test('RiskCalculator - Strict Net R:R >= 4.0 filter rejects insufficient reward', () => {
+  // Gross R:R is 3.5, which is < 4.0
+  const res = RiskCalculator.calculate({
+    direction: 'LONG',
+    entryPrice: 60000,
+    stopLossPrice: 59800, // risk 200
+    takeProfitPrice: 60700, // reward 700 -> gross RR 3.5
+    minRequiredRR: 4.0,
+  });
+
+  assert.equal(res.isValid, false);
+  assert.ok(res.rejectionReason?.includes('Ratio R:R neto insuficiente'));
+});
+
+test('RiskCalculator - Rejects setups with invalid geometry', () => {
+  // Long with SL > Entry
   const badLong = RiskCalculator.calculate({
     direction: 'LONG',
     entryPrice: 60000,
-    stopLossPrice: 60500, // Invalid: above entry
-    takeProfitPrice: 62000,
+    stopLossPrice: 60100,
+    takeProfitPrice: 61500,
   });
   assert.equal(badLong.isValid, false);
+  assert.ok(badLong.rejectionReason?.includes('Stop Loss debe ser menor'));
 
-  // Short setup with SL below entry
+  // Short with TP > Entry
   const badShort = RiskCalculator.calculate({
     direction: 'SHORT',
     entryPrice: 60000,
-    stopLossPrice: 59500, // Invalid: below entry
-    takeProfitPrice: 58000,
+    stopLossPrice: 60500,
+    takeProfitPrice: 61000,
   });
   assert.equal(badShort.isValid, false);
+  assert.ok(badShort.rejectionReason?.includes('Take Profit debe ser menor'));
 });

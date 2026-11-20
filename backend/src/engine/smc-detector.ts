@@ -7,6 +7,8 @@ export interface SwingPoint {
   type: 'HIGH' | 'LOW';
   confirmedAtIndex: number;
   confirmedAtTimestamp: number;
+  patternOriginTimestamp: number;
+  operationalAvailableTimestamp: number;
   label?: 'HH' | 'LH' | 'HL' | 'LL' | 'EQH' | 'EQL';
 }
 
@@ -21,6 +23,9 @@ export interface FairValueGap {
   candleIndex: number;
   status: 'ACTIVE' | 'MITIGATED' | 'INVALIDATED';
   mitigatedAt?: number;
+  patternOriginTimestamp: number;
+  confirmedAtTimestamp: number;
+  operationalAvailableTimestamp: number;
 }
 
 export interface OrderBlock {
@@ -33,6 +38,9 @@ export interface OrderBlock {
   candleIndex: number;
   status: 'ACTIVE' | 'MITIGATED' | 'INVALIDATED';
   mitigatedAt?: number;
+  patternOriginTimestamp: number;
+  confirmedAtTimestamp: number;
+  operationalAvailableTimestamp: number;
 }
 
 export interface StructureBreak {
@@ -43,6 +51,9 @@ export interface StructureBreak {
   candleTimestamp: number;
   closePrice: number;
   candleIndex: number;
+  patternOriginTimestamp: number;
+  confirmedAtTimestamp: number;
+  operationalAvailableTimestamp: number;
 }
 
 export interface LiquiditySweep {
@@ -53,6 +64,9 @@ export interface LiquiditySweep {
   candleTimestamp: number;
   candleIndex: number;
   poolType: 'EQH' | 'EQL' | 'SWING_HIGH' | 'SWING_LOW';
+  patternOriginTimestamp: number;
+  confirmedAtTimestamp: number;
+  operationalAvailableTimestamp: number;
 }
 
 export interface MarketStructureResult {
@@ -103,6 +117,8 @@ export class SmcDetector {
           type: 'HIGH',
           confirmedAtIndex: confirmedIdx,
           confirmedAtTimestamp: confirmedTime,
+          patternOriginTimestamp: current.timestamp,
+          operationalAvailableTimestamp: confirmedTime,
         });
       }
 
@@ -114,6 +130,8 @@ export class SmcDetector {
           type: 'LOW',
           confirmedAtIndex: confirmedIdx,
           confirmedAtTimestamp: confirmedTime,
+          patternOriginTimestamp: current.timestamp,
+          operationalAvailableTimestamp: confirmedTime,
         });
       }
     }
@@ -192,6 +210,9 @@ export class SmcDetector {
             timestamp: c2.timestamp,
             candleIndex: i + 1,
             status: 'ACTIVE',
+            patternOriginTimestamp: c2.timestamp,
+            confirmedAtTimestamp: c3.timestamp,
+            operationalAvailableTimestamp: c3.timestamp,
           };
 
           // Check mitigation on subsequent candles
@@ -224,6 +245,9 @@ export class SmcDetector {
             timestamp: c2.timestamp,
             candleIndex: i + 1,
             status: 'ACTIVE',
+            patternOriginTimestamp: c2.timestamp,
+            confirmedAtTimestamp: c3.timestamp,
+            operationalAvailableTimestamp: c3.timestamp,
           };
 
           // Check mitigation on subsequent candles
@@ -272,6 +296,9 @@ export class SmcDetector {
             timestamp: obCandle.timestamp,
             candleIndex: i,
             status: 'ACTIVE',
+            patternOriginTimestamp: obCandle.timestamp,
+            confirmedAtTimestamp: nextCandle.timestamp,
+            operationalAvailableTimestamp: nextCandle.timestamp,
           };
 
           for (let k = i + 2; k < candles.length; k++) {
@@ -301,6 +328,9 @@ export class SmcDetector {
             timestamp: obCandle.timestamp,
             candleIndex: i,
             status: 'ACTIVE',
+            patternOriginTimestamp: obCandle.timestamp,
+            confirmedAtTimestamp: nextCandle.timestamp,
+            operationalAvailableTimestamp: nextCandle.timestamp,
           };
 
           for (let k = i + 2; k < candles.length; k++) {
@@ -371,6 +401,9 @@ export class SmcDetector {
               candleTimestamp: c.timestamp,
               closePrice: c.close,
               candleIndex: i,
+              patternOriginTimestamp: swing.timestamp,
+              confirmedAtTimestamp: c.timestamp,
+              operationalAvailableTimestamp: c.timestamp,
             });
             break; // Stop testing this swing once broken
           } else if (c.high > swing.price && c.close <= swing.price) {
@@ -386,6 +419,9 @@ export class SmcDetector {
                 candleTimestamp: c.timestamp,
                 candleIndex: i,
                 poolType: swing.label === 'EQH' ? 'EQH' : 'SWING_HIGH',
+                patternOriginTimestamp: swing.timestamp,
+                confirmedAtTimestamp: c.timestamp,
+                operationalAvailableTimestamp: c.timestamp,
               });
             }
           }
@@ -401,6 +437,9 @@ export class SmcDetector {
               candleTimestamp: c.timestamp,
               closePrice: c.close,
               candleIndex: i,
+              patternOriginTimestamp: swing.timestamp,
+              confirmedAtTimestamp: c.timestamp,
+              operationalAvailableTimestamp: c.timestamp,
             });
             break;
           } else if (c.low < swing.price && c.close >= swing.price) {
@@ -416,6 +455,9 @@ export class SmcDetector {
                 candleTimestamp: c.timestamp,
                 candleIndex: i,
                 poolType: swing.label === 'EQL' ? 'EQL' : 'SWING_LOW',
+                patternOriginTimestamp: swing.timestamp,
+                confirmedAtTimestamp: c.timestamp,
+                operationalAvailableTimestamp: c.timestamp,
               });
             }
           }

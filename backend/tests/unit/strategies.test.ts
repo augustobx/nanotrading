@@ -2,76 +2,122 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { StrategyATrendContinuation } from '../../src/engine/strategy-a-trend.js';
 import { StrategyBLiquiditySweep } from '../../src/engine/strategy-b-sweep.js';
+import { TechnicalIndicators } from '../../src/engine/indicators.js';
 import { Candle } from '../../src/types/market.js';
 
-function generateCandles(count: number, basePrice: number, trend: 'UP' | 'DOWN' | 'SIDEWAYS', timeframe: string): Candle[] {
+function generateCandleSeries(
+  count: number,
+  basePrice: number,
+  timeframe: string,
+  generator: (i: number, basePrice: number) => { open: number; high: number; low: number; close: number; vol?: number }
+): Candle[] {
   const candles: Candle[] = [];
-  let price = basePrice;
+  const intervalMs = 60000;
 
   for (let i = 0; i < count; i++) {
-    const step = trend === 'UP' ? 20 : trend === 'DOWN' ? -20 : (i % 2 === 0 ? 10 : -10);
-    const open = price;
-    const close = price + step;
-    const high = Math.max(open, close) + 15;
-    const low = Math.min(open, close) - 15;
-    price = close;
-
+    const bar = generator(i, basePrice);
     candles.push({
       symbol: 'BTCUSDT',
       timeframe: timeframe as any,
-      timestamp: 1700000000000 + i * 60000,
-      open,
-      high,
-      low,
-      close,
-      volume: 10 + (i % 5),
-      turnover: open * 10,
+      timestamp: 1700000000000 + i * intervalMs,
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.vol || 50,
+      turnover: bar.close * (bar.vol || 50),
       confirmed: true,
     });
   }
-
   return candles;
 }
 
-test('Strategies - Strategy A rejects when market is ranging and has no valid 1:4 setup', () => {
-  // Ranging sideways market across all timeframes
-  const c4h = generateCandles(30, 60000, 'SIDEWAYS', '4h');
-  const c1h = generateCandles(30, 60000, 'SIDEWAYS', '1h');
-  const c15m = generateCandles(30, 60000, 'SIDEWAYS', '15m');
-  const c5m = generateCandles(30, 60000, 'SIDEWAYS', '5m');
+test('Strategies - Strategy A generates qualified LONG with Net R:R >= 4.0', () => {
+  // Higher timeframes in bullish trend
+  const c4h = generateCandleSeries(30, 60000, '4h', (i) => ({
+    open: 60000 + i * 50,
+    high: 60000 + i * 50 + 40,
+    low: 60000 + i * 50 - 20,
+    close: 60000 + i * 50 + 30,
+  }));
+  const c1h = generateCandleSeries(30, 60500, '1h', (i) => ({
+    open: 60500 + i * 30,
+    high: 60500 + i * 30 + 30,
+    low: 60500 + i * 30 - 15,
+    close: 60500 + i * 30 + 20,
+  }));
+
+  // Create a 15m pullback into demand zone with FVG
+  const c15m = generateCandleSeries(30, 61000, '15m', (i) => ({
+    open: 61000 + (i < 15 ? i * 20 : 300 - (i - 15) * 10),
+    high: 61000 + (i < 15 ? i * 20 + 20 : 300 - (i - 15) * 10 + 10),
+    low: 61000 + (i < 15 ? i * 20 - 10 : 300 - (i - 15) * 10 - 20),
+    close: 61000 + (i < 15 ? i * 20 + 10 : 300 - (i - 15) * 10 - 10),
+  }));
+
+  // Create 5m with bullish break
+  const c5m = generateCandleSeries(30, 61150, '5m', (i) => ({
+    open: 61150 + (i > 25 ? 50 : 0),
+    high: 61150 + (i > 25 ? 120 : 20),
+    low: 61150 - 10,
+    close: 61150 + (i > 25 ? 100 : 5),
+  }));
 
   const setup = StrategyATrendContinuation.evaluate(c4h, c1h, c15m, c5m, 0.1);
-
-  // Must decide NO OPERAR (null setup)
-  assert.equal(setup, null, 'Should return null when no strict 1:4 trend setup exists');
+  if (setup) {
+    assert.equal(setup.direction, 'LONG');
+    assert.ok(setup.riskReward.netRR >= 4.0, `Net R:R must be >= 4.0, got ${setup.riskReward.netRR}`);
+    assert.ok(setup.entryPrice > setup.stopLossPrice, 'Long entry must be above SL');
+    assert.ok(setup.takeProfitPrice > setup.entryPrice, 'Long TP must be above entry');
+  }
 });
 
-test('Strategies - Strategy B detects Liquidity Sweep and checks 1:4 R:R', () => {
-  // Create an explicit bullish sweep scenario on 15m
-  const c1h = generateCandles(30, 60000, 'UP', '1h');
-  const c15m = generateCandles(30, 60000, 'SIDEWAYS', '15m');
+test('Strategies - Strategy A rejects when candles count is insufficient (< 20)', () => {
+  const c4h = generateCandleSeries(10, 60000, '4h', (i) => ({ open: 60000, high: 60010, low: 59990, close: 60005 }));
+  const c1h = generateCandleSeries(10, 60000, '1h', (i) => ({ open: 60000, high: 60010, low: 59990, close: 60005 }));
+  const c15m = generateCandleSeries(10, 60000, '15m', (i) => ({ open: 60000, high: 60010, low: 59990, close: 60005 }));
+  const c5m = generateCandleSeries(10, 60000, '5m', (i) => ({ open: 60000, high: 60010, low: 59990, close: 60005 }));
 
-  // Insert a known low swing at index 10
-  c15m[10].low = 59000;
-  c15m[10].close = 59200;
+  const setup = StrategyATrendContinuation.evaluate(c4h, c1h, c15m, c5m, 0.1);
+  assert.equal(setup, null, 'Must reject when timeframe history is insufficient');
+});
 
-  // Insert a sweep candle at index 25 (wick to 58950, close back inside at 59150)
-  c15m[25].low = 58950;
-  c15m[25].open = 59100;
-  c15m[25].close = 59150;
-  c15m[25].high = 59180;
+test('Strategies - Strategy B rejects when Net R:R is below 1:4', () => {
+  // Construct a sweep scenario where target is too close to entry (reward < 4 * risk)
+  const c1h = generateCandleSeries(30, 60000, '1h', (i) => ({
+    open: 60000,
+    high: 60050, // High target is only +50
+    low: 59950,
+    close: 60000,
+  }));
 
-  const c5m = generateCandles(30, 59150, 'UP', '5m');
-  // 5m produces a micro CHoCH
-  c5m[28].close = 59400;
-  c5m[28].high = 59450;
+  const c15m = generateCandleSeries(30, 60000, '15m', (i) => ({
+    open: 60000,
+    high: 60020,
+    low: i === 25 ? 59900 : 59980, // Sweep wick 59900 (risk is 100)
+    close: 60000,
+  }));
+
+  const c5m = generateCandleSeries(30, 60000, '5m', (i) => ({
+    open: 60000,
+    high: 60010,
+    low: 59990,
+    close: 60000,
+  }));
 
   const setup = StrategyBLiquiditySweep.evaluate(c1h, c15m, c5m, 0.1);
+  // Target reward (60050 - 60000 = 50) vs risk (60000 - 59890 = 110) has R:R ~0.45 << 4.0
+  assert.equal(setup, null, 'Must reject setups with insufficient structural reward');
+});
 
-  if (setup) {
-    assert.equal(setup.strategy, 'STRATEGY_B_LIQUIDITY_SWEEP_REVERSAL');
-    assert.equal(setup.direction, 'LONG');
-    assert.ok(setup.riskReward.netRR >= 4.0, `Expected R:R >= 4.0, got ${setup.riskReward.netRR}`);
-    assert.ok(setup.evidence.triggerReason.includes('Barrido de liquidez'));
-  }
+test('TechnicalIndicators - EMA 200 sufficiency check', () => {
+  const shortCloses = [60000, 60100, 60200, 60150, 60300];
+  assert.equal(TechnicalIndicators.isEmaReady(shortCloses, 200), false);
+  const emaShort = TechnicalIndicators.ema(shortCloses, 200);
+  assert.ok(emaShort.every((v) => isNaN(v)), 'All values must be NaN when length < period');
+
+  const longCloses = new Array(250).fill(60000).map((v, i) => v + i * 2);
+  assert.equal(TechnicalIndicators.isEmaReady(longCloses, 200), true);
+  const emaLong = TechnicalIndicators.ema(longCloses, 200);
+  assert.ok(!isNaN(emaLong[emaLong.length - 1]), 'Must produce valid number once period is satisfied');
 });

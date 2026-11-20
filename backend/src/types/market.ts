@@ -76,6 +76,8 @@ export interface OrderBook {
   asks: OrderBookLevel[];
   timestamp: number;
   seq: number;
+  lastUpdateId?: number;
+  isSynced: boolean;
   bestBid: number;
   bestAsk: number;
   spread: number;
