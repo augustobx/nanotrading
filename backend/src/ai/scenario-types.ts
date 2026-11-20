@@ -2,6 +2,7 @@ import { Timeframe } from '../types/market.js';
 import { AiProvider, AiVerdict, ConsensusVerdict } from './types.js';
 
 export type ScenarioStatus =
+  | 'NO_TRADE_OBSERVATION'
   | 'SCENARIO_PROPOSED'
   | 'SCENARIO_REGISTERED'
   | 'SCENARIO_MONITORING'
@@ -32,7 +33,7 @@ export interface ScenarioInterpretation {
 export interface Scenario {
   id: string;
   symbol: string;
-  direction: 'LONG' | 'SHORT';
+  direction: 'LONG' | 'SHORT' | 'NEUTRAL';
   timeframe: Timeframe;
   structureType: string;
   proposedBy: AiProvider | 'CONSENSUS' | 'STRATEGY';

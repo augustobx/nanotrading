@@ -340,6 +340,20 @@ export default function TradingLaboratory() {
             </select>
           </div>
         </div>
+
+        {/* Banner de Auditoría y Conciliación Contable */}
+        <div className="mt-4 p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-start gap-3">
+          <ShieldAlert className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+          <div className="text-xs text-amber-200/90 leading-relaxed">
+            <div className="font-bold text-amber-300 flex items-center gap-2">
+              <span>Resultados históricos pendientes de conciliación contable</span>
+              <span className="px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-300 text-[10px] font-mono">Auditoría Fase 5B / 5C</span>
+            </div>
+            <p className="mt-1">
+              Se detectaron asimetrías de costos en el histórico previo: las pérdidas computaban -1.0R nominal pero debitaban -$175 USDT en caja por comisiones taker y slippage, mientras que los beneficios salían en swings extendidos. Se conserva el histórico anterior como evidencia y el motor canónico actualiza 1R = netLossUSDT real para garantizar conciliación exacta trade-a-trade sin alterar datos.
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* KPI Cards Strip */}

@@ -246,13 +246,17 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
 
       let totalCostUsd = 0;
       const discoveredScenarios: Scenario[] = [];
+      let openaiDiscovery: any = null;
+      let geminiDiscovery: any = null;
 
       try {
         // Query OpenAI and Gemini for autonomous discovery
-        const [openaiDiscovery, geminiDiscovery] = await Promise.all([
+        const [resOpenai, resGemini] = await Promise.all([
           this.queryOpenAiDiscovery(summary),
           this.queryGeminiDiscovery(summary),
         ]);
+        openaiDiscovery = resOpenai;
+        geminiDiscovery = resGemini;
 
         if (openaiDiscovery) {
           summary.openaiBias = openaiDiscovery.bias;
@@ -304,6 +308,58 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
             latencyMs: 1200,
           });
         }
+      }
+
+      // If no directional scenarios were proposed or if AI concluded NEUTRAL,
+      // register a formal NEUTRAL observation scenario (preserving "no operar es una decisión válida")
+      if (discoveredScenarios.length === 0) {
+        const neutralScenario: Scenario = {
+          id: `sc_neutral_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+          symbol: summary.symbol || 'BTCUSDT',
+          direction: 'NEUTRAL',
+          timeframe: '15m',
+          structureType: 'RANGING_NO_CONFLUENCE',
+          proposedBy: 'CONSENSUS',
+          modelsUsed: [
+            ...(openaiConfigured ? [this.openaiAdapter.getModel()] : []),
+            ...(geminiConfigured ? [this.geminiAdapter.getModel()] : []),
+          ],
+          snapshotId,
+          discoveryTimestamp: Date.now(),
+          entryZoneMin: summary.currentPrice,
+          entryZoneMax: summary.currentPrice,
+          targetEntry: summary.currentPrice,
+          stopLossPrice: summary.currentPrice,
+          rrModeAvailable: 'NONE',
+          uncertaintyLevel: 'HIGH',
+          status: 'NO_TRADE_OBSERVATION',
+          validUntilTimestamp: Date.now() + 4 * 3600 * 1000,
+          aiCostUsd: totalCostUsd,
+          activationConditions: ['Esperar desplazamiento direccional limpio y ruptura con confirmación'],
+          invalidationTriggers: ['Ruptura con volumen fuera del rango'],
+          argumentsFor: ['Mercado sin confluencia técnica estricta', 'Preservación de capital prioritaria'],
+          argumentsAgainst: ['Riesgo/beneficio asimétrico desfavorable en la zona actual'],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          openaiInterpretation: openaiDiscovery ? {
+            provider: 'OPENAI',
+            model: this.openaiAdapter.getModel(),
+            bias: openaiDiscovery.bias,
+            reasoning: openaiDiscovery.reasoning,
+            keyZones: openaiDiscovery.keyZones || [],
+            confidence: 90,
+          } : undefined,
+          geminiInterpretation: geminiDiscovery ? {
+            provider: 'GEMINI',
+            model: this.geminiAdapter.getModel(),
+            bias: geminiDiscovery.bias,
+            reasoning: geminiDiscovery.reasoning,
+            keyZones: geminiDiscovery.keyZones || [],
+            confidence: 90,
+          } : undefined,
+          rejectionReason: 'Conclusión formal de IA: ESPERAR (No operar es una decisión válida)',
+        };
+        discoveredScenarios.push(neutralScenario);
       }
 
       // Register all valid scenarios in registry

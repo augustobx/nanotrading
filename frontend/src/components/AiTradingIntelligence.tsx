@@ -226,6 +226,8 @@ export function AiTradingIntelligence() {
 
   const getStatusBadge = (status: string) => {
     switch (status) {
+      case 'NO_TRADE_OBSERVATION':
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-700/60 text-slate-200 border border-slate-500/60">DECISIÓN: ESPERAR (NEUTRAL)</span>;
       case 'APPROACHING_ZONE':
         return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">APROXIMÁNDOSE (≤0.35%)</span>;
       case 'IN_ZONE':

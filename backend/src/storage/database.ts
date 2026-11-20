@@ -506,6 +506,20 @@ export class DatabaseService {
     try {
       this.db.exec("ALTER TABLE hard_budget_config ADD COLUMN openai_free_tier_json TEXT");
     } catch {}
+
+    const tradeAuditCols = [
+      'initial_risk_usdt REAL DEFAULT 0',
+      'position_size_btc REAL DEFAULT 0',
+      'gross_pnl_usdt REAL DEFAULT 0',
+      'capital_before_usdt REAL DEFAULT 0',
+      'capital_after_usdt REAL DEFAULT 0',
+      'is_executed_in_portfolio INTEGER DEFAULT 0',
+    ];
+    for (const col of tradeAuditCols) {
+      try {
+        this.db.exec(`ALTER TABLE backtest_trades ADD COLUMN ${col}`);
+      } catch {}
+    }
   }
 
   private prepareStatements(): void {
@@ -2286,13 +2300,14 @@ export class DatabaseService {
   public saveBacktestTrades(trades: any[]): number {
     if (this.isClosed || trades.length === 0) return 0;
     const stmt = this.db.prepare(`
-      INSERT INTO backtest_trades (
+      INSERT OR REPLACE INTO backtest_trades (
         id, run_id, symbol, strategy, direction, ratio_target, timeframe,
         entry_timestamp, exit_timestamp, entry_price, stop_loss_price, take_profit_price,
         exit_price, outcome, realized_net_pnl_usdt, realized_net_r,
         mfe_price, mfe_r, mae_price, mae_r, duration_ms, is_in_sample,
-        fees_usdt, spread_cost_usdt, slippage_cost_usdt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        fees_usdt, spread_cost_usdt, slippage_cost_usdt,
+        initial_risk_usdt, position_size_btc, gross_pnl_usdt, capital_before_usdt, capital_after_usdt, is_executed_in_portfolio
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let count = 0;
@@ -2324,7 +2339,13 @@ export class DatabaseService {
           t.isInSample ? 1 : 0,
           t.feesUsdt || 0,
           t.spreadCostUsdt || 0,
-          t.slippageCostUsdt || 0
+          t.slippageCostUsdt || 0,
+          t.initialRiskUsdt || 0,
+          t.positionSizeBtc || 0,
+          t.grossPnlUsdt || 0,
+          t.capitalBeforeUsdt || 0,
+          t.capitalAfterUsdt || 0,
+          t.isExecutedInPortfolio ? 1 : 0
         );
         count++;
       }
@@ -2367,6 +2388,12 @@ export class DatabaseService {
         feesUsdt: Number(r.fees_usdt),
         spreadCostUsdt: Number(r.spread_cost_usdt),
         slippageCostUsdt: Number(r.slippage_cost_usdt),
+        initialRiskUsdt: Number(r.initial_risk_usdt || 0),
+        positionSizeBtc: Number(r.position_size_btc || 0),
+        grossPnlUsdt: Number(r.gross_pnl_usdt || 0),
+        capitalBeforeUsdt: Number(r.capital_before_usdt || 0),
+        capitalAfterUsdt: Number(r.capital_after_usdt || 0),
+        isExecutedInPortfolio: Boolean(r.is_executed_in_portfolio),
       }));
     } catch {
       return [];

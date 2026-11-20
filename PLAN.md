@@ -352,3 +352,32 @@
 
 - [x] **Cobertura de Pruebas Automatizadas**:
   - **113 pruebas unitarias aprobadas al 100%** (incluye `fase5a-lifecycle-replay.test.ts` y `fase5b-backtest-engine.test.ts`).
+
+---
+
+## FASE 5B (AUDITORÍA FINANCIERA & CONCILIACIÓN CANÓNICA) + FASE 5C (INICIO)
+
+- [x] **Auditoría Financiera Obligatoria Trade-a-Trade**:
+  - **Causa Raíz de PnL negativo con R positivo**: Descubierta asimetría en la definición de 1R. En pérdidas por Stop Loss se debitaban -$175 USDT en caja por comisiones taker de apertura y cierre + slippage, pero se contabilizaba -1.0R nominal ($100), mientras que las ganancias dividían por $100 bruto.
+  - **Causa de Caso A LONG 1:4 (+36.2R con 6-7 wins)**: 6 operaciones ganadoras se abrieron en velas sucesivas durante el mismo rally apuntando al mismo swing high mayor ($81,954.6), rindiendo entre +6.35R y +12.86R cada una en lugar de un ratio fijo sintético.
+  - **Causa de Drawdown Inflado (142.4%)**: Suma cruzada de 4 variantes concurrentes simulando sobre la misma cuenta sin control de margen ni detención de equity.
+- [x] **Motor Contable Canónico Unificado**:
+  - $1R \equiv \text{netLossUSDT}$ real (pérdida neta estimada al Stop Loss incluyendo comisiones taker de entrada y salida, spread y slippage).
+  - Al tocar SL: resultado exacto **-1.00R**.
+  - Al tocar TP: $R = \text{netRewardUSDT} / \text{netLossUSDT}$.
+  - Invariante estricto verificado: PnL en USDT negativo $\iff$ $R < 0$. PnL positivo $\iff$ $R > 0$.
+  - Cero inconsistencias en los 172 trades históricos auditados.
+- [x] **Objetivos 100% Estructurales**:
+  - Eliminación de la generación de targets sintéticos en el vacío (`solveTargetPriceForNetRR`).
+  - Take Profits anclados exclusivamente a niveles técnicos verificados de SMC (swings 1H/4H, FVGs y Order Blocks). Si el objetivo no alcanza el R:R neto requerido, el setup se descarta.
+- [x] **Cartera Simulada Real**:
+  - Restricción estricta de **máximo 1 posición abierta simultánea** en `BTCUSDT`.
+  - Simulación de capital dinámico (inicio $10,000 USDT) con detención por margen o límite de drawdown (30%).
+  - Cartera ejecutada resultante: 10 trades, Max Drawdown 43.0%, 0 equity negativa.
+- [x] **Banner de Advertencia en Frontend (`TradingLaboratory.tsx`)**:
+  - Desplegado banner oficial: *"Resultados históricos pendientes de conciliación contable"*, preservando el histórico anterior como evidencia y contrastando la corrida canónica.
+- [x] **Inicio de Fase 5C: Registro Prospectivo de IA**:
+  - Soporte de decisión formal `NEUTRAL` ("No operar es una decisión válida").
+  - Registro estructurado de hipótesis de OpenAI y Gemini con snapshot, zonas de interés y justificaciones.
+  - Monitoreo algorítmico continuo con 0 costo de IA en reposo, reservando reevaluación para el ingreso a la zona.
+  - Badge formal en UI para escenarios neutrales y en monitoreo.

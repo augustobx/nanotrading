@@ -48,6 +48,12 @@ export interface BacktestTradeResult {
   feesUsdt: number;
   spreadCostUsdt: number;
   slippageCostUsdt: number;
+  initialRiskUsdt: number;
+  positionSizeBtc: number;
+  grossPnlUsdt: number;
+  capitalBeforeUsdt?: number;
+  capitalAfterUsdt?: number;
+  isExecutedInPortfolio?: boolean;
 }
 
 export interface MetricGroup {
@@ -237,17 +243,12 @@ export class BacktestEngine {
 
     if (onProgress) onProgress('Calculando métricas estadísticas y desgloses...', 90);
 
-    // Deduplicate any concurrent trades for the combined portfolio
-    const combinedTrades = this.filterCombinedPortfolioTrades(simulatedTrades);
+    // Realistic Portfolio Simulation: Max 1 concurrent trade in BTCUSDT, dynamic capital, margin halt protection
+    const portfolioSim = this.simulateCombinedPortfolio(simulatedTrades, accountBalance, 30);
+    const combinedTrades = portfolioSim.executedTrades;
+    const combinedMetrics = portfolioSim.metrics;
 
-    // Compute metrics
-    const inSampleTrades = simulatedTrades.filter((t) => t.isInSample);
-    const outSampleTrades = simulatedTrades.filter((t) => !t.isInSample);
-
-    const overallMetrics = this.calculateMetrics(simulatedTrades);
-    const inSampleMetrics = this.calculateMetrics(inSampleTrades);
-    const outSampleMetrics = this.calculateMetrics(outSampleTrades);
-
+    // Breakdown for each standalone virtual variant (without cross-polluting the portfolio)
     const breakdown = {
       strategyA_Long_12: this.calculateMetrics(simulatedTrades.filter((t) => t.strategy === 'STRATEGY_A_TREND_CONTINUATION' && t.direction === 'LONG' && t.ratioTarget === 'RR_1_2')),
       strategyA_Long_14: this.calculateMetrics(simulatedTrades.filter((t) => t.strategy === 'STRATEGY_A_TREND_CONTINUATION' && t.direction === 'LONG' && t.ratioTarget === 'RR_1_4')),
@@ -257,8 +258,14 @@ export class BacktestEngine {
       strategyB_Long_14: this.calculateMetrics(simulatedTrades.filter((t) => t.strategy === 'STRATEGY_B_LIQUIDITY_SWEEP_REVERSAL' && t.direction === 'LONG' && t.ratioTarget === 'RR_1_4')),
       strategyB_Short_12: this.calculateMetrics(simulatedTrades.filter((t) => t.strategy === 'STRATEGY_B_LIQUIDITY_SWEEP_REVERSAL' && t.direction === 'SHORT' && t.ratioTarget === 'RR_1_2')),
       strategyB_Short_14: this.calculateMetrics(simulatedTrades.filter((t) => t.strategy === 'STRATEGY_B_LIQUIDITY_SWEEP_REVERSAL' && t.direction === 'SHORT' && t.ratioTarget === 'RR_1_4')),
-      combinedPortfolio: this.calculateMetrics(combinedTrades),
+      combinedPortfolio: combinedMetrics,
     };
+
+    // Metrics for in-sample / out-sample based on executed portfolio
+    const inSampleTrades = combinedTrades.filter((t) => t.isInSample);
+    const outSampleTrades = combinedTrades.filter((t) => !t.isInSample);
+    const inSampleMetrics = this.calculateMetrics(inSampleTrades);
+    const outSampleMetrics = this.calculateMetrics(outSampleTrades);
 
     const report: BacktestReport = {
       id: runId,
@@ -267,13 +274,13 @@ export class BacktestEngine {
       endTimestamp,
       inSampleEndTimestamp,
       status: 'COMPLETED',
-      totalTrades: overallMetrics.totalTrades,
-      winRate: overallMetrics.winRate,
-      profitFactor: overallMetrics.profitFactor,
-      expectancyR: overallMetrics.expectancyR,
-      maxDrawdownPct: overallMetrics.maxDrawdownPct,
-      netPnlUsdt: overallMetrics.netPnlUsdt,
-      netPnlR: overallMetrics.netPnlR,
+      totalTrades: combinedMetrics.totalTrades,
+      winRate: combinedMetrics.winRate,
+      profitFactor: combinedMetrics.profitFactor,
+      expectancyR: combinedMetrics.expectancyR,
+      maxDrawdownPct: combinedMetrics.maxDrawdownPct,
+      netPnlUsdt: combinedMetrics.netPnlUsdt,
+      netPnlR: combinedMetrics.netPnlR,
       inSampleMetrics,
       outSampleMetrics,
       breakdown,
@@ -334,48 +341,25 @@ export class BacktestEngine {
     const riskDistance = Math.abs(entryPrice - stopLoss);
     if (riskDistance <= 0) return;
 
-    // Dual targets: analytically solved to guarantee net R:R >= 2.0 and net R:R >= 4.0 after all fees
-    const target12 = RiskCalculator.solveTargetPriceForNetRR({
-      direction: setup.direction,
-      entryPrice,
-      stopLossPrice: stopLoss,
-      targetNetRR: 2.05,
-      accountBalance,
-      riskPercent,
-      spread,
-      slippageRate,
-      makerFeeRate: makerFee,
-      takerFeeRate: takerFee,
-    });
-
-    const target14 = setup.takeProfitPrice && setup.riskReward?.isValid && (setup.riskReward?.netRR || 0) >= 4.0
-      ? setup.takeProfitPrice
-      : RiskCalculator.solveTargetPriceForNetRR({
-          direction: setup.direction,
-          entryPrice,
-          stopLossPrice: stopLoss,
-          targetNetRR: 4.10,
-          accountBalance,
-          riskPercent,
-          spread,
-          slippageRate,
-          makerFeeRate: makerFee,
-          takerFeeRate: takerFee,
-        });
+    // Real structural candidate targets only — NEVER invent prices in the air with synthetic solvers
+    const candidateTargets: number[] = [];
+    if (setup.takeProfitPrice && setup.takeProfitPrice > 0) {
+      candidateTargets.push(setup.takeProfitPrice);
+    }
 
     const dualCalc = RiskCalculator.calculateDualTargets({
       direction: setup.direction,
       entryPrice,
       stopLossPrice: stopLoss,
-      candidateTargets: [target12, target14],
-      explicit12Price: target12,
-      explicit14Price: target14,
+      candidateTargets,
       accountBalance,
       riskPercent,
       feeStructure: {
         makerFeeRate: makerFee,
         takerFeeRate: takerFee,
       },
+      minRRShort: 2.0,
+      minRRExtended: 4.0,
     });
 
     const ratiosToTest: Array<'RR_1_2' | 'RR_1_4'> = [];
@@ -487,6 +471,7 @@ export class BacktestEngine {
     const durationMs = Math.max(300000, exitTimestamp - entryTimestamp);
     let realizedNetPnlUsdt = 0;
     let realizedNetR = 0;
+    let grossPnlUsdt = 0;
 
     const positionSize = calc.positionSizeBTC;
     const notional = positionSize * entryPrice;
@@ -494,19 +479,23 @@ export class BacktestEngine {
     const slippageCostUsdt = calc.slippageCostUSDT;
     const feesUsdt = calc.totalFeesUSDT;
 
-    const unitRisk = calc.grossRiskUSDT; // 1R
+    // CANONICAL DEFINITION OF 1R:
+    // 1R is EXACTLY the net loss in USDT realized if Stop Loss is hit (gross risk + entry fees + exit fees + spread + slippage)
+    const unitRisk = calc.netLossUSDT; // 1R real
 
     if (outcome === 'TAKE_PROFIT') {
+      grossPnlUsdt = calc.grossRewardUSDT;
       realizedNetPnlUsdt = calc.netRewardUSDT;
       realizedNetR = unitRisk > 0 ? parseFloat((realizedNetPnlUsdt / unitRisk).toFixed(2)) : 0;
     } else if (outcome === 'STOP_LOSS') {
+      grossPnlUsdt = -calc.grossRiskUSDT;
       realizedNetPnlUsdt = -calc.netLossUSDT;
-      realizedNetR = -1.0;
+      realizedNetR = -1.0; // By definition, since realizedNetPnlUsdt === -unitRisk
     } else {
       // Expired: market exit at exitPrice
       const grossDiff = isLong ? exitPrice - entryPrice : entryPrice - exitPrice;
-      const grossPnl = grossDiff * positionSize;
-      realizedNetPnlUsdt = parseFloat((grossPnl - feesUsdt - spreadCostUsdt - slippageCostUsdt).toFixed(2));
+      grossPnlUsdt = parseFloat((grossDiff * positionSize).toFixed(2));
+      realizedNetPnlUsdt = parseFloat((grossPnlUsdt - feesUsdt - spreadCostUsdt - slippageCostUsdt).toFixed(2));
       realizedNetR = unitRisk > 0 ? parseFloat((realizedNetPnlUsdt / unitRisk).toFixed(2)) : 0;
     }
 
@@ -519,7 +508,7 @@ export class BacktestEngine {
       ? parseFloat(((entryPrice - maePrice) / riskDistance).toFixed(2))
       : parseFloat(((maePrice - entryPrice) / riskDistance).toFixed(2));
 
-    const tradeId = `bt_${setup.strategy.slice(9, 15)}_${ratioTarget}_${entryTimestamp}`;
+    const tradeId = `bt_${runId}_${setup.strategy.slice(9, 15)}_${ratioTarget}_${entryTimestamp}`;
 
     return {
       id: tradeId,
@@ -547,23 +536,77 @@ export class BacktestEngine {
       feesUsdt,
       spreadCostUsdt,
       slippageCostUsdt,
+      initialRiskUsdt: unitRisk,
+      positionSizeBtc: positionSize,
+      grossPnlUsdt,
     };
   }
 
-  private filterCombinedPortfolioTrades(trades: BacktestTradeResult[]): BacktestTradeResult[] {
-    // Sort trades chronologically by entryTimestamp
+  private simulateCombinedPortfolio(
+    trades: BacktestTradeResult[],
+    initialCapital: number = 10000,
+    maxAllowedDrawdownPct: number = 30
+  ): { executedTrades: BacktestTradeResult[]; metrics: MetricGroup } {
+    // Sort chronologically by entryTimestamp
     const sorted = [...trades].sort((a, b) => a.entryTimestamp - b.entryTimestamp);
-    const selected: BacktestTradeResult[] = [];
+    const executedTrades: BacktestTradeResult[] = [];
     let busyUntil = 0;
+    let currentCapital = initialCapital;
+    let peakCapital = initialCapital;
+    let isHalted = false;
 
+    // Group concurrent signals at the exact same timestamp (variants of the same signal)
+    const signalsByTimestamp = new Map<number, BacktestTradeResult[]>();
     for (const t of sorted) {
-      if (t.entryTimestamp >= busyUntil) {
-        selected.push(t);
-        busyUntil = t.exitTimestamp;
-      }
+      const list = signalsByTimestamp.get(t.entryTimestamp) || [];
+      list.push(t);
+      signalsByTimestamp.set(t.entryTimestamp, list);
     }
 
-    return selected;
+    for (const [timestamp, candidates] of signalsByTimestamp.entries()) {
+      if (timestamp < busyUntil) {
+        // Already in a trade: enforce strictly MAX 1 CONCURRENT POSITION IN BTCUSDT
+        continue;
+      }
+      if (isHalted) {
+        // Account halted by risk limits / margin protection
+        break;
+      }
+
+      // Select ONE representative variant for execution in the real portfolio
+      // Prioritize qualified 1:4 if valid, else 1:2
+      const chosen = candidates.find((c) => c.ratioTarget === 'RR_1_4') || candidates[0];
+
+      // Capital tracking before trade
+      const capitalBefore = Number(currentCapital.toFixed(2));
+
+      // Calculate realized outcome on this trade
+      const tradeNetPnl = chosen.realizedNetPnlUsdt;
+      const capitalAfter = Number((capitalBefore + tradeNetPnl).toFixed(2));
+
+      // Clone trade and assign portfolio execution fields
+      const executed: BacktestTradeResult = {
+        ...chosen,
+        capitalBeforeUsdt: capitalBefore,
+        capitalAfterUsdt: Math.max(0, capitalAfter),
+        isExecutedInPortfolio: true,
+      };
+
+      currentCapital = Math.max(0, capitalAfter);
+      if (currentCapital > peakCapital) peakCapital = currentCapital;
+
+      // Check drawdown halt condition
+      const currentDd = peakCapital > 0 ? ((peakCapital - currentCapital) / peakCapital) * 100 : 0;
+      if (currentDd >= maxAllowedDrawdownPct || currentCapital < 1000) {
+        isHalted = true;
+      }
+
+      executedTrades.push(executed);
+      busyUntil = chosen.exitTimestamp;
+    }
+
+    const metrics = this.calculateMetrics(executedTrades);
+    return { executedTrades, metrics };
   }
 
   public calculateMetrics(trades: BacktestTradeResult[]): MetricGroup {

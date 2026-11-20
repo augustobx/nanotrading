@@ -277,6 +277,11 @@ Responde estrictamente en JSON:
     record: ScenarioRevalidationRecord
   ): { scenario: Scenario; reason?: string } {
     if (consensus === 'AUTHORIZED') {
+      if (scenario.direction === 'NEUTRAL') {
+        const reason = 'Escenario en observación neutral sin dirección operativa ejecutable';
+        return { scenario, reason };
+      }
+
       // Deterministic Quant Risk verification: re-check net R:R at current price
       const riskCalc = RiskCalculator.calculateDualTargets({
         direction: scenario.direction,
