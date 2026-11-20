@@ -295,6 +295,26 @@ export class DatabaseService {
 
       CREATE INDEX IF NOT EXISTS idx_audit_time 
       ON config_audit_logs(timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS admin_credentials (
+        id TEXT PRIMARY KEY,
+        password_hash TEXT NOT NULL,
+        salt TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS admin_sessions (
+        token TEXT PRIMARY KEY,
+        csrf_token TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        ip_address TEXT,
+        user_agent TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_expires 
+      ON admin_sessions(expires_at);
     `);
 
     // Signal columns migration for tracking metrics
@@ -1334,6 +1354,97 @@ export class DatabaseService {
     } catch {
       return [];
     }
+  }
+
+  public getAdminCredentials(): { passwordHash: string; salt: string; createdAt: number; updatedAt: number } | null {
+    if (this.isClosed) return null;
+    try {
+      const row = this.db.prepare("SELECT * FROM admin_credentials WHERE id = 'primary_admin'").get() as any;
+      if (!row) return null;
+      return {
+        passwordHash: row.password_hash,
+        salt: row.salt,
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public setAdminCredentials(passwordHash: string, salt: string): void {
+    if (this.isClosed) return;
+    const now = Date.now();
+    this.db.prepare(`
+      INSERT INTO admin_credentials (id, password_hash, salt, created_at, updated_at)
+      VALUES ('primary_admin', ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        password_hash = excluded.password_hash,
+        salt = excluded.salt,
+        updated_at = excluded.updated_at
+    `).run(passwordHash, salt, now, now);
+  }
+
+  public hasAdminCredentials(): boolean {
+    return this.getAdminCredentials() !== null;
+  }
+
+  public saveAdminSession(session: {
+    token: string;
+    csrfToken: string;
+    createdAt: number;
+    expiresAt: number;
+    ipAddress?: string;
+    userAgent?: string;
+  }): void {
+    if (this.isClosed) return;
+    this.db.prepare(`
+      INSERT INTO admin_sessions (token, csrf_token, created_at, expires_at, ip_address, user_agent)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(token) DO UPDATE SET
+        expires_at = excluded.expires_at,
+        ip_address = excluded.ip_address,
+        user_agent = excluded.user_agent
+    `).run(session.token, session.csrfToken, session.createdAt, session.expiresAt, session.ipAddress || null, session.userAgent || null);
+  }
+
+  public getAdminSession(token: string): {
+    token: string;
+    csrfToken: string;
+    createdAt: number;
+    expiresAt: number;
+    ipAddress?: string;
+    userAgent?: string;
+  } | null {
+    if (this.isClosed) return null;
+    try {
+      const row = this.db.prepare('SELECT * FROM admin_sessions WHERE token = ?').get(token) as any;
+      if (!row) return null;
+      return {
+        token: row.token,
+        csrfToken: row.csrf_token,
+        createdAt: Number(row.created_at),
+        expiresAt: Number(row.expires_at),
+        ipAddress: row.ip_address,
+        userAgent: row.user_agent,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public deleteAdminSession(token: string): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare('DELETE FROM admin_sessions WHERE token = ?').run(token);
+    } catch {}
+  }
+
+  public deleteExpiredAdminSessions(): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare('DELETE FROM admin_sessions WHERE expires_at < ?').run(Date.now());
+    } catch {}
   }
 
   public close(): void {

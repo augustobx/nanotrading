@@ -131,8 +131,8 @@ export default function DashboardPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-key': 'nanolabs_admin_sec_2026',
         },
+        credentials: 'include',
       });
       setActiveSignals((prev) => prev.filter((s) => s.id !== signalId));
     } catch {}
@@ -151,8 +151,8 @@ export default function DashboardPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-key': 'nanolabs_admin_sec_2026',
         },
+        credentials: 'include',
         body: JSON.stringify({ active: nextState, reason: 'Acción manual panel usuario' }),
       });
       if (res.ok) {

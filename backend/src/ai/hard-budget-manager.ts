@@ -1,5 +1,6 @@
 import { AiProvider } from './types.js';
 import { getModelMetadata, calculateCallCost, DetailedTokenUsage } from './models-catalog.js';
+import { DatabaseService } from '../storage/database.js';
 
 export type BudgetStatus = 'OK' | 'WARNING_50' | 'WARNING_80' | 'CRITICAL_95' | 'AI_BUDGET_EXCEEDED';
 
@@ -58,6 +59,10 @@ export interface HardBudgetSummary {
   };
   activeReservationsCount: number;
   totalCallsCount: number;
+  nextDailyResetUtc: string;
+  nextDailyResetAr: string;
+  nextMonthlyResetUtc: string;
+  nextMonthlyResetAr: string;
 }
 
 export const DEFAULT_HARD_BUDGET_CONFIG: HardBudgetConfig = {
@@ -87,6 +92,7 @@ export class HardBudgetManager {
   private triggeredThresholds: Set<number> = new Set();
   private lastResetDay: number = new Date().getUTCDate();
   private notifiers: NotifierCallbacks = {};
+  private db?: DatabaseService;
 
   // In-memory usage records for fast aggregation & recovery
   private usageRecords: Array<{
@@ -102,11 +108,16 @@ export class HardBudgetManager {
     costUsd: number;
   }> = [];
 
-  constructor(initialConfig?: Partial<HardBudgetConfig>, notifiers?: NotifierCallbacks) {
+  constructor(initialConfig?: Partial<HardBudgetConfig>, notifiers?: NotifierCallbacks, db?: DatabaseService) {
     this.config = { ...DEFAULT_HARD_BUDGET_CONFIG, ...(initialConfig || {}) };
     if (notifiers) {
       this.notifiers = notifiers;
     }
+    this.db = db;
+  }
+
+  public setDatabase(db: DatabaseService): void {
+    this.db = db;
   }
 
   public setNotifiers(notifiers: NotifierCallbacks): void {
@@ -141,13 +152,16 @@ export class HardBudgetManager {
   }
 
   /**
-   * Calculates worst-case estimated cost for atomic reservation.
+   * Calculates worst-case estimated cost for atomic reservation with a 10% safety margin.
    */
   public estimateWorstCaseCost(model: string, maxInputTokens: number = 3000, maxOutputTokens: number = 1000): number {
     const meta = getModelMetadata(model);
     const inputCost = (maxInputTokens / 1_000_000) * meta.estimatedInputCostPerMillion;
     const outputCost = (maxOutputTokens / 1_000_000) * meta.estimatedOutputCostPerMillion;
-    return parseFloat((inputCost + outputCost).toFixed(6));
+    const baseCost = inputCost + outputCost;
+    // Apply 10% safety margin to absorb output token and formatting variance
+    const withSafetyMargin = baseCost * 1.10;
+    return parseFloat(withSafetyMargin.toFixed(6));
   }
 
   public getReservedPendingUsd(): number {
@@ -167,6 +181,14 @@ export class HardBudgetManager {
 
   public getTodaySpendUsd(): number {
     this.checkPeriodReset();
+    if (this.db) {
+      try {
+        const stats = this.db.getAiConsumptionStats();
+        if (stats && typeof stats.todaySpendUsd === 'number') {
+          return parseFloat(Number(stats.todaySpendUsd).toFixed(6));
+        }
+      } catch {}
+    }
     const startOfDay = new Date();
     startOfDay.setUTCHours(0, 0, 0, 0);
     const cutoff = startOfDay.getTime();
@@ -177,6 +199,14 @@ export class HardBudgetManager {
   }
 
   public getMonthSpendUsd(): number {
+    if (this.db) {
+      try {
+        const stats = this.db.getAiConsumptionStats();
+        if (stats && typeof stats.monthSpendUsd === 'number') {
+          return parseFloat(Number(stats.monthSpendUsd).toFixed(6));
+        }
+      } catch {}
+    }
     const startOfMonth = new Date();
     startOfMonth.setUTCDate(1);
     startOfMonth.setUTCHours(0, 0, 0, 0);
@@ -333,6 +363,7 @@ export class HardBudgetManager {
 
   /**
    * Reconciles a completed call: releases reservation and logs actual usage.
+   * If status is UNCERTAIN_TIMEOUT, holds estimated cost conservatively to protect the budget.
    */
   public reconcileReservation(
     reservationId: string,
@@ -345,26 +376,44 @@ export class HardBudgetManager {
       cachedTokens?: number;
       reasoningTokens?: number;
       costUsd?: number;
+      status?: 'SUCCESS' | 'UNCERTAIN_TIMEOUT' | 'ERROR';
+      latencyMs?: number;
     }
   ): void {
+    const reservation = this.reservations.get(reservationId);
     this.reservations.delete(reservationId);
 
-    const actualCost =
-      usage.costUsd !== undefined
-        ? usage.costUsd
-        : calculateCallCost(usage.model, {
-            promptTokens: usage.promptTokens,
-            completionTokens: usage.completionTokens,
-            cachedTokens: usage.cachedTokens || 0,
-            reasoningTokens: usage.reasoningTokens || 0,
-          });
+    let actualCost: number;
+    if (usage.status === 'UNCERTAIN_TIMEOUT') {
+      actualCost = usage.costUsd !== undefined ? usage.costUsd : (reservation?.amountUsd || 0);
+    } else if (usage.status === 'ERROR' && (usage.promptTokens || 0) === 0 && (usage.completionTokens || 0) === 0) {
+      actualCost = 0;
+    } else {
+      actualCost =
+        usage.costUsd !== undefined
+          ? usage.costUsd
+          : calculateCallCost(usage.model, {
+              promptTokens: usage.promptTokens,
+              completionTokens: usage.completionTokens,
+              cachedTokens: usage.cachedTokens || 0,
+              reasoningTokens: usage.reasoningTokens || 0,
+            });
+    }
 
-    this.recordDirectUsage(usage.provider, usage.model, usage.task, actualCost, {
-      prompt: usage.promptTokens,
-      completion: usage.completionTokens,
-      cached: usage.cachedTokens,
-      reasoning: usage.reasoningTokens,
-    });
+    this.recordDirectUsage(
+      usage.provider,
+      usage.model,
+      usage.task,
+      actualCost,
+      {
+        prompt: usage.promptTokens,
+        completion: usage.completionTokens,
+        cached: usage.cachedTokens,
+        reasoning: usage.reasoningTokens,
+      },
+      usage.status || 'SUCCESS',
+      usage.latencyMs || 0
+    );
   }
 
   public releaseReservation(reservationId: string): void {
@@ -379,9 +428,12 @@ export class HardBudgetManager {
     model: string,
     task: string,
     costUsd: number,
-    tokens?: { prompt: number; completion: number; cached?: number; reasoning?: number }
+    tokens?: { prompt: number; completion: number; cached?: number; reasoning?: number },
+    status: string = 'SUCCESS',
+    latencyMs: number = 0
   ): void {
-    this.usageRecords.push({
+    const roundedCost = parseFloat(costUsd.toFixed(6));
+    const record = {
       id: `usg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
       timestamp: Date.now(),
       provider,
@@ -391,8 +443,27 @@ export class HardBudgetManager {
       completionTokens: tokens?.completion || 0,
       cachedTokens: tokens?.cached || 0,
       reasoningTokens: tokens?.reasoning || 0,
-      costUsd: parseFloat(costUsd.toFixed(6)),
-    });
+      costUsd: roundedCost,
+    };
+    this.usageRecords.push(record);
+
+    if (this.db) {
+      try {
+        this.db.logAiConsumption({
+          id: record.id,
+          timestamp: record.timestamp,
+          provider,
+          model,
+          task,
+          tokensPrompt: record.promptTokens,
+          tokensCompletion: record.completionTokens,
+          tokensCached: record.cachedTokens,
+          costUsd: record.costUsd,
+          latencyMs,
+          status,
+        });
+      } catch {}
+    }
 
     this.evaluateAlerts();
   }
@@ -461,17 +532,27 @@ export class HardBudgetManager {
   }
 
   public reactivateBudget(updatedBy: string = 'admin', newDailyLimit?: number): void {
-    this.config.isBlocked = false;
-    this.config.blockedReason = null;
-    if (newDailyLimit !== undefined && newDailyLimit > 0) {
+    const currentToday = this.getTodaySpendUsd() + this.getReservedPendingUsd();
+    if (currentToday >= this.config.dailyBudgetLimitUsd) {
+      if (newDailyLimit === undefined || newDailyLimit <= currentToday) {
+        throw new Error(
+          `No es posible reactivar el presupuesto: el gasto acumulado actual ($${currentToday.toFixed(4)} USD) alcanza o supera el límite diario configurado ($${this.config.dailyBudgetLimitUsd.toFixed(2)} USD). Para reactivar las evaluaciones, debe especificar un nuevo límite diario superior al gasto acumulado.`
+        );
+      }
+      this.config.dailyBudgetLimitUsd = newDailyLimit;
+    } else if (newDailyLimit !== undefined && newDailyLimit > 0) {
       this.config.dailyBudgetLimitUsd = newDailyLimit;
     }
+
+    this.config.isBlocked = false;
+    this.config.blockedReason = null;
     this.config.updatedAt = Date.now();
     this.triggeredThresholds.clear();
 
     this.notifiers.logAudit?.('AI_BUDGET', 'REACTIVATE', {
       updatedBy,
       newDailyLimitUsd: this.config.dailyBudgetLimitUsd,
+      currentTodaySpendUsd: currentToday,
     });
   }
 
@@ -549,6 +630,10 @@ export class HardBudgetManager {
       reasoningTokens += r.reasoningTokens;
     }
 
+    const now = new Date();
+    const nextDailyResetUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1, 0, 0, 0, 0));
+    const nextMonthlyResetUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
+
     return {
       dailyBudgetLimitUsd: this.config.dailyBudgetLimitUsd,
       monthlyBudgetLimitUsd: this.config.monthlyBudgetLimitUsd,
@@ -577,6 +662,10 @@ export class HardBudgetManager {
       },
       activeReservationsCount: this.reservations.size,
       totalCallsCount: this.usageRecords.length,
+      nextDailyResetUtc: nextDailyResetUtc.toISOString(),
+      nextDailyResetAr: nextDailyResetUtc.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' }),
+      nextMonthlyResetUtc: nextMonthlyResetUtc.toISOString(),
+      nextMonthlyResetAr: nextMonthlyResetUtc.toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' }),
     };
   }
 }

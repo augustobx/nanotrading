@@ -77,7 +77,7 @@ export class MarketCoordinator extends EventEmitter {
         await this.webPushNotifier.broadcast({ title, body: msg });
       },
       logAudit: (cat, act, det) => this.db.logConfigAudit({ category: cat, action: act, details: det }),
-    });
+    }, this.db);
 
     this.consensusEngine = new ConsensusEngine({
       coordinator: this,

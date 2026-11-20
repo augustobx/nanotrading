@@ -48,9 +48,23 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
   const [activeTab, setActiveTab] = useState<TabType>('general');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(false);
   const [adminKeyInput, setAdminKeyInput] = useState<string>('');
-  const [adminToken, setAdminToken] = useState<string>('');
+  const [csrfToken, setCsrfToken] = useState<string>('');
   const [authError, setAuthError] = useState<string>('');
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
+
+  // Setup Wizard State (when backend is uninitialized)
+  const [isInitialized, setIsInitialized] = useState<boolean>(true);
+  const [setupPassword, setSetupPassword] = useState<string>('');
+  const [setupConfirm, setSetupConfirm] = useState<string>('');
+  const [setupError, setSetupError] = useState<string>('');
+  const [isSettingUp, setIsSettingUp] = useState<boolean>(false);
+
+  // AI Connection Test (Phase 4.6.1)
+  const [testingAi, setTestingAi] = useState<'openai' | 'gemini' | null>(null);
+  const [aiTestResults, setAiTestResults] = useState<{ openai?: any; gemini?: any }>({});
+
+  // Safe Budget Reactivation (Phase 4.6.1)
+  const [reactivateDailyLimit, setReactivateDailyLimit] = useState<number>(1.00);
 
   const [showUnlockModal, setShowUnlockModal] = useState<boolean>(false);
 
@@ -190,29 +204,21 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
   const [loadingAudit, setLoadingAudit] = useState<boolean>(false);
   const [confirmKillSwitch, setConfirmKillSwitch] = useState<boolean>(false);
 
-  // Check saved session on mount or auto-unlock local session
+  // Check authentication status on mount (HttpOnly session cookie + CSRF)
   useEffect(() => {
-    const savedToken = localStorage.getItem('nanolabs_admin_token');
-    if (savedToken) {
-      setAdminToken(savedToken);
-      verifySavedToken(savedToken);
-    } else {
-      autoUnlockLocal();
-    }
+    checkAuthStatus();
   }, []);
 
-  const autoUnlockLocal = async () => {
+  const checkAuthStatus = async () => {
     try {
-      const res = await fetch(`${getApiBaseUrl()}/api/v1/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'nanolabs_admin_sec_2026' }),
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/auth/status`, {
+        credentials: 'include',
       });
-      const json = await res.json();
-      if (json.success && json.token) {
-        setAdminToken(json.token);
-        localStorage.setItem('nanolabs_admin_token', json.token);
-        setIsAdminAuthenticated(true);
+      if (res.ok) {
+        const json = await res.json();
+        setIsInitialized(json.initialized !== false);
+        setIsAdminAuthenticated(!!json.authenticated);
+        if (json.csrfToken) setCsrfToken(json.csrfToken);
       }
     } catch {}
   };
@@ -239,25 +245,10 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
 
   const getHeaders = (withAuth = false) => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (withAuth && adminToken) {
-      headers['Authorization'] = `Bearer ${adminToken}`;
+    if (csrfToken) {
+      headers['x-csrf-token'] = csrfToken;
     }
     return headers;
-  };
-
-  const verifySavedToken = async (token: string) => {
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/api/v1/auth/verify`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const json = await res.json();
-        setIsAdminAuthenticated(json.authenticated);
-        if (!json.authenticated) localStorage.removeItem('nanolabs_admin_token');
-      }
-    } catch {
-      setIsAdminAuthenticated(false);
-    }
   };
 
   const handleAdminLogin = async (e?: React.FormEvent) => {
@@ -269,12 +260,12 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
       const res = await fetch(`${getApiBaseUrl()}/api/v1/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify({ key: adminKeyInput.trim() }),
       });
       const json = await res.json();
-      if (json.success && json.token) {
-        setAdminToken(json.token);
-        localStorage.setItem('nanolabs_admin_token', json.token);
+      if (json.success) {
+        if (json.csrfToken) setCsrfToken(json.csrfToken);
         setIsAdminAuthenticated(true);
         setAdminKeyInput('');
         setShowUnlockModal(false);
@@ -284,6 +275,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
         fetchBybitConfig();
         fetchAiCredentials();
         fetchRouterConfig();
+        fetchHardBudget();
       } else {
         setAuthError(json.error || 'Credenciales incorrectas');
       }
@@ -294,22 +286,70 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
     }
   };
 
+  const handleInitialSetup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!setupPassword) {
+      setSetupError('Ingrese una contraseña administrativa');
+      return;
+    }
+    if (setupPassword.length < 10) {
+      setSetupError('La contraseña debe tener al menos 10 caracteres');
+      return;
+    }
+    if (setupPassword !== setupConfirm) {
+      setSetupError('Las contraseñas no coinciden');
+      return;
+    }
+    setIsSettingUp(true);
+    setSetupError('');
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/auth/setup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ password: setupPassword }),
+      });
+      const json = await res.json();
+      if (json.success) {
+        if (json.csrfToken) setCsrfToken(json.csrfToken);
+        setIsInitialized(true);
+        setIsAdminAuthenticated(true);
+        setShowUnlockModal(false);
+        setSetupPassword('');
+        setSetupConfirm('');
+        fetchAuditLogs();
+        fetchSummary();
+        fetchRiskPolicy();
+        fetchBybitConfig();
+        fetchAiCredentials();
+        fetchRouterConfig();
+        fetchHardBudget();
+      } else {
+        setSetupError(json.error || 'Error al configurar administrador');
+      }
+    } catch (err: any) {
+      setSetupError(err.message || 'Error de conexión');
+    } finally {
+      setIsSettingUp(false);
+    }
+  };
+
   const handleAdminLogout = async () => {
     try {
       await fetch(`${getApiBaseUrl()}/api/v1/auth/logout`, {
         method: 'POST',
         headers: getHeaders(true),
+        credentials: 'include',
       });
     } catch {}
-    setAdminToken('');
-    localStorage.removeItem('nanolabs_admin_token');
+    setCsrfToken('');
     setIsAdminAuthenticated(false);
   };
 
   const fetchSummary = async () => {
     setLoadingSummary(true);
     try {
-      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/summary`);
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/summary`, { credentials: 'include' });
       if (res.ok) {
         const json = await res.json();
         if (json.success) setConfigSummary(json.data);
@@ -320,17 +360,30 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
 
   const fetchRiskPolicy = async () => {
     try {
-      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/risk`);
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/risk`, { credentials: 'include' });
       if (res.ok) {
         const json = await res.json();
-        if (json.success) setRiskPolicy(json.data);
+        if (json.success && json.data) {
+          setRiskPolicy((prev: any) => ({
+            ...DEFAULT_RISK_POLICY,
+            ...json.data,
+            stopLossCeilings: {
+              ...DEFAULT_RISK_POLICY.stopLossCeilings,
+              ...(json.data.stopLossCeilings || {}),
+            },
+            marketRestrictions: {
+              ...DEFAULT_RISK_POLICY.marketRestrictions,
+              ...(json.data.marketRestrictions || {}),
+            },
+          }));
+        }
       }
     } catch {}
   };
 
   const fetchBybitConfig = async () => {
     try {
-      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/bybit`);
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/bybit`, { credentials: 'include' });
       if (res.ok) {
         const json = await res.json();
         if (json.success) setBybitConfig(json.data);
@@ -340,7 +393,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
 
   const fetchAiCredentials = async () => {
     try {
-      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/ai/credentials`);
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/ai/credentials`, { credentials: 'include' });
       if (res.ok) {
         const json = await res.json();
         if (json.success) setAiCreds(json.data);
@@ -570,20 +623,83 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
       const res = await fetch(`${getApiBaseUrl()}/api/v1/config/budget/reactivate`, {
         method: 'POST',
         headers: getHeaders(true),
+        credentials: 'include',
+        body: JSON.stringify({
+          newDailyLimitUsd: reactivateDailyLimit,
+        }),
       });
       const json = await res.json();
       if (json.success) {
         setHardBudgetSummary(json.data);
-        setBudgetMsg({ type: 'success', text: 'Presupuesto reactivado exitosamente. Evaluaciones de IA reanudadas.' });
+        setBudgetMsg({
+          type: 'success',
+          text: `Presupuesto reactivado exitosamente. Nuevo límite diario: $${(json.data?.dailyBudgetLimitUsd || reactivateDailyLimit).toFixed(2)} USD. Evaluaciones de IA reanudadas.`,
+        });
         fetchSummary();
+        fetchHardBudget();
         onConfigChanged?.();
       } else {
         setBudgetMsg({ type: 'error', text: json.error || 'Error al reactivar presupuesto' });
       }
     } catch (err: any) {
       setBudgetMsg({ type: 'error', text: err.message || 'Error de conexión' });
+    } finally {
+      setReactivatingBudget(false);
     }
-    setReactivatingBudget(false);
+  };
+
+  const handleTestAiConnection = async (provider: 'openai' | 'gemini') => {
+    if (!isAdminAuthenticated) {
+      setShowUnlockModal(true);
+      return;
+    }
+    setTestingAi(provider);
+    setAiCredsMsg(null);
+    try {
+      const model = provider === 'openai' ? openaiModel : geminiModel;
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/ai/test`, {
+        method: 'POST',
+        headers: getHeaders(true),
+        credentials: 'include',
+        body: JSON.stringify({
+          provider,
+          model,
+          reasoningEffort: provider === 'openai' ? openaiReasoningEffort : undefined,
+        }),
+      });
+      const json = await res.json();
+      const testData = json.data || json;
+      setAiTestResults((prev) => ({
+        ...prev,
+        [provider]: testData,
+      }));
+      if (json.success && (testData.valid || testData.success)) {
+        setAiCredsMsg({
+          type: 'success',
+          text: `Prueba en vivo exitosa con ${provider.toUpperCase()} (${testData.model || model}): Latencia ${testData.latencyMs}ms, Costo real $${(testData.costUsd || 0).toFixed(5)} USD.`,
+        });
+      } else {
+        setAiCredsMsg({
+          type: 'error',
+          text: `Fallo en prueba ${provider.toUpperCase()}: ${testData.error || json.error || 'Error al conectar con la API'}`,
+        });
+      }
+      fetchAiCredentials();
+      fetchHardBudget();
+      fetchSummary();
+      onConfigChanged?.();
+    } catch (err: any) {
+      setAiTestResults((prev) => ({
+        ...prev,
+        [provider]: { success: false, valid: false, error: err.message || 'Error de red' },
+      }));
+      setAiCredsMsg({
+        type: 'error',
+        text: `Error de red al conectar con ${provider.toUpperCase()}: ${err.message}`,
+      });
+    } finally {
+      setTestingAi(null);
+    }
   };
 
   const handleSaveAiKey = async (provider: 'openai' | 'gemini') => {
@@ -1572,16 +1688,57 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                 <div className="p-4 rounded-lg bg-[#111624] border border-[#21283b] space-y-4">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase text-orange-400">Estado de Credenciales OpenAI</span>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[11px] font-mono ${
-                        aiCreds?.openai?.configured
-                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                          : 'bg-slate-800 text-slate-400'
-                      }`}
-                    >
-                      {aiCreds?.openai?.configured ? `Activo (${aiCreds.openai.apiKeyMasked})` : 'No configurado'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {(() => {
+                        const status = aiCreds?.openai?.status || (aiCreds?.openai?.configured ? 'CONFIGURED' : 'UNCONFIGURED');
+                        switch (status) {
+                          case 'VERIFIED':
+                            return (
+                              <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-600 flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400" /> VERIFIED (Conexión Real Verificada)
+                              </span>
+                            );
+                          case 'AVAILABLE':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-emerald-950/80 text-emerald-300 border border-emerald-700">AVAILABLE</span>;
+                          case 'DEGRADED':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-amber-950 text-amber-300 border border-amber-800">DEGRADED</span>;
+                          case 'RATE_LIMITED':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-purple-950 text-purple-300 border border-purple-800">RATE_LIMITED</span>;
+                          case 'BUDGET_EXCEEDED':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-red-950 text-red-300 border border-red-800">BUDGET_EXCEEDED</span>;
+                          case 'AUTH_ERROR':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-red-950 text-red-300 border border-red-800">AUTH_ERROR (Clave Inválida)</span>;
+                          case 'CONFIGURED':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-blue-950 text-blue-300 border border-blue-800">CONFIGURED (Sin Verificar)</span>;
+                          default:
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 text-slate-400">NO CONFIGURADO</span>;
+                        }
+                      })()}
+                      {aiCreds?.openai?.apiKeyMasked && (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300">
+                          {aiCreds.openai.apiKeyMasked}
+                        </span>
+                      )}
+                    </div>
                   </div>
+
+                  {aiCreds?.openai?.lastVerifiedAt && (
+                    <div className="text-[11px] text-slate-400 font-mono flex items-center gap-2">
+                      <span>Última verificación exitosa:</span>
+                      <strong className="text-slate-200">
+                        {new Date(aiCreds.openai.lastVerifiedAt).toLocaleString('es-AR')}
+                      </strong>
+                    </div>
+                  )}
+
+                  {aiCreds?.openai?.lastError && (
+                    <div className="p-2.5 rounded bg-red-950/40 border border-red-800/60 text-xs text-red-200 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                      <div>
+                        <strong>Último error reportado:</strong> {aiCreds.openai.lastError}
+                      </div>
+                    </div>
+                  )}
 
                   <div className="space-y-3">
                     <div>
@@ -1656,15 +1813,68 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                         </div>
                       </div>
                     )}
+
+                    {/* Live Test Results Card */}
+                    {aiTestResults.openai && (
+                      <div
+                        className={`p-3.5 rounded-lg border text-xs space-y-2 ${
+                          aiTestResults.openai.valid || aiTestResults.openai.success
+                            ? 'bg-emerald-950/30 border-emerald-700/60 text-emerald-200'
+                            : 'bg-red-950/40 border-red-700 text-red-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between font-bold">
+                          <span className="flex items-center gap-1.5">
+                            {aiTestResults.openai.valid || aiTestResults.openai.success ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            ) : (
+                              <AlertTriangle className="w-4 h-4 text-red-400" />
+                            )}
+                            {aiTestResults.openai.valid || aiTestResults.openai.success
+                              ? `Verificación Exitosa con OpenAI (${aiTestResults.openai.model})`
+                              : `Fallo en Verificación OpenAI (${aiTestResults.openai.model || openaiModel})`}
+                          </span>
+                          <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-black/40">
+                            {aiTestResults.openai.status}
+                          </span>
+                        </div>
+
+                        {aiTestResults.openai.valid || aiTestResults.openai.success ? (
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono pt-1 text-slate-300">
+                            <div>Latencia: <strong className="text-white">{aiTestResults.openai.latencyMs}ms</strong></div>
+                            <div>Tokens: <strong className="text-white">{aiTestResults.openai.tokensPrompt + aiTestResults.openai.tokensCompletion}</strong></div>
+                            <div>Costo Real: <strong className="text-emerald-400">${aiTestResults.openai.costUsd?.toFixed(6)}</strong></div>
+                            <div>Respuesta: <strong className="text-white">{aiTestResults.openai.parsedResponse?.status || 'OK'}</strong></div>
+                          </div>
+                        ) : (
+                          <div className="text-xs text-red-300 space-y-1 pt-1">
+                            <div><strong>Error de la API:</strong> {aiTestResults.openai.error}</div>
+                            {aiTestResults.openai.errorCode && (
+                              <div className="font-mono text-[10px] text-red-400">Código: {aiTestResults.openai.errorCode}</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {isAdminAuthenticated && (
-                    <div className="flex justify-end pt-2">
+                    <div className="flex items-center justify-end gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => handleTestAiConnection('openai')}
+                        disabled={testingAi === 'openai'}
+                        className="px-4 py-1.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-medium border border-slate-700 flex items-center gap-2 cursor-pointer"
+                        title="Realiza una llamada mínima real validada por Hard Budget para comprobar conectividad y modelo"
+                      >
+                        {testingAi === 'openai' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Power className="w-3.5 h-3.5 text-orange-400" />}
+                        <span>Probar Conexión en Vivo</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => handleSaveAiKey('openai')}
                         disabled={savingAiCreds}
-                        className="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold shadow-md flex items-center gap-2"
+                        className="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-semibold shadow-md flex items-center gap-2 cursor-pointer"
                       >
                         {savingAiCreds && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
                         <span>Guardar Credenciales OpenAI</span>
@@ -1689,16 +1899,57 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                 <div className="p-4 rounded-lg bg-[#111624] border border-[#21283b] space-y-4">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold uppercase text-orange-400">Estado de Credenciales Gemini</span>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[11px] font-mono ${
-                        aiCreds?.gemini?.configured
-                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                          : 'bg-slate-800 text-slate-400'
-                      }`}
-                    >
-                      {aiCreds?.gemini?.configured ? `Activo (${aiCreds.gemini.apiKeyMasked})` : 'No configurado'}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {(() => {
+                        const status = aiCreds?.gemini?.status || (aiCreds?.gemini?.configured ? 'CONFIGURED' : 'UNCONFIGURED');
+                        switch (status) {
+                          case 'VERIFIED':
+                            return (
+                              <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-emerald-950 text-emerald-300 border border-emerald-600 flex items-center gap-1">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400" /> VERIFIED (Conexión Real Verificada)
+                              </span>
+                            );
+                          case 'AVAILABLE':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-emerald-950/80 text-emerald-300 border border-emerald-700">AVAILABLE</span>;
+                          case 'DEGRADED':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-amber-950 text-amber-300 border border-amber-800">DEGRADED</span>;
+                          case 'RATE_LIMITED':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-purple-950 text-purple-300 border border-purple-800">RATE_LIMITED</span>;
+                          case 'BUDGET_EXCEEDED':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-red-950 text-red-300 border border-red-800">BUDGET_EXCEEDED</span>;
+                          case 'AUTH_ERROR':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-red-950 text-red-300 border border-red-800">AUTH_ERROR (Clave Inválida)</span>;
+                          case 'CONFIGURED':
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-blue-950 text-blue-300 border border-blue-800">CONFIGURED (Sin Verificar)</span>;
+                          default:
+                            return <span className="px-2 py-0.5 rounded text-[11px] font-mono bg-slate-800 text-slate-400">NO CONFIGURADO</span>;
+                        }
+                      })()}
+                      {aiCreds?.gemini?.apiKeyMasked && (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300">
+                          {aiCreds.gemini.apiKeyMasked}
+                        </span>
+                      )}
+                    </div>
                   </div>
+
+                  {aiCreds?.gemini?.lastVerifiedAt && (
+                    <div className="text-[11px] text-slate-400 font-mono flex items-center gap-2">
+                      <span>Última verificación exitosa:</span>
+                      <strong className="text-slate-200">
+                        {new Date(aiCreds.gemini.lastVerifiedAt).toLocaleString('es-AR')}
+                      </strong>
+                    </div>
+                  )}
+
+                  {aiCreds?.gemini?.lastError && (
+                    <div className="p-2.5 rounded bg-red-950/40 border border-red-800/60 text-xs text-red-200 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                      <div>
+                        <strong>Último error reportado:</strong> {aiCreds.gemini.lastError}
+                      </div>
+                    </div>
+                  )}
 
                   <div className="space-y-3">
                     <div>
@@ -1735,15 +1986,68 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                         <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (Razonamiento profundo)</option>
                       </select>
                     </div>
+
+                    {/* Live Test Results Card */}
+                    {aiTestResults.gemini && (
+                      <div
+                        className={`p-3.5 rounded-lg border text-xs space-y-2 ${
+                          aiTestResults.gemini.valid || aiTestResults.gemini.success
+                            ? 'bg-emerald-950/30 border-emerald-700/60 text-emerald-200'
+                            : 'bg-red-950/40 border-red-700 text-red-200'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between font-bold">
+                          <span className="flex items-center gap-1.5">
+                            {aiTestResults.gemini.valid || aiTestResults.gemini.success ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            ) : (
+                              <AlertTriangle className="w-4 h-4 text-red-400" />
+                            )}
+                            {aiTestResults.gemini.valid || aiTestResults.gemini.success
+                              ? `Verificación Exitosa con Google Gemini (${aiTestResults.gemini.model})`
+                              : `Fallo en Verificación Gemini (${aiTestResults.gemini.model || geminiModel})`}
+                          </span>
+                          <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-black/40">
+                            {aiTestResults.gemini.status}
+                          </span>
+                        </div>
+
+                        {aiTestResults.gemini.valid || aiTestResults.gemini.success ? (
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono pt-1 text-slate-300">
+                            <div>Latencia: <strong className="text-white">{aiTestResults.gemini.latencyMs}ms</strong></div>
+                            <div>Tokens: <strong className="text-white">{aiTestResults.gemini.tokensPrompt + aiTestResults.gemini.tokensCompletion}</strong></div>
+                            <div>Costo Real: <strong className="text-emerald-400">${aiTestResults.gemini.costUsd?.toFixed(6)}</strong></div>
+                            <div>Respuesta: <strong className="text-white">{aiTestResults.gemini.parsedResponse?.status || 'OK'}</strong></div>
+                          </div>
+                        ) : (
+                          <div className="text-xs text-red-300 space-y-1 pt-1">
+                            <div><strong>Error de la API:</strong> {aiTestResults.gemini.error}</div>
+                            {aiTestResults.gemini.errorCode && (
+                              <div className="font-mono text-[10px] text-red-400">Código: {aiTestResults.gemini.errorCode}</div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {isAdminAuthenticated && (
-                    <div className="flex justify-end pt-2">
+                    <div className="flex items-center justify-end gap-3 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => handleTestAiConnection('gemini')}
+                        disabled={testingAi === 'gemini'}
+                        className="px-4 py-1.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200 text-xs font-medium border border-slate-700 flex items-center gap-2 cursor-pointer"
+                        title="Realiza una llamada mínima real validada por Hard Budget para comprobar conectividad y modelo"
+                      >
+                        {testingAi === 'gemini' ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Power className="w-3.5 h-3.5 text-orange-400" />}
+                        <span>Probar Conexión en Vivo</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => handleSaveAiKey('gemini')}
                         disabled={savingAiCreds}
-                        className="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold shadow-md flex items-center gap-2"
+                        className="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-semibold shadow-md flex items-center gap-2 cursor-pointer"
                       >
                         {savingAiCreds && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
                         <span>Guardar Credenciales Gemini</span>
@@ -1936,21 +2240,40 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                       </span>
                     </div>
                     <p className="text-xs text-red-300/90 leading-relaxed">
-                      Se ha alcanzado el límite presupuestario diario (${hardBudgetSummary.dailyBudgetLimitUsd?.toFixed(2)} USD).
+                      Se ha alcanzado el límite presupuestario diario (${hardBudgetSummary?.dailyBudgetLimitUsd?.toFixed(2)} USD).
                       Las llamadas a las APIs de OpenAI y Gemini se encuentran temporalmente suspendidas para evitar gastos no autorizados.
                       <strong> El monitoreo continuo de Bybit, la ingesta de velas, los indicadores cuantitativos y la gestión de órdenes existentes continúan 100% operativos.</strong>
                     </p>
+                    <div className="p-2.5 rounded bg-black/40 border border-red-900/60 text-xs text-red-300 space-y-1">
+                      <div><strong>Motivo del bloqueo:</strong> {hardBudgetSummary?.blockedReason || 'Consumo acumulado superó el límite asignado.'}</div>
+                      <div><strong>Regla Inviolable:</strong> El gasto confirmado es inmutable en base de datos. No se puede reducir ni resetear manualmente sin avanzar el período.</div>
+                    </div>
+
                     {isAdminAuthenticated && (
-                      <div className="pt-1 flex justify-end">
-                        <button
-                          type="button"
-                          onClick={handleReactivateBudget}
-                          disabled={reactivatingBudget}
-                          className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md flex items-center gap-2 cursor-pointer transition-all"
-                        >
-                          {reactivatingBudget ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Power className="w-4 h-4" />}
-                          <span>Reactivar Presupuesto Manualmente</span>
-                        </button>
+                      <div className="pt-2 border-t border-red-900/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                        <div className="text-xs text-slate-300">
+                          Para reactivar hoy, aumente explícitamente el límite diario:
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            step="0.10"
+                            min={(hardBudgetSummary?.todaySpendUsd || 0.5) + 0.05}
+                            value={reactivateDailyLimit}
+                            onChange={(e) => setReactivateDailyLimit(parseFloat(e.target.value) || 1.00)}
+                            className="w-24 bg-[#0a0d14] border border-[#21283b] rounded px-2.5 py-1 text-xs text-white font-mono"
+                          />
+                          <span className="text-xs text-slate-400">USD</span>
+                          <button
+                            type="button"
+                            onClick={handleReactivateBudget}
+                            disabled={reactivatingBudget || reactivateDailyLimit <= (hardBudgetSummary?.todaySpendUsd || 0)}
+                            className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-xs shadow-md flex items-center gap-2 cursor-pointer transition-all"
+                          >
+                            {reactivatingBudget ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Power className="w-3.5 h-3.5" />}
+                            <span>Reactivar con Nuevo Límite</span>
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -1967,6 +2290,64 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                     <span>Advertencia: El consumo diario superó el 80% del límite fijado.</span>
                   </div>
                 ) : null}
+
+                {/* Restablecimiento Automático Card */}
+                <div className="p-4 rounded-lg bg-[#111624] border border-[#21283b] grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs font-mono">
+                  <div className="space-y-1">
+                    <span className="text-slate-400 block text-[10px] uppercase font-bold text-orange-400">
+                      Próximo Restablecimiento Diario
+                    </span>
+                    <div className="text-slate-200">
+                      UTC: <strong className="text-white">{hardBudgetSummary?.nextDailyResetUtc || '00:00:00 UTC'}</strong>
+                    </div>
+                    <div className="text-slate-400 text-[11px]">
+                      Buenos Aires (ART): <strong className="text-orange-300">{hardBudgetSummary?.nextDailyResetAr || '21:00:00 ART'}</strong>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-slate-400 block text-[10px] uppercase font-bold text-blue-400">
+                      Próximo Restablecimiento Mensual
+                    </span>
+                    <div className="text-slate-200">
+                      UTC: <strong className="text-white">{hardBudgetSummary?.nextMonthlyResetUtc || '01 del mes'}</strong>
+                    </div>
+                    <div className="text-slate-400 text-[11px]">
+                      Buenos Aires (ART): <strong className="text-blue-300">{hardBudgetSummary?.nextMonthlyResetAr || 'Fin de mes'}</strong>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quick Metrics Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3.5 rounded-lg bg-[#111624] border border-[#21283b]">
+                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Disponible Hoy</span>
+                    <span className="text-base font-bold font-mono text-emerald-400">
+                      ${(hardBudgetSummary?.remainingDailyBudgetUsd ?? Math.max(0, (hardBudgetSummary?.dailyBudgetLimitUsd || 0.5) - (hardBudgetSummary?.todaySpendUsd || 0))).toFixed(4)}
+                    </span>
+                    <span className="text-[10px] text-slate-500 block">USD libres para gastar</span>
+                  </div>
+                  <div className="p-3.5 rounded-lg bg-[#111624] border border-[#21283b]">
+                    <span className="text-[10px] text-slate-400 uppercase font-mono block">En Tránsito / Reservado</span>
+                    <span className="text-base font-bold font-mono text-amber-400">
+                      ${(hardBudgetSummary?.reservedBudgetUsd ?? 0).toFixed(4)}
+                    </span>
+                    <span className="text-[10px] text-slate-500 block">Margen + safety</span>
+                  </div>
+                  <div className="p-3.5 rounded-lg bg-[#111624] border border-[#21283b]">
+                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Gasto Hoy (Inmutable)</span>
+                    <span className="text-base font-bold font-mono text-white">
+                      ${(hardBudgetSummary?.todaySpendUsd ?? consumptionStats?.todaySpendUsd ?? 0).toFixed(4)}
+                    </span>
+                    <span className="text-[10px] text-slate-500 block">Persistido en DB</span>
+                  </div>
+                  <div className="p-3.5 rounded-lg bg-[#111624] border border-[#21283b]">
+                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Gasto Mensual</span>
+                    <span className="text-base font-bold font-mono text-white">
+                      ${(hardBudgetSummary?.monthSpendUsd ?? consumptionStats?.monthSpendUsd ?? 0).toFixed(4)}
+                    </span>
+                    <span className="text-[10px] text-slate-500 block">Acumulado mes en curso</span>
+                  </div>
+                </div>
 
                 {/* Progress Bars Section */}
                 <div className="p-5 rounded-lg bg-[#111624] border border-[#21283b] space-y-5">
@@ -2244,47 +2625,78 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                   <div className="p-5 rounded-lg bg-slate-900 border border-amber-600/40 space-y-4">
                     <div className="flex items-center gap-2 text-amber-400">
                       <Lock className="w-5 h-5" />
-                      <h4 className="text-sm font-bold">Autenticación de Administrador Requerida</h4>
+                      <h4 className="text-sm font-bold">
+                        {!isInitialized ? 'Configuración Inicial de Administrador' : 'Autenticación de Administrador Requerida'}
+                      </h4>
                     </div>
                     <p className="text-xs text-slate-300">
-                      Para modificar políticas de riesgo, credenciales Bybit o parámetros de IA, ingrese la clave administrativa.
+                      {!isInitialized
+                        ? 'El sistema no cuenta con credenciales previas. Defina una contraseña administrativa segura (mínimo 10 caracteres) para proteger el sistema.'
+                        : 'Para modificar políticas de riesgo, credenciales Bybit o parámetros de IA, ingrese su contraseña de administrador.'}
                     </p>
 
-                    {authError && (
+                    {(authError || setupError) && (
                       <div className="p-3 rounded bg-red-950/60 border border-red-800 text-red-200 text-xs flex items-center gap-2">
                         <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                        <span>{authError}</span>
+                        <span>{authError || setupError}</span>
                       </div>
                     )}
 
-                    <form onSubmit={handleAdminLogin} className="space-y-2">
-                      <div className="flex gap-2">
-                        <input
-                          type="password"
-                          placeholder="Clave de administración"
-                          value={adminKeyInput}
-                          onChange={(e) => setAdminKeyInput(e.target.value)}
-                          className="flex-1 bg-[#0a0d14] border border-[#21283b] rounded px-3 py-1.5 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
-                        />
-                        <button
-                          type="submit"
-                          disabled={isLoggingIn}
-                          className="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold cursor-pointer"
-                        >
-                          {isLoggingIn ? 'Verificando...' : 'Acceder'}
-                        </button>
-                      </div>
-                      <div className="flex items-center justify-between text-[11px] text-slate-400">
-                        <span>Clave local: <code className="text-orange-400 font-mono">nanolabs_admin_sec_2026</code></span>
-                        <button
-                          type="button"
-                          onClick={() => setAdminKeyInput('nanolabs_admin_sec_2026')}
-                          className="text-orange-400 hover:text-orange-300 underline font-medium cursor-pointer"
-                        >
-                          Completar
-                        </button>
-                      </div>
-                    </form>
+                    {!isInitialized ? (
+                      <form onSubmit={handleInitialSetup} className="space-y-3">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs text-slate-400 mb-1">Nueva Contraseña (mínimo 10 caracteres)</label>
+                            <input
+                              type="password"
+                              value={setupPassword}
+                              onChange={(e) => setSetupPassword(e.target.value)}
+                              placeholder="••••••••••••••••"
+                              className="w-full bg-[#0a0d14] border border-[#21283b] rounded px-3 py-1.5 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-slate-400 mb-1">Confirmar Contraseña</label>
+                            <input
+                              type="password"
+                              value={setupConfirm}
+                              onChange={(e) => setSetupConfirm(e.target.value)}
+                              placeholder="••••••••••••••••"
+                              className="w-full bg-[#0a0d14] border border-[#21283b] rounded px-3 py-1.5 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
+                            />
+                          </div>
+                        </div>
+                        <div className="flex justify-end pt-1">
+                          <button
+                            type="submit"
+                            disabled={isSettingUp || !setupPassword || setupPassword.length < 10}
+                            className="px-5 py-2 rounded-lg bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-bold shadow-md flex items-center gap-2 cursor-pointer"
+                          >
+                            {isSettingUp ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
+                            <span>Crear Administrador y Desbloquear</span>
+                          </button>
+                        </div>
+                      </form>
+                    ) : (
+                      <form onSubmit={handleAdminLogin} className="space-y-2">
+                        <div className="flex gap-2">
+                          <input
+                            type="password"
+                            placeholder="Contraseña de administración"
+                            value={adminKeyInput}
+                            onChange={(e) => setAdminKeyInput(e.target.value)}
+                            className="flex-1 bg-[#0a0d14] border border-[#21283b] rounded px-3 py-1.5 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
+                          />
+                          <button
+                            type="submit"
+                            disabled={isLoggingIn || !adminKeyInput.trim()}
+                            className="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-semibold cursor-pointer"
+                          >
+                            {isLoggingIn ? 'Verificando...' : 'Acceder'}
+                          </button>
+                        </div>
+                      </form>
+                    )}
                   </div>
                 ) : (
                   <div className="p-4 rounded-lg bg-emerald-950/30 border border-emerald-800/50 flex items-center justify-between">
@@ -2403,7 +2815,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
         </div>
       </div>
 
-      {/* Unlock Dialog Modal */}
+      {/* Unlock / Initial Setup Dialog Modal */}
       {showUnlockModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in">
           <div className="relative w-full max-w-md bg-[#111624] border border-orange-500/40 rounded-xl shadow-2xl p-6 text-slate-200">
@@ -2413,13 +2825,17 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                   <Key className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white">Desbloquear Edición</h3>
-                  <p className="text-xs text-slate-400">Autenticación de administrador</p>
+                  <h3 className="text-base font-bold text-white">
+                    {!isInitialized ? 'Configuración Inicial de Administrador' : 'Desbloquear Edición'}
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    {!isInitialized ? 'Alta de seguridad requerida' : 'Autenticación de administrador'}
+                  </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => { setShowUnlockModal(false); setAuthError(''); }}
+                onClick={() => { setShowUnlockModal(false); setAuthError(''); setSetupError(''); }}
                 className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer"
               >
                 <X className="w-5 h-5" />
@@ -2427,59 +2843,99 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
             </div>
 
             <p className="text-xs text-slate-300 mb-4 leading-relaxed">
-              Ingrese su clave administrativa para modificar parámetros de riesgo, claves de Bybit e IAs, o ajustar el router inteligente.
+              {!isInitialized
+                ? 'El sistema no cuenta con credenciales previas. Defina una contraseña administrativa segura (mínimo 10 caracteres) para desbloquear y proteger el sistema.'
+                : 'Ingrese su clave administrativa para modificar parámetros de riesgo, claves de Bybit e IAs, o ajustar el router inteligente.'}
             </p>
 
-            {authError && (
+            {(authError || setupError) && (
               <div className="mb-4 p-3 rounded-lg bg-red-950/70 border border-red-800 text-red-200 text-xs flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                <span>{authError}</span>
+                <span>{authError || setupError}</span>
               </div>
             )}
 
-            <form onSubmit={handleAdminLogin} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                  Clave de Administrador
-                </label>
-                <input
-                  type="password"
-                  autoFocus
-                  placeholder="••••••••••••••••"
-                  value={adminKeyInput}
-                  onChange={(e) => setAdminKeyInput(e.target.value)}
-                  className="w-full bg-[#0a0d14] border border-[#21283b] rounded-lg px-3.5 py-2 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
-                />
-                <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
-                  <span>Clave local: <code className="text-orange-400 font-mono">nanolabs_admin_sec_2026</code></span>
+            {!isInitialized ? (
+              <form onSubmit={handleInitialSetup} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Nueva Contraseña de Administrador (mínimo 10 caracteres)
+                  </label>
+                  <input
+                    type="password"
+                    autoFocus
+                    placeholder="••••••••••••••••"
+                    value={setupPassword}
+                    onChange={(e) => setSetupPassword(e.target.value)}
+                    className="w-full bg-[#0a0d14] border border-[#21283b] rounded-lg px-3.5 py-2 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Confirmar Contraseña
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="••••••••••••••••"
+                    value={setupConfirm}
+                    onChange={(e) => setSetupConfirm(e.target.value)}
+                    className="w-full bg-[#0a0d14] border border-[#21283b] rounded-lg px-3.5 py-2 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex gap-2 justify-end pt-2">
                   <button
                     type="button"
-                    onClick={() => setAdminKeyInput('nanolabs_admin_sec_2026')}
-                    className="text-orange-400 hover:text-orange-300 underline font-medium cursor-pointer"
+                    onClick={() => { setShowUnlockModal(false); setAuthError(''); setSetupError(''); }}
+                    className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium cursor-pointer"
                   >
-                    Completar
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSettingUp || !setupPassword || setupPassword.length < 10}
+                    className="px-5 py-2 rounded-lg bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-orange-600/30 flex items-center gap-2 cursor-pointer"
+                  >
+                    {isSettingUp ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
+                    <span>Crear Administrador</span>
                   </button>
                 </div>
-              </div>
+              </form>
+            ) : (
+              <form onSubmit={handleAdminLogin} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                    Contraseña de Administrador
+                  </label>
+                  <input
+                    type="password"
+                    autoFocus
+                    placeholder="••••••••••••••••"
+                    value={adminKeyInput}
+                    onChange={(e) => setAdminKeyInput(e.target.value)}
+                    className="w-full bg-[#0a0d14] border border-[#21283b] rounded-lg px-3.5 py-2 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
+                  />
+                </div>
 
-              <div className="flex gap-2 justify-end pt-2">
-                <button
-                  type="button"
-                  onClick={() => { setShowUnlockModal(false); setAuthError(''); }}
-                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={isLoggingIn || !adminKeyInput.trim()}
-                  className="px-5 py-2 rounded-lg bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-orange-600/30 flex items-center gap-2 cursor-pointer"
-                >
-                  {isLoggingIn ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
-                  <span>Desbloquear</span>
-                </button>
-              </div>
-            </form>
+                <div className="flex gap-2 justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => { setShowUnlockModal(false); setAuthError(''); setSetupError(''); }}
+                    className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isLoggingIn || !adminKeyInput.trim()}
+                    className="px-5 py-2 rounded-lg bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-orange-600/30 flex items-center gap-2 cursor-pointer"
+                  >
+                    {isLoggingIn ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
+                    <span>Desbloquear</span>
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

@@ -48,6 +48,9 @@ export class ConsensusEngine extends EventEmitter {
     this.geminiAdapter = options.geminiAdapter || new GeminiAdapter();
     this.costTracker = options.costTracker || new CostTracker();
     this.hardBudgetManager = options.hardBudgetManager || new HardBudgetManager();
+    if (this.db) {
+      this.hardBudgetManager.setDatabase(this.db);
+    }
     this.minAiConfidence = options.minAiConfidence || 70;
     this.maxPriceDriftPcnt = options.maxPriceDriftPcnt || 0.0015;
     this.maxSnapshotAgeMs = options.maxSnapshotAgeMs || 10000;
@@ -206,8 +209,9 @@ export class ConsensusEngine extends EventEmitter {
     }
 
     // Step 8: Concurrent Dual AI Consultation
-    let openaiRes: AiEvaluationResult | undefined = undefined;
-    let geminiRes: AiEvaluationResult | undefined = undefined;
+    let openaiRes: AiEvaluationResult;
+    let geminiRes: AiEvaluationResult;
+
     try {
       [openaiRes, geminiRes] = await Promise.all([
         this.openaiAdapter.evaluate(snapshot),
@@ -215,26 +219,33 @@ export class ConsensusEngine extends EventEmitter {
       ]);
     } finally {
       this.costTracker.releaseReservation(2);
-      if (openaiResv.reservationId) {
-        this.hardBudgetManager.reconcileReservation(openaiResv.reservationId, {
-          provider: 'OPENAI',
-          model: openaiRes?.model || openaiModel,
-          task: 'SETUP_EVALUATION',
-          promptTokens: openaiRes?.tokensPrompt || 0,
-          completionTokens: openaiRes?.tokensCompletion || 0,
-          costUsd: openaiRes?.estimatedCostUsd,
-        });
-      }
-      if (geminiResv.reservationId) {
-        this.hardBudgetManager.reconcileReservation(geminiResv.reservationId, {
-          provider: 'GEMINI',
-          model: geminiRes?.model || geminiModel,
-          task: 'SETUP_EVALUATION',
-          promptTokens: geminiRes?.tokensPrompt || 0,
-          completionTokens: geminiRes?.tokensCompletion || 0,
-          costUsd: geminiRes?.estimatedCostUsd,
-        });
-      }
+    }
+
+    if (openaiResv.reservationId) {
+      const isOpenaiTimeout = openaiRes.availabilityStatus === 'TIMEOUT' || openaiRes.error?.toLowerCase().includes('timeout');
+      this.hardBudgetManager.reconcileReservation(openaiResv.reservationId, {
+        provider: 'OPENAI',
+        model: openaiRes.model || openaiModel,
+        task: 'SETUP_EVALUATION',
+        promptTokens: openaiRes.tokensPrompt || 0,
+        completionTokens: openaiRes.tokensCompletion || 0,
+        costUsd: openaiRes.estimatedCostUsd,
+        status: isOpenaiTimeout ? 'UNCERTAIN_TIMEOUT' : (openaiRes.error ? 'ERROR' : 'SUCCESS'),
+        latencyMs: openaiRes.latencyMs,
+      });
+    }
+    if (geminiResv.reservationId) {
+      const isGeminiTimeout = geminiRes.availabilityStatus === 'TIMEOUT' || geminiRes.error?.toLowerCase().includes('timeout');
+      this.hardBudgetManager.reconcileReservation(geminiResv.reservationId, {
+        provider: 'GEMINI',
+        model: geminiRes.model || geminiModel,
+        task: 'SETUP_EVALUATION',
+        promptTokens: geminiRes.tokensPrompt || 0,
+        completionTokens: geminiRes.tokensCompletion || 0,
+        costUsd: geminiRes.estimatedCostUsd,
+        status: isGeminiTimeout ? 'UNCERTAIN_TIMEOUT' : (geminiRes.error ? 'ERROR' : 'SUCCESS'),
+        latencyMs: geminiRes.latencyMs,
+      });
     }
 
     // Record usage

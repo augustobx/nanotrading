@@ -5,9 +5,9 @@ import { DatabaseService } from '../storage/database.js';
 import { config } from '../config/index.js';
 import { Timeframe, SUPPORTED_TIMEFRAMES } from '../types/market.js';
 import { authManager } from '../security/auth-manager.js';
-import { maskSecret, encryptSecret } from '../security/encryption.js';
+import { maskSecret, encryptSecret, decryptSecret } from '../security/encryption.js';
 import { RiskCalculator } from '../engine/risk-calculator.js';
-import { AI_MODELS_CATALOG } from '../ai/models-catalog.js';
+import { AI_MODELS_CATALOG, calculateCallCost } from '../ai/models-catalog.js';
 
 export class ApiServer {
   private server: http.Server;
@@ -23,6 +23,7 @@ export class ApiServer {
   constructor(coordinator: MarketCoordinator, db: DatabaseService, port?: number, host?: string) {
     this.coordinator = coordinator;
     this.db = db;
+    authManager.setDatabase(this.db);
     this.port = port !== undefined ? port : config.port;
     this.host = host || config.host;
 
@@ -34,15 +35,7 @@ export class ApiServer {
   }
 
   private isAuthenticated(req: http.IncomingMessage): boolean {
-    const authHeader = (req.headers['authorization'] as string) || '';
-    const apiKeyHeader = (req.headers['x-admin-key'] as string) || '';
-    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
-
-    if (authManager.validateAuth(authHeader || apiKeyHeader, clientIp)) {
-      return true;
-    }
-    const token = authHeader.replace(/^Bearer\s+/i, '').trim();
-    return token === config.security.adminApiKey || apiKeyHeader === config.security.adminApiKey;
+    return authManager.validateAuth(req).valid;
   }
 
   private checkRateLimit(ip: string): boolean {
@@ -60,10 +53,12 @@ export class ApiServer {
   }
 
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-    // Enable CORS for frontend PWA
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-key');
+    // Enable CORS for frontend PWA with Cookie Credentials & CSRF
+    const origin = (req.headers.origin as string) || 'http://localhost:3000';
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-admin-key');
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -127,6 +122,10 @@ export class ApiServer {
       } else if (pathname === '/api/v1/notifications/history' && req.method === 'GET') {
         const limit = parseInt(url.searchParams.get('limit') || '50', 10);
         this.sendNotificationHistory(res, limit);
+      } else if (pathname === '/api/v1/auth/status' && req.method === 'GET') {
+        this.handleAuthStatus(req, res);
+      } else if (pathname === '/api/v1/auth/setup' && req.method === 'POST') {
+        this.handleAuthSetup(req, res);
       } else if (pathname === '/api/v1/auth/login' && req.method === 'POST') {
         this.handleAuthLogin(req, res);
       } else if (pathname === '/api/v1/auth/verify' && req.method === 'GET') {
@@ -164,6 +163,8 @@ export class ApiServer {
       } else if (pathname.startsWith('/api/v1/config/ai/credentials/') && req.method === 'DELETE') {
         const provider = pathname.split('/')[5];
         this.handleDeleteAiCredentials(req, res, provider);
+      } else if (pathname === '/api/v1/config/ai/test' && req.method === 'POST') {
+        this.handleTestAiConnection(req, res);
       } else if (pathname === '/api/v1/config/ai/consumption' && req.method === 'GET') {
         this.sendAiConsumption(req, res);
       } else if (pathname === '/api/v1/config/ai/consumption/export' && req.method === 'GET') {
@@ -591,6 +592,58 @@ export class ApiServer {
 
   // --- Auth Handlers ---
 
+  private handleAuthStatus(req: http.IncomingMessage, res: http.ServerResponse): void {
+    const auth = authManager.validateAuth(req);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        success: true,
+        initialized: authManager.isInitialized(),
+        authenticated: auth.valid,
+        csrfToken: auth.session?.csrfToken || null,
+      })
+    );
+  }
+
+  private async handleAuthSetup(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    try {
+      if (authManager.isInitialized()) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'El administrador ya se encuentra inicializado en el sistema.' }));
+        return;
+      }
+      const payload = await this.parseJsonBody<{ password?: string }>(req);
+      if (!payload.password) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'La nueva clave administrativa es requerida' }));
+        return;
+      }
+      const result = authManager.setupInitialAdmin(payload.password, clientIp);
+      if (result.success && result.token) {
+        const isSecure = req.headers['x-forwarded-proto'] === 'https';
+        const cookieFlags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=43200${isSecure ? '; Secure' : ''}`;
+        res.setHeader('Set-Cookie', `nanolabs_admin_session=${result.token}; ${cookieFlags}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            success: true,
+            token: result.token,
+            csrfToken: result.csrfToken,
+            expiresAt: result.expiresAt,
+            message: 'Administrador configurado exitosamente',
+          })
+        );
+      } else {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: result.error || 'Error en configuración inicial' }));
+      }
+    } catch (err: any) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message || 'Error en configuración inicial' }));
+    }
+  }
+
   private async handleAuthLogin(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
     try {
@@ -601,15 +654,25 @@ export class ApiServer {
         return;
       }
       const result = authManager.login(payload.key, clientIp);
-      if (result.success) {
+      if (result.success && result.token) {
         this.db.logConfigAudit({
           category: 'AUTH',
           action: 'LOGIN_SUCCESS',
           details: { clientIp },
           ipAddress: clientIp,
         });
+        const isSecure = req.headers['x-forwarded-proto'] === 'https';
+        const cookieFlags = `Path=/; HttpOnly; SameSite=Lax; Max-Age=43200${isSecure ? '; Secure' : ''}`;
+        res.setHeader('Set-Cookie', `nanolabs_admin_session=${result.token}; ${cookieFlags}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, token: result.token, expiresAt: result.expiresAt }));
+        res.end(
+          JSON.stringify({
+            success: true,
+            token: result.token,
+            csrfToken: result.csrfToken,
+            expiresAt: result.expiresAt,
+          })
+        );
       } else {
         this.db.logConfigAudit({
           category: 'AUTH',
@@ -618,7 +681,15 @@ export class ApiServer {
           ipAddress: clientIp,
         });
         res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: false, error: result.error, lockedUntil: result.lockedUntil }));
+        res.end(
+          JSON.stringify({
+            success: false,
+            error: result.error,
+            lockedUntil: result.lockedUntil,
+            requiresSetup: result.requiresSetup,
+            isRevoked: result.isRevoked,
+          })
+        );
       }
     } catch (err: any) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -627,9 +698,16 @@ export class ApiServer {
   }
 
   private handleAuthVerify(req: http.IncomingMessage, res: http.ServerResponse): void {
-    const isAuth = this.isAuthenticated(req);
+    const auth = authManager.validateAuth(req);
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, authenticated: isAuth }));
+    res.end(
+      JSON.stringify({
+        success: true,
+        authenticated: auth.valid,
+        csrfToken: auth.session?.csrfToken || null,
+        reason: auth.reason,
+      })
+    );
   }
 
   private async handleAuthLogout(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -640,10 +718,8 @@ export class ApiServer {
       const payload = await this.parseJsonBody<{ token?: string }>(req);
       tokenFromBody = payload.token || '';
     } catch {}
-    const token = tokenFromHeader || tokenFromBody;
-    if (token) {
-      authManager.logout(token);
-    }
+    authManager.logout(tokenFromHeader || tokenFromBody, req);
+    res.setHeader('Set-Cookie', 'nanolabs_admin_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, message: 'Sesión cerrada correctamente' }));
   }
@@ -821,11 +897,11 @@ export class ApiServer {
         success: true,
         data: {
           openai: openai
-            ? { provider: 'openai', configured: true, apiKeyMasked: openai.apiKeyMasked, model: openai.model, lastVerifiedAt: openai.lastVerifiedAt }
-            : { provider: 'openai', configured: !!config.ai.openaiApiKey, apiKeyMasked: config.ai.openaiApiKey ? maskSecret(config.ai.openaiApiKey) : null, model: config.ai.openaiModel },
+            ? { provider: 'openai', configured: true, apiKeyMasked: openai.apiKeyMasked, model: openai.model, status: openai.status || 'CONFIGURED', lastVerifiedAt: openai.lastVerifiedAt, lastError: (openai as any).lastError }
+            : { provider: 'openai', configured: !!config.ai.openaiApiKey, apiKeyMasked: config.ai.openaiApiKey ? maskSecret(config.ai.openaiApiKey) : null, model: config.ai.openaiModel, status: config.ai.openaiApiKey ? 'CONFIGURED' : 'UNCONFIGURED' },
           gemini: gemini
-            ? { provider: 'gemini', configured: true, apiKeyMasked: gemini.apiKeyMasked, model: gemini.model, lastVerifiedAt: gemini.lastVerifiedAt }
-            : { provider: 'gemini', configured: !!config.ai.geminiApiKey, apiKeyMasked: config.ai.geminiApiKey ? maskSecret(config.ai.geminiApiKey) : null, model: config.ai.geminiModel },
+            ? { provider: 'gemini', configured: true, apiKeyMasked: gemini.apiKeyMasked, model: gemini.model, status: gemini.status || 'CONFIGURED', lastVerifiedAt: gemini.lastVerifiedAt, lastError: (gemini as any).lastError }
+            : { provider: 'gemini', configured: !!config.ai.geminiApiKey, apiKeyMasked: config.ai.geminiApiKey ? maskSecret(config.ai.geminiApiKey) : null, model: config.ai.geminiModel, status: config.ai.geminiApiKey ? 'CONFIGURED' : 'UNCONFIGURED' },
         },
       })
     );
@@ -906,6 +982,293 @@ export class ApiServer {
     res.end(JSON.stringify({ success: true, message: `Credenciales de ${providerNorm} eliminadas correctamente` }));
   }
 
+  private async handleTestAiConnection(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'No autorizado: se requiere autenticación de administrador' }));
+      return;
+    }
+
+    try {
+      const payload = await this.parseJsonBody<{
+        provider?: string;
+        model?: string;
+        apiKey?: string;
+        reasoningEffort?: string;
+      }>(req);
+
+      const provider = (payload.provider || '').toLowerCase();
+      if (provider !== 'openai' && provider !== 'gemini') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'El proveedor debe ser "openai" o "gemini"' }));
+        return;
+      }
+
+      // 1. Resolve API key
+      let apiKeyToUse = (payload.apiKey || '').trim();
+      if (!apiKeyToUse) {
+        const saved = this.db.getAiCredentials(provider);
+        if (saved?.encryptedSecret) {
+          try {
+            apiKeyToUse = decryptSecret(saved.encryptedSecret) || '';
+          } catch {}
+        }
+        if (!apiKeyToUse) {
+          apiKeyToUse = provider === 'openai' ? (config.ai.openaiApiKey || '') : (config.ai.geminiApiKey || '');
+        }
+      }
+
+      if (!apiKeyToUse) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            success: false,
+            valid: false,
+            provider,
+            error: `No hay clave API configurada ni provista para ${provider}.`,
+            status: 'UNCONFIGURED',
+          })
+        );
+        return;
+      }
+
+      const modelToTest = payload.model || (provider === 'openai' ? 'gpt-4o' : 'gemini-2.0-flash');
+      const hardBudget = this.coordinator.getConsensusEngine().getHardBudgetManager();
+
+      // 2. Budget Reservation check (Connection tests consume real money/tokens!)
+      const worstCase = hardBudget.estimateWorstCaseCost(modelToTest, 500, 150);
+      const reservation = hardBudget.reserveBudget({
+        provider: provider.toUpperCase() as any,
+        model: modelToTest,
+        task: 'CONNECTION_TEST',
+        maxEstimatedCostUsd: worstCase,
+      });
+
+      if (!reservation.allowed) {
+        res.writeHead(429, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            success: false,
+            valid: false,
+            provider,
+            model: modelToTest,
+            error: reservation.reason || 'Límite presupuestario de IA alcanzado. Prueba de conexión cancelada.',
+            status: 'AI_BUDGET_EXCEEDED',
+          })
+        );
+        return;
+      }
+
+      // 3. Execute Real Live API Call
+      const startTime = Date.now();
+      let testSuccess = false;
+      let testError: string | null = null;
+      let errorCode: string | null = null;
+      let tokensPrompt = 0;
+      let tokensCompletion = 0;
+      let tokensCached = 0;
+      let reasoningTokens = 0;
+      let latencyMs = 0;
+      let costUsd = 0;
+      let providerStatus = 'UNAVAILABLE';
+      let parsedResponse: any = null;
+
+      try {
+        if (provider === 'openai') {
+          const reqBody: any = {
+            model: modelToTest,
+            messages: [
+              { role: 'system', content: 'You are NanoLabs AI Connection Verifier. Output JSON only.' },
+              {
+                role: 'user',
+                content: `Respond with exact JSON: {"status":"ok","ping":true,"model":"${modelToTest}","timestamp":${Date.now()}}`,
+              },
+            ],
+            response_format: { type: 'json_object' },
+            max_tokens: 100,
+          };
+
+          if (modelToTest.includes('o1') || modelToTest.includes('o3') || modelToTest.includes('luna')) {
+            delete reqBody.response_format;
+            reqBody.max_completion_tokens = 150;
+            delete reqBody.max_tokens;
+            if (payload.reasoningEffort) {
+              reqBody.reasoning_effort = payload.reasoningEffort;
+            }
+          }
+
+          const apiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKeyToUse}`,
+            },
+            body: JSON.stringify(reqBody),
+            signal: AbortSignal.timeout(15000),
+          });
+
+          latencyMs = Date.now() - startTime;
+          const rawText = await apiRes.text();
+          let jsonRes: any = {};
+          try {
+            jsonRes = JSON.parse(rawText);
+          } catch {}
+
+          if (!apiRes.ok) {
+            errorCode = jsonRes.error?.code || jsonRes.error?.type || `HTTP_${apiRes.status}`;
+            testError = jsonRes.error?.message || `Error HTTP ${apiRes.status}: ${rawText.slice(0, 150)}`;
+            providerStatus = apiRes.status === 401 ? 'AUTH_ERROR' : apiRes.status === 429 ? 'RATE_LIMITED' : 'UNAVAILABLE';
+          } else {
+            tokensPrompt = jsonRes.usage?.prompt_tokens || 0;
+            tokensCompletion = jsonRes.usage?.completion_tokens || 0;
+            tokensCached = jsonRes.usage?.prompt_tokens_details?.cached_tokens || 0;
+            reasoningTokens = jsonRes.usage?.completion_tokens_details?.reasoning_tokens || 0;
+            const content = jsonRes.choices?.[0]?.message?.content || '{}';
+            try {
+              parsedResponse = JSON.parse(content);
+            } catch {
+              parsedResponse = { raw: content };
+            }
+            costUsd = calculateCallCost(modelToTest, {
+              promptTokens: tokensPrompt,
+              completionTokens: tokensCompletion,
+              cachedTokens: tokensCached,
+              reasoningTokens,
+            });
+            testSuccess = true;
+            providerStatus = 'VERIFIED';
+          }
+        } else {
+          // Gemini
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelToTest}:generateContent?key=${apiKeyToUse}`;
+          const geminiReqBody = {
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: `Respond with exact JSON only: {"status":"ok","ping":true,"model":"${modelToTest}","timestamp":${Date.now()}}` }],
+              },
+            ],
+            generationConfig: {
+              responseMimeType: 'application/json',
+              maxOutputTokens: 100,
+            },
+          };
+
+          const apiRes = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(geminiReqBody),
+            signal: AbortSignal.timeout(15000),
+          });
+
+          latencyMs = Date.now() - startTime;
+          const rawText = await apiRes.text();
+          let jsonRes: any = {};
+          try {
+            jsonRes = JSON.parse(rawText);
+          } catch {}
+
+          if (!apiRes.ok) {
+            errorCode = jsonRes.error?.status || `HTTP_${apiRes.status}`;
+            testError = jsonRes.error?.message || `Error HTTP ${apiRes.status}: ${rawText.slice(0, 150)}`;
+            providerStatus =
+              (apiRes.status === 400 && testError?.includes('API_KEY_INVALID')) || apiRes.status === 401 || apiRes.status === 403
+                ? 'AUTH_ERROR'
+                : apiRes.status === 429
+                ? 'RATE_LIMITED'
+                : 'UNAVAILABLE';
+          } else {
+            tokensPrompt = jsonRes.usageMetadata?.promptTokenCount || 0;
+            tokensCompletion = jsonRes.usageMetadata?.candidatesTokenCount || 0;
+            tokensCached = jsonRes.usageMetadata?.cachedContentTokenCount || 0;
+            const content = jsonRes.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+            try {
+              parsedResponse = JSON.parse(content);
+            } catch {
+              parsedResponse = { raw: content };
+            }
+            costUsd = calculateCallCost(modelToTest, {
+              promptTokens: tokensPrompt,
+              completionTokens: tokensCompletion,
+              cachedTokens: tokensCached,
+              reasoningTokens: 0,
+            });
+            testSuccess = true;
+            providerStatus = 'VERIFIED';
+          }
+        }
+      } catch (callErr: any) {
+        latencyMs = Date.now() - startTime;
+        const isTimeout = callErr.name === 'TimeoutError' || callErr.message?.toLowerCase().includes('timeout');
+        errorCode = isTimeout ? 'TIMEOUT' : callErr.code || 'NETWORK_ERROR';
+        testError = callErr.message || 'Error de conexión con el proveedor de IA';
+        providerStatus = isTimeout ? 'DEGRADED' : 'UNAVAILABLE';
+      }
+
+      // 4. Reconcile reservation
+      hardBudget.reconcileReservation(reservation.reservationId!, {
+        provider: provider.toUpperCase() as any,
+        model: modelToTest,
+        task: 'CONNECTION_TEST',
+        promptTokens: tokensPrompt,
+        completionTokens: tokensCompletion,
+        cachedTokens: tokensCached,
+        reasoningTokens,
+        costUsd: testSuccess ? costUsd : 0,
+        status: testSuccess ? 'SUCCESS' : 'ERROR',
+        latencyMs,
+      });
+
+      // 5. Update DB credential status and adapter in memory
+      if (testSuccess) {
+        this.db.saveAiCredentials({
+          provider,
+          apiKeyMasked: maskSecret(apiKeyToUse),
+          encryptedSecret: encryptSecret(apiKeyToUse),
+          model: modelToTest,
+          status: 'VERIFIED',
+        });
+        this.coordinator.getConsensusEngine().updateAiCredentials(
+          provider as 'openai' | 'gemini',
+          apiKeyToUse.trim(),
+          modelToTest,
+          payload.reasoningEffort as any
+        );
+      }
+
+      this.db.logConfigAudit({
+        category: 'AI_CONNECTION_TEST',
+        action: testSuccess ? 'TEST_SUCCESS' : 'TEST_FAILED',
+        details: { provider, model: modelToTest, latencyMs, costUsd, error: testError, errorCode, status: providerStatus },
+        ipAddress: clientIp,
+      });
+
+      res.writeHead(testSuccess ? 200 : 400, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          success: testSuccess,
+          valid: testSuccess,
+          provider,
+          model: modelToTest,
+          latencyMs,
+          tokensPrompt,
+          tokensCompletion,
+          tokensCached,
+          reasoningTokens,
+          costUsd: parseFloat(costUsd.toFixed(6)),
+          status: providerStatus,
+          parsedResponse,
+          error: testError,
+          errorCode,
+        })
+      );
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: err.message || 'Fallo interno en prueba de conexión IA' }));
+    }
+  }
+
   // --- Hard Budget Handlers ---
 
   private sendBudgetConfig(res: http.ServerResponse): void {
@@ -941,7 +1304,7 @@ export class ApiServer {
     }
   }
 
-  private handleReactivateBudget(req: http.IncomingMessage, res: http.ServerResponse): void {
+  private async handleReactivateBudget(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const clientIp = (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
     if (!this.isAuthenticated(req)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -949,13 +1312,14 @@ export class ApiServer {
       return;
     }
     try {
+      const payload = await this.parseJsonBody<{ newDailyLimitUsd?: number }>(req).catch(() => ({} as any));
       const hardBudgetManager = this.coordinator.getConsensusEngine().getHardBudgetManager();
-      hardBudgetManager.reactivateBudget();
+      hardBudgetManager.reactivateBudget('admin', payload?.newDailyLimitUsd);
       this.db.saveHardBudgetConfig(hardBudgetManager.getConfig());
       this.db.logConfigAudit({
         category: 'HARD_BUDGET',
         action: 'REACTIVATE',
-        details: { reactivatedBy: 'admin', ipAddress: clientIp },
+        details: { reactivatedBy: 'admin', newDailyLimitUsd: payload?.newDailyLimitUsd, ipAddress: clientIp },
         ipAddress: clientIp,
       });
       res.writeHead(200, { 'Content-Type': 'application/json' });

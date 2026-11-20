@@ -63,8 +63,8 @@ export function NotificationsModal({ isOpen, onClose }: NotificationsModalProps)
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-key': 'nanolabs_admin_sec_2026',
         },
+        credentials: 'include',
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -145,8 +145,8 @@ export function NotificationsModal({ isOpen, onClose }: NotificationsModalProps)
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-key': 'nanolabs_admin_sec_2026',
         },
+        credentials: 'include',
       });
       const data = await res.json();
       if (res.ok && data.success) {

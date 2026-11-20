@@ -262,6 +262,26 @@ export class PostgresDatabaseService {
         CREATE INDEX IF NOT EXISTS idx_pg_audit_time 
         ON config_audit_logs(timestamp DESC);
 
+        CREATE TABLE IF NOT EXISTS admin_credentials (
+          id VARCHAR(32) PRIMARY KEY,
+          password_hash VARCHAR(128) NOT NULL,
+          salt VARCHAR(64) NOT NULL,
+          created_at BIGINT NOT NULL,
+          updated_at BIGINT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS admin_sessions (
+          token VARCHAR(64) PRIMARY KEY,
+          csrf_token VARCHAR(64) NOT NULL,
+          created_at BIGINT NOT NULL,
+          expires_at BIGINT NOT NULL,
+          ip_address VARCHAR(50),
+          user_agent TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pg_sessions_expires 
+        ON admin_sessions(expires_at);
+
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS simulated_entry_time BIGINT;
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS exit_time BIGINT;
         ALTER TABLE signals ADD COLUMN IF NOT EXISTS duration_ms BIGINT;
@@ -1113,6 +1133,78 @@ export class PostgresDatabaseService {
       status: r.status,
       analysisId: r.analysis_id,
     }));
+  }
+
+  public async getAdminCredentials(): Promise<{ passwordHash: string; salt: string; createdAt: number; updatedAt: number } | null> {
+    const res = await this.pool.query("SELECT * FROM admin_credentials WHERE id = 'primary_admin'");
+    if (res.rows.length === 0) return null;
+    const row = res.rows[0];
+    return {
+      passwordHash: row.password_hash,
+      salt: row.salt,
+      createdAt: Number(row.created_at),
+      updatedAt: Number(row.updated_at),
+    };
+  }
+
+  public async setAdminCredentials(passwordHash: string, salt: string): Promise<void> {
+    const now = Date.now();
+    await this.pool.query(`
+      INSERT INTO admin_credentials (id, password_hash, salt, created_at, updated_at)
+      VALUES ('primary_admin', $1, $2, $3, $4)
+      ON CONFLICT(id) DO UPDATE SET
+        password_hash = EXCLUDED.password_hash,
+        salt = EXCLUDED.salt,
+        updated_at = EXCLUDED.updated_at
+    `, [passwordHash, salt, now, now]);
+  }
+
+  public async hasAdminCredentials(): Promise<boolean> {
+    const creds = await this.getAdminCredentials();
+    return creds !== null;
+  }
+
+  public async saveAdminSession(session: {
+    token: string;
+    csrfToken: string;
+    createdAt: number;
+    expiresAt: number;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<void> {
+    await this.pool.query(`
+      INSERT INTO admin_sessions (token, csrf_token, created_at, expires_at, ip_address, user_agent)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT(token) DO UPDATE SET
+        expires_at = EXCLUDED.expires_at,
+        ip_address = EXCLUDED.ip_address,
+        user_agent = EXCLUDED.user_agent
+    `, [session.token, session.csrfToken, session.createdAt, session.expiresAt, session.ipAddress || null, session.userAgent || null]);
+  }
+
+  public async getAdminSession(token: string): Promise<{
+    token: string;
+    csrfToken: string;
+    createdAt: number;
+    expiresAt: number;
+    ipAddress?: string;
+    userAgent?: string;
+  } | null> {
+    const res = await this.pool.query('SELECT * FROM admin_sessions WHERE token = $1', [token]);
+    if (res.rows.length === 0) return null;
+    const row = res.rows[0];
+    return {
+      token: row.token,
+      csrfToken: row.csrf_token,
+      createdAt: Number(row.created_at),
+      expiresAt: Number(row.expires_at),
+      ipAddress: row.ip_address,
+      userAgent: row.user_agent,
+    };
+  }
+
+  public async deleteAdminSession(token: string): Promise<void> {
+    await this.pool.query('DELETE FROM admin_sessions WHERE token = $1', [token]);
   }
 
   public async close(): Promise<void> {

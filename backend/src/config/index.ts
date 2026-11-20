@@ -69,6 +69,11 @@ export interface AppConfig {
   };
 }
 
+const isTestEnv =
+  process.env.NODE_ENV === 'test' ||
+  process.env.npm_lifecycle_event === 'test' ||
+  process.argv.some((a) => a.includes('test'));
+
 export const config: AppConfig = {
   env: (process.env.NODE_ENV as AppConfig['env']) || 'development',
   port: parseInt(process.env.PORT || '3001', 10),
@@ -108,7 +113,7 @@ export const config: AppConfig = {
     maxRiskPerTradePercent: parseFloat(process.env.MAX_RISK_PER_TRADE_PERCENT || '0.5'),
     maxDailyLossPercent: parseFloat(process.env.MAX_DAILY_LOSS_PERCENT || '1.5'),
     minRrRatio: parseFloat(process.env.MIN_RR_RATIO || '4.0'),
-    adminApiKey: process.env.ADMIN_API_KEY || 'nanolabs_admin_sec_2026',
+    adminApiKey: process.env.ADMIN_API_KEY || (isTestEnv ? 'test_admin_secure_key_123' : ''),
     corsAllowedOrigins: (process.env.CORS_ALLOWED_ORIGINS || '*').split(',').map((s) => s.trim()),
     rateLimitPerMinute: parseInt(process.env.RATE_LIMIT_PER_MINUTE || '10', 10),
   },
