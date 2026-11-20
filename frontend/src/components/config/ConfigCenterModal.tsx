@@ -52,12 +52,74 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
   const [authError, setAuthError] = useState<string>('');
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
+  const [showUnlockModal, setShowUnlockModal] = useState<boolean>(false);
+
+  // Default initial values so inputs are NEVER blank while fetching
+  const DEFAULT_RISK_POLICY = {
+    version: 1,
+    capitalUsdt: 10000,
+    maxRiskPerTradePercent: 0.5,
+    maxRiskPerTradeUsdt: 50,
+    maxDailyLossPercent: 1.5,
+    maxDailyLossUsdt: 150,
+    maxWeeklyLossPercent: 4.0,
+    maxWeeklyLossUsdt: 400,
+    maxSimultaneousExposureUsdt: 15000,
+    maxActiveSignals: 3,
+    maxDailyEntries: 5,
+    maxConsecutiveLosses: 3,
+    minNetRR: 4.0,
+    stopLossCeilings: {
+      maxSlDistancePercent: { enabled: true, value: 1.5 },
+      maxSlDistanceUsdt: { enabled: true, value: 1000 },
+      maxSlDistanceAtrMultiplier: { enabled: true, value: 3.0 },
+      maxMonetaryLossUsdt: { enabled: true, value: 100 },
+    },
+    marketRestrictions: {
+      maxSpreadPercent: 0.05,
+      minAtrUsdt: 10,
+      maxAtrUsdt: 450,
+      maxDataStalenessMs: 10000,
+      allowedSessions: ['ASIA', 'LONDON', 'NEW_YORK'],
+      setupTtlMs: 1800000,
+    },
+  };
+
+  const DEFAULT_CONFIG_SUMMARY = {
+    systemMode: 'SIGNALS_ONLY',
+    killSwitchActive: false,
+    capitalUsdt: 10000,
+    maxRiskUsdt: 50,
+    minNetRR: 4.0,
+    bybitConfigured: false,
+    openaiConfigured: false,
+    geminiConfigured: false,
+    dailyBudgetUsd: 5.0,
+    budgetRemainingUsd: 5.0,
+  };
+
+  const DEFAULT_ROUTER_CONFIG = {
+    selectionMode: 'AUTOMATIC',
+    performanceProfile: 'BALANCED',
+    activeFallbackMode: 'DUAL_AI',
+    taskAssignments: {
+      MULTITIMEFRAME_ANALYSIS: 'gemini-2.0-flash',
+      ORDER_BOOK_IMBALANCE: 'gemini-2.0-flash',
+      VOLATILITY_EXPANSION: 'gemini-2.0-flash',
+      STRUCTURE_BREAK_CONFIRMATION: 'gpt-4o',
+      ENTRY_VALIDATION: 'gpt-4o',
+      RISK_ASSESSMENT: 'gpt-4o',
+      POST_MORTEM_EVALUATION: 'gpt-4o',
+    },
+    customWeights: { cost: 0.3, latency: 0.3, accuracy: 0.4 },
+  };
+
   // General & Summary
-  const [configSummary, setConfigSummary] = useState<any>(null);
+  const [configSummary, setConfigSummary] = useState<any>(DEFAULT_CONFIG_SUMMARY);
   const [loadingSummary, setLoadingSummary] = useState<boolean>(false);
 
   // Risk Policy
-  const [riskPolicy, setRiskPolicy] = useState<any>(null);
+  const [riskPolicy, setRiskPolicy] = useState<any>(DEFAULT_RISK_POLICY);
   const [savingRisk, setSavingRisk] = useState<boolean>(false);
   const [riskSaveMsg, setRiskSaveMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -101,7 +163,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
   const [aiCredsMsg, setAiCredsMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // AI Router
-  const [routerConfig, setRouterConfig] = useState<any>(null);
+  const [routerConfig, setRouterConfig] = useState<any>(DEFAULT_ROUTER_CONFIG);
   const [savingRouter, setSavingRouter] = useState<boolean>(false);
   const [routerMsg, setRouterMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -166,8 +228,8 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
     }
   };
 
-  const handleAdminLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleAdminLogin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!adminKeyInput.trim()) return;
     setIsLoggingIn(true);
     setAuthError('');
@@ -183,7 +245,13 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
         localStorage.setItem('nanolabs_admin_token', json.token);
         setIsAdminAuthenticated(true);
         setAdminKeyInput('');
+        setShowUnlockModal(false);
         fetchAuditLogs();
+        fetchSummary();
+        fetchRiskPolicy();
+        fetchBybitConfig();
+        fetchAiCredentials();
+        fetchRouterConfig();
       } else {
         setAuthError(json.error || 'Credenciales incorrectas');
       }
@@ -479,6 +547,28 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
     } catch {}
   };
 
+  const renderAdminBanner = () => {
+    if (isAdminAuthenticated) return null;
+    return (
+      <div className="mb-4 p-3.5 rounded-lg bg-amber-950/40 border border-amber-600/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-200 shadow-sm">
+        <div className="flex items-center gap-2.5">
+          <Lock className="w-4 h-4 text-amber-400 shrink-0" />
+          <span>
+            Visualizando en <strong>modo solo lectura</strong>. Para editar parámetros de riesgo, claves de API o enrutamiento de IA, desbloquee con su clave administrativa.
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowUnlockModal(true)}
+          className="px-3.5 py-1.5 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shrink-0 flex items-center gap-1.5 transition-colors shadow-sm self-start sm:self-auto cursor-pointer"
+        >
+          <Key className="w-3.5 h-3.5" />
+          <span>Desbloquear Edición</span>
+        </button>
+      </div>
+    );
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -508,37 +598,42 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
 
           <div className="flex items-center gap-3">
             {isAdminAuthenticated ? (
-              <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-emerald-950/60 border border-emerald-600/40 text-emerald-300 text-xs font-mono">
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-emerald-950/80 border border-emerald-600/50 text-emerald-300 text-xs font-mono">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 <span>Admin Activo</span>
                 <button
                   onClick={handleAdminLogout}
-                  className="ml-2 hover:text-white underline text-[11px]"
+                  className="ml-2 hover:text-white text-slate-400 underline text-[11px] cursor-pointer"
                   title="Cerrar sesión de administrador"
                 >
-                  Salir
+                  Bloquear
                 </button>
               </div>
             ) : (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-950/60 border border-amber-600/40 text-amber-300 text-xs">
+              <button
+                type="button"
+                onClick={() => setShowUnlockModal(true)}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/50 text-amber-300 hover:text-amber-200 text-xs font-semibold transition-all shadow-sm cursor-pointer"
+                title="Haga clic para ingresar clave administrativa y desbloquear edición"
+              >
                 <Lock className="w-3.5 h-3.5" />
-                <span>Modo Lectura</span>
-              </div>
+                <span>Modo Lectura (Desbloquear)</span>
+              </button>
             )}
 
             <button
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800/80 transition-colors"
+              className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800/80 transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
           </div>
         </div>
 
-        {/* Modal Body: Tabs Sidebar + Content Area */}
-        <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-          {/* Tabs Navigation */}
-          <div className="w-full md:w-64 border-b md:border-b-0 md:border-r border-[#1f2638] bg-[#0e121d] flex md:flex-col overflow-x-auto md:overflow-y-auto custom-scrollbar p-2 gap-1 flex-shrink-0">
+        {/* Modal Body: 2-column sidebar + content layout */}
+        <div className="flex-1 flex flex-row overflow-hidden min-h-0">
+          {/* Tabs Navigation Sidebar: Fixed on the left */}
+          <aside className="w-56 sm:w-64 border-r border-[#1f2638] bg-[#0e121d] flex flex-col p-2.5 gap-1.5 flex-shrink-0 overflow-y-auto custom-scrollbar">
             {[
               { id: 'general', label: 'General', icon: Sliders },
               { id: 'risk', label: 'Gestión de Riesgo', icon: Shield },
@@ -556,21 +651,21 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id as TabType)}
-                  className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-all text-left whitespace-nowrap ${
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-xs font-medium transition-all text-left whitespace-nowrap cursor-pointer ${
                     isActive
-                      ? 'bg-orange-500/15 text-orange-400 border border-orange-500/30 shadow-sm'
+                      ? 'bg-orange-500/20 text-orange-400 border border-orange-500/40 shadow-sm font-semibold'
                       : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 border border-transparent'
                   }`}
                 >
-                  <Icon className={`w-4 h-4 ${isActive ? 'text-orange-400' : 'text-slate-500'}`} />
-                  <span>{tab.label}</span>
+                  <Icon className={`w-4 h-4 flex-shrink-0 ${isActive ? 'text-orange-400' : 'text-slate-500'}`} />
+                  <span className="truncate">{tab.label}</span>
                 </button>
               );
             })}
-          </div>
+          </aside>
 
           {/* Tab Content Display */}
-          <div className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6 bg-[#0a0d14]">
+          <main className="flex-1 overflow-y-auto custom-scrollbar p-4 sm:p-6 bg-[#0a0d14] min-w-0">
             {/* TAB 1: GENERAL */}
             {activeTab === 'general' && (
               <div className="space-y-6 max-w-4xl">
@@ -669,6 +764,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
             {/* TAB 2: GESTIÓN DE RIESGO & CALCULADORA */}
             {activeTab === 'risk' && (
               <div className="space-y-6 max-w-4xl">
+                {renderAdminBanner()}
                 <div className="flex items-center justify-between">
                   <div>
                     <h3 className="text-base font-semibold text-white">Política Estricta de Riesgo de Capital</h3>
@@ -677,9 +773,14 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                     </p>
                   </div>
                   {!isAdminAuthenticated && (
-                    <span className="text-xs text-amber-400 bg-amber-950/60 px-3 py-1 rounded border border-amber-800">
-                      Inicie sesión para editar
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowUnlockModal(true)}
+                      className="text-xs text-amber-400 bg-amber-950/60 hover:bg-amber-900/60 px-3 py-1 rounded border border-amber-800 cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Lock className="w-3.5 h-3.5" />
+                      <span>Desbloquear edición</span>
+                    </button>
                   )}
                 </div>
 
@@ -1089,6 +1190,32 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                       </div>
                     </div>
                   )}
+
+                  {calcResult && (
+                    <div className="flex justify-end pt-1">
+                      <button
+                        type="button"
+                        disabled={!isAdminAuthenticated}
+                        onClick={() => {
+                          setRiskPolicy((prev: any) => ({
+                            ...prev,
+                            capitalUsdt: calcInput.capitalUsdt,
+                            maxRiskPerTradePercent: calcInput.maxRiskPercent,
+                            maxRiskPerTradeUsdt: calcInput.maxRiskUsdt,
+                          }));
+                          setRiskSaveMsg({
+                            type: 'success',
+                            text: 'Parámetros de capital y riesgo de la calculadora aplicados al formulario. Haga clic en Guardar para persistir.',
+                          });
+                        }}
+                        className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-xs text-orange-400 font-medium border border-orange-500/30 transition-all flex items-center gap-1.5 cursor-pointer"
+                        title={isAdminAuthenticated ? "Copiar valores de capital y riesgo a la política" : "Desbloquee modo admin para aplicar"}
+                      >
+                        <Sliders className="w-3.5 h-3.5" />
+                        <span>Aplicar estos valores al formulario de Política</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1096,6 +1223,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
             {/* TAB 3: BYBIT CREDENTIALS */}
             {activeTab === 'bybit' && (
               <div className="space-y-6 max-w-4xl">
+                {renderAdminBanner()}
                 <div>
                   <h3 className="text-base font-semibold text-white">Configuración de API Bybit V5 Linear</h3>
                   <p className="text-xs text-slate-400">
@@ -1251,6 +1379,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
             {/* TAB 4: OPENAI */}
             {activeTab === 'openai' && (
               <div className="space-y-6 max-w-4xl">
+                {renderAdminBanner()}
                 <div>
                   <h3 className="text-base font-semibold text-white">Configuración del Proveedor OpenAI</h3>
                   <p className="text-xs text-slate-400">
@@ -1341,6 +1470,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
             {/* TAB 5: GEMINI */}
             {activeTab === 'gemini' && (
               <div className="space-y-6 max-w-4xl">
+                {renderAdminBanner()}
                 <div>
                   <h3 className="text-base font-semibold text-white">Configuración del Proveedor Google Gemini</h3>
                   <p className="text-xs text-slate-400">
@@ -1419,6 +1549,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
             {/* TAB 6: ROUTER DE IA */}
             {activeTab === 'router' && (
               <div className="space-y-6 max-w-4xl">
+                {renderAdminBanner()}
                 <div>
                   <h3 className="text-base font-semibold text-white">Router Inteligente Multimodelo</h3>
                   <p className="text-xs text-slate-400">
@@ -1552,6 +1683,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
             {/* TAB 7: GASTOS Y PRESUPUESTOS */}
             {activeTab === 'budget' && (
               <div className="space-y-6 max-w-4xl">
+                {renderAdminBanner()}
                 <div className="flex items-center justify-between">
                   <div>
                     <h3 className="text-base font-semibold text-white">Consumo y Presupuestos de Inteligencia Artificial</h3>
@@ -1735,21 +1867,33 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                       </div>
                     )}
 
-                    <form onSubmit={handleAdminLogin} className="flex gap-2">
-                      <input
-                        type="password"
-                        placeholder="Clave de administración"
-                        value={adminKeyInput}
-                        onChange={(e) => setAdminKeyInput(e.target.value)}
-                        className="flex-1 bg-[#0a0d14] border border-[#21283b] rounded px-3 py-1.5 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
-                      />
-                      <button
-                        type="submit"
-                        disabled={isLoggingIn}
-                        className="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold"
-                      >
-                        {isLoggingIn ? 'Verificando...' : 'Acceder'}
-                      </button>
+                    <form onSubmit={handleAdminLogin} className="space-y-2">
+                      <div className="flex gap-2">
+                        <input
+                          type="password"
+                          placeholder="Clave de administración"
+                          value={adminKeyInput}
+                          onChange={(e) => setAdminKeyInput(e.target.value)}
+                          className="flex-1 bg-[#0a0d14] border border-[#21283b] rounded px-3 py-1.5 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isLoggingIn}
+                          className="px-4 py-1.5 rounded bg-orange-600 hover:bg-orange-500 text-white text-xs font-semibold cursor-pointer"
+                        >
+                          {isLoggingIn ? 'Verificando...' : 'Acceder'}
+                        </button>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-slate-400">
+                        <span>Clave local: <code className="text-orange-400 font-mono">nanolabs_admin_sec_2026</code></span>
+                        <button
+                          type="button"
+                          onClick={() => setAdminKeyInput('nanolabs_admin_sec_2026')}
+                          className="text-orange-400 hover:text-orange-300 underline font-medium cursor-pointer"
+                        >
+                          Completar
+                        </button>
+                      </div>
                     </form>
                   </div>
                 ) : (
@@ -1865,9 +2009,90 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                 </div>
               </div>
             )}
-          </div>
+          </main>
         </div>
       </div>
+
+      {/* Unlock Dialog Modal */}
+      {showUnlockModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in">
+          <div className="relative w-full max-w-md bg-[#111624] border border-orange-500/40 rounded-xl shadow-2xl p-6 text-slate-200">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-orange-500/20 border border-orange-500/40 flex items-center justify-center text-orange-400">
+                  <Key className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Desbloquear Edición</h3>
+                  <p className="text-xs text-slate-400">Autenticación de administrador</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setShowUnlockModal(false); setAuthError(''); }}
+                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 mb-4 leading-relaxed">
+              Ingrese su clave administrativa para modificar parámetros de riesgo, claves de Bybit e IAs, o ajustar el router inteligente.
+            </p>
+
+            {authError && (
+              <div className="mb-4 p-3 rounded-lg bg-red-950/70 border border-red-800 text-red-200 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleAdminLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                  Clave de Administrador
+                </label>
+                <input
+                  type="password"
+                  autoFocus
+                  placeholder="••••••••••••••••"
+                  value={adminKeyInput}
+                  onChange={(e) => setAdminKeyInput(e.target.value)}
+                  className="w-full bg-[#0a0d14] border border-[#21283b] rounded-lg px-3.5 py-2 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
+                />
+                <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+                  <span>Clave local: <code className="text-orange-400 font-mono">nanolabs_admin_sec_2026</code></span>
+                  <button
+                    type="button"
+                    onClick={() => setAdminKeyInput('nanolabs_admin_sec_2026')}
+                    className="text-orange-400 hover:text-orange-300 underline font-medium cursor-pointer"
+                  >
+                    Completar
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex gap-2 justify-end pt-2">
+                <button
+                  type="button"
+                  onClick={() => { setShowUnlockModal(false); setAuthError(''); }}
+                  className="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isLoggingIn || !adminKeyInput.trim()}
+                  className="px-5 py-2 rounded-lg bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-orange-600/30 flex items-center gap-2 cursor-pointer"
+                >
+                  {isLoggingIn ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
+                  <span>Desbloquear</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
