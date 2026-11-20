@@ -415,3 +415,44 @@
 
 - [x] **Cobertura de Pruebas Automatizadas**:
   - **121 pruebas unitarias aprobadas al 100%** (8 nuevas pruebas en `fase5c-prospective-paper.test.ts` cubriendo 1:2 vs 1:4, unicidad de swing mayor, exclusión de objetivos no estructurales, sizing con comisiones y límite a 5x, invariante de 1R, escenario NEUTRAL, ciclo paper trading y scheduler presupuesto bloqueado).
+
+---
+
+## FASE 5C (ACTUALIZADA) — CORRECCIÓN ARQUITECTÓNICA FUNDAMENTAL: IA COMO ANALISTA PRINCIPAL DEL MERCADO (COMPLETADA)
+
+- [x] **OpenAI y Gemini como Analistas Principales del Mercado Discrecional**:
+  - **Desacoplamiento Total de Estrategias Fijas**: Las IAs ya no son meras aprobadoras de Estrategia A o Estrategia B precalculadas. Reciben un `MarketIntelligenceSummary` omnicomprensivo con 6 temporalidades (`1d`, `4h`, `1h`, `15m`, `5m`, `1m`), SMC/ICT completo (swings, BOS, CHoCH, Order Blocks, FVGs, sweeps de liquidez), order flow, spread, profundidad de order book top 5, Open Interest, funding rate y volatilidad 24h.
+  - **Estrategias A y B como Referencias Algorítmicas Comparativas**: Los setups matemáticos tradicionales se preservan y exponen bajo el campo `algorithmicReferenceSetups` para referencia comparativa, pero ya no operan como filtro excluyente ni condicionan el descubrimiento de la IA.
+  - **Razonamiento Autónomo Discrecional**: Cada modelo analiza independientemente qué está haciendo el mercado (`whatMarketIsDoing`), por qué podría estar haciéndolo (`whyMarketIsDoingIt`), evidencias técnicas (`evidenceList`), sesgo direccional (`bias`), horizonte preferido (`preferredHorizon`), temporalidad recomendada (`recommendedTimeframe`) y condiciones faltantes.
+  - **Neutralidad Formal y Preservación de Capital**: Si el mercado carece de confluencia técnica, las IAs fundamentan `noTradeJustification` generando un escenario formal `NO_TRADE_OBSERVATION` bajo la filosofía rectora: *"No operar es una decisión válida y a menudo la mejor"*. Sin inventar probabilidades estadísticas ni porcentajes ficticios.
+
+- [x] **Contrato Estructurado y Persistente `AI_WATCH_PLAN`**:
+  - Toda oportunidad generada por las IAs crea un contrato persistente con: `id`, `scenarioId`, `direction`, `marketThesis`, `horizon`, `primaryTimeframe`, `watchZone`, `candidateStopLoss`, `candidateTakeProfits` (con elegibilidad dual 1:2 y 1:4), `confirmationSequence`, `invalidationConditions`, `expirationTimestamp` y `reevaluationTriggers`.
+  - **Operadores Deterministas Permitidos**: Condiciones observables construidas con operadores algorítmicos formales (`PRICE_IN_RANGE`, `PRICE_TOUCH_LEVEL`, `PRICE_CROSS_ABOVE`, `PRICE_CROSS_BELOW`, `RSI_THRESHOLD`, `SPREAD_TOLERANCE`, `CANDLE_CLOSE_ABOVE`, `CANDLE_CLOSE_BELOW`, `STRUCTURE_BREAK`, `SWEEP_CONFIRMED`, `TIME_ELAPSED`).
+  - **Gestión de Condiciones No Automatizables**: Si la IA requiere validaciones cualitativas o subjetivas no verificables por el stream de datos, el contrato se marca con `automatable: false`, bloqueando la auto-aprobación del motor y transitando a `WAITING_CONFIRMATION`.
+  - **Persistencia en Base de Datos**: Creación de la tabla `ai_watch_plans` e índices en SQLite y soporte para PostgreSQL, con CRUD completo e historial de ciclo de vida.
+
+- [x] **Vigilancia Algorítmica en Tiempo Real (`AlgorithmicWatcher`)**:
+  - Monitoreo en vivo de múltiples planes activos sobre cada tick de mercado sin consumo continuo de tokens (0 llamadas de IA en reposo).
+  - Evaluación determinista de condiciones observables y desencadenamiento de `APPROACHING_ZONE` cuando el precio se acerca a la zona operativa.
+  - Detección inmediata de invalidación: si el precio cruza el Stop Loss o invalida la hipótesis antes de ingresar a la zona, el plan transita inmediatamente a `INVALIDATED`.
+  - Detección de activación: al satisfacerse las condiciones observables automatizables en zona, el watcher emite `revalidation_requested` para consultar a las IAs.
+
+- [x] **Reevaluación Inteligente y Validaciones Cuantitativas de Seguridad**:
+  - Al activarse un plan, `AiEntryRevalidation` consulta nuevamente a OpenAI y Gemini inyectando el contrato original `AI_WATCH_PLAN`, la evolución del mercado y el snapshot de precio actual.
+  - **Control Previo de Stop Loss**: Descarte inmediato si el precio vulneró el Stop Loss antes de la validación.
+  - **Tolerancia Dinámica de Desviación de Precio (`Dynamic Price Drift`)**: Cálculo de tolerancia máxima en función de la distancia al Stop Loss (`min(0.15%, 10% del riesgo)`). Si el precio se aleja materialmente durante el análisis, el escenario transita a `EXPIRED` evitando entradas tardías o slippage excesivo.
+  - **Recálculo Cuantitativo de R:R Neto**: `RiskCalculator.calculateDualTargets` audita matemáticamente que la entrada en el precio actual descontando comisiones taker/maker, spread y slippage mantenga un R:R neto $\ge 2.0$ y/o $\ge 4.0$. Si no califica, se cancela la entrada.
+  - **Presupuesto y Seguridad Operativa**: Control estricto de `HardBudgetManager` y garantía de modo `SIGNALS_ONLY` y Paper Trading sin claves privadas de ejecución real.
+
+- [x] **Panel Visual y Dashboard (NanoLabs Theme 2)**:
+  - Integración del panel interactivo de `AI_WATCH_PLAN` en `AiTradingIntelligence.tsx`, mostrando el ID del contrato, horizonte, badge de automatabilidad, tesis cualitativa, chips de operadores y condiciones observables en tiempo real.
+  - Endpoint REST `GET /api/v1/discovery/watch-plans` para auditoría y consulta de planes de vigilancia activos e históricos.
+
+- [x] **Cobertura de Pruebas Automatizadas**:
+  - **126 pruebas unitarias aprobadas al 100%**: 5 nuevas pruebas especializadas en `fase5c-architectural-correction.test.ts` verificando:
+    1. Descubrimiento autónomo multi-temporal con SMC completo sin Estrategia A/B obligatoria.
+    2. Manejo de condiciones no automatizables (`automatable: false` -> `WAITING_CONFIRMATION`).
+    3. Replay determinista de ciclo completo: descubrimiento -> registro de plan -> aproximación -> activación en zona -> reevaluación dual -> validación cuantitativa -> apertura de señales paper trading prospectivas 1:2 y 1:4.
+    4. Garantía de invalidación determinista y control dinámico de desviación de precio (price drift).
+    5. Conclusión formal neutral generando plan de espera sin forzar señales.

@@ -21,6 +21,107 @@ export type ScenarioRRMode = 'RR_1_2' | 'RR_1_4' | 'RR_BOTH' | 'NONE';
 
 export type UncertaintyLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 
+export type WatchHorizon = 'SCALP' | 'INTRADAY' | 'SWING';
+
+export type WatchOperator =
+  | 'PRICE_CROSS_ABOVE'
+  | 'PRICE_CROSS_BELOW'
+  | 'PRICE_IN_RANGE'
+  | 'PRICE_TOUCH_LEVEL'
+  | 'RSI_THRESHOLD'
+  | 'VOLUME_SPIKE'
+  | 'SPREAD_TOLERANCE'
+  | 'ORDERBOOK_IMBALANCE'
+  | 'CANDLE_CLOSE_ABOVE'
+  | 'CANDLE_CLOSE_BELOW'
+  | 'SWEEP_CONFIRMED'
+  | 'STRUCTURE_BREAK'
+  | 'TIME_ELAPSED';
+
+export type WatchPlanStatus =
+  | 'PENDING'
+  | 'ACTIVE'
+  | 'TRIGGERED'
+  | 'REVALIDATING'
+  | 'ENTRY_VALIDATED'
+  | 'INVALIDATED'
+  | 'EXPIRED'
+  | 'COMPLETED'
+  | 'CANCELLED';
+
+export interface WatchConditionParams {
+  level?: number;
+  minLevel?: number;
+  maxLevel?: number;
+  timeframe?: Timeframe;
+  threshold?: number;
+  direction?: 'BULLISH' | 'BEARISH';
+  comparison?: 'GREATER_THAN' | 'LESS_THAN' | 'EQUALS';
+  tolerancePct?: number;
+}
+
+export interface WatchCondition {
+  id: string;
+  description: string;
+  operator: WatchOperator;
+  params: WatchConditionParams;
+  isMet?: boolean;
+  metTimestamp?: number;
+  metDetails?: string;
+  automatable: boolean;
+}
+
+export interface WatchTriggerEvent {
+  event: 'ZONE_TOUCH' | 'CONFIRMATION_COMPLETED' | 'STRUCTURE_SHIFT' | 'VOLATILITY_EXPANSION' | 'ORDERBOOK_IMBALANCE';
+  description: string;
+  timeframe?: Timeframe;
+}
+
+export interface AiWatchPlan {
+  id: string;
+  scenarioId: string;
+  symbol: string;
+  direction: 'LONG' | 'SHORT' | 'NEUTRAL';
+  marketThesis: string;
+  horizon: WatchHorizon;
+  primaryTimeframe: Timeframe;
+  watchZone: {
+    minPrice: number;
+    maxPrice: number;
+    targetEntry: number;
+  };
+  candidateStopLoss: number;
+  candidateTakeProfits: {
+    tp12?: number;
+    tp14?: number;
+    structuralTarget?: number;
+  };
+  rrEligibility: ScenarioRRMode;
+  observableConditions: WatchCondition[];
+  confirmationSequence: string[];
+  invalidationConditions: WatchCondition[];
+  expirationTimestamp: number;
+  reevaluationTriggers: WatchTriggerEvent[];
+  reasoningVersion: string;
+  status: WatchPlanStatus;
+  automatable: boolean;
+  nonAutomatableConditions?: string[];
+  lastEvaluatedTimestamp?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AiMarketAnalysis {
+  whatMarketIsDoing: string;
+  whyMarketIsDoingIt: string;
+  evidenceList: string[];
+  bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  preferredHorizon: WatchHorizon;
+  recommendedTimeframe: Timeframe;
+  noTradeJustification?: string;
+  confidenceDisclaimer?: string;
+}
+
 export interface ScenarioInterpretation {
   provider: AiProvider;
   model: string;
@@ -28,6 +129,7 @@ export interface ScenarioInterpretation {
   reasoning: string;
   keyZones: string[];
   confidence: number;
+  marketAnalysis?: AiMarketAnalysis;
 }
 
 export interface Scenario {
@@ -64,6 +166,12 @@ export interface Scenario {
   currentPrice?: number;
   lastCheckedTimestamp?: number;
   isSimulated?: boolean;
+  // New Architecture Fields:
+  watchPlan?: AiWatchPlan;
+  aiMarketThesis?: string;
+  horizon?: WatchHorizon;
+  missingConditions?: string[];
+  confidenceDisclaimer?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -95,7 +203,31 @@ export interface ScenarioRevalidationRecord {
     invalidationTrigger?: string;
     costUsd?: number;
     tokensUsed?: number;
+    marketEvolutionSummary?: string;
+    watchPlanId?: string;
   };
+}
+
+export interface MarketDataAvailability {
+  wsConnected: boolean;
+  orderBookSynced: boolean;
+  klinesAvailable: Record<Timeframe, boolean>;
+  liquidationsAvailable: boolean;
+  openInterestAvailable: boolean;
+  fundingRateAvailable: boolean;
+  allCriticalDataPresent: boolean;
+  missingDataNotice?: string;
+}
+
+export interface AlgorithmicReferenceSetup {
+  strategy: string;
+  direction: 'LONG' | 'SHORT';
+  timeframe: Timeframe;
+  entryPrice: number;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+  netRR: number;
+  evidence: string[];
 }
 
 export interface MarketIntelligenceSummary {
@@ -109,13 +241,22 @@ export interface MarketIntelligenceSummary {
     ema20?: number;
     ema50?: number;
     ema200?: number;
+    ema200Ready: boolean;
     vwap?: number;
     volumeRelative: number;
-    activeSwings: { high?: number; low?: number };
+    activeSwings: {
+      high?: { price: number; timestamp?: number; label?: string };
+      low?: { price: number; timestamp?: number; label?: string };
+    };
+    recentSwings: Array<{ type: 'HIGH' | 'LOW'; price: number; label?: string }>;
     bosCount: number;
     chochCount: number;
+    recentStructureBreaks: Array<{ type: 'BOS' | 'CHoCH'; direction: 'BULLISH' | 'BEARISH'; level: number }>;
     activeFvgs: number;
+    activeFvgDetails: Array<{ type: 'BULLISH' | 'BEARISH'; top: number; bottom: number; size: number }>;
     activeObs: number;
+    activeObDetails: Array<{ type: 'BULLISH' | 'BEARISH'; top: number; bottom: number }>;
+    recentSweeps: Array<{ direction: 'BULLISH' | 'BEARISH'; sweptLevel: number; poolType: string }>;
   }>;
   orderBook: {
     spread: number;
@@ -123,6 +264,8 @@ export interface MarketIntelligenceSummary {
     imbalance: number;
     bestBid: number;
     bestAsk: number;
+    bidsTop5?: Array<{ price: number; size: number }>;
+    asksTop5?: Array<{ price: number; size: number }>;
   };
   marketContext: {
     fundingRate: number;
@@ -131,8 +274,13 @@ export interface MarketIntelligenceSummary {
     high24h: number;
     low24h: number;
   };
+  dataAvailability: MarketDataAvailability;
+  algorithmicReferenceSetups?: AlgorithmicReferenceSetup[];
   openaiBias?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
   geminiBias?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  openaiAnalysis?: AiMarketAnalysis;
+  geminiAnalysis?: AiMarketAnalysis;
   lastDiscoveryTimestamp?: number;
   lastRevalidationTimestamp?: number;
+  confidenceDisclaimer?: string;
 }

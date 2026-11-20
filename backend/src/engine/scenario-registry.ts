@@ -111,6 +111,16 @@ export class ScenarioRegistry extends EventEmitter {
       ...(metadata?.distanceToZonePct !== undefined ? { distanceToZonePct: metadata.distanceToZonePct } : {}),
     };
 
+    if (updated.watchPlan) {
+      if (toStatus === 'ENTRY_VALIDATED') updated.watchPlan.status = 'ENTRY_VALIDATED';
+      else if (toStatus === 'INVALIDATED') updated.watchPlan.status = 'INVALIDATED';
+      else if (toStatus === 'EXPIRED') updated.watchPlan.status = 'EXPIRED';
+      else if (toStatus === 'CANCELLED') updated.watchPlan.status = 'CANCELLED';
+      else if (toStatus === 'IN_ZONE' || toStatus === 'REVALIDATION_REQUESTED') updated.watchPlan.status = 'TRIGGERED';
+      else if (toStatus === 'AI_REVALIDATING') updated.watchPlan.status = 'REVALIDATING';
+      this.db.saveWatchPlan(updated.watchPlan);
+    }
+
     // If final status, remove from active map
     if (['INVALIDATED', 'EXPIRED', 'CANCELLED', 'SIGNAL_GENERATED'].includes(toStatus)) {
       this.scenarios.delete(id);

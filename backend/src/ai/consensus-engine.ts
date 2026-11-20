@@ -91,7 +91,8 @@ export class ConsensusEngine extends EventEmitter {
     }
 
     // Step 4: Technical strategy rules
-    if (!setup.strategy || !setup.direction) {
+    const hasStrategyOrStructure = Boolean(setup.strategy || (setup as any).structureType);
+    if (!hasStrategyOrStructure || !setup.direction) {
       ruleViolations.push('Setup sin estrategia o dirección válida');
       return this.rejectDecision(signalId, setup, snapshot.snapshotId, evaluatedAt, ruleViolations, 'INVALID_STRATEGY');
     }

@@ -73,7 +73,7 @@ export interface MarketSnapshot {
     isSynced: boolean;
   };
   multiTimeframe: Record<string, MarketSnapshotTimeframeSummary>;
-  candidateSetup: SetupCandidate;
+  candidateSetup: SetupCandidate | any;
   dataIntegrity: {
     wsConnected: boolean;
     isOrderBookSynced: boolean;

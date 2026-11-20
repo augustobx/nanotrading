@@ -12,6 +12,7 @@ import { WebPushNotifier } from '../notifications/web-push-notifier.js';
 import {
   Scenario,
   ScenarioRevalidationRecord,
+  AiWatchPlan,
 } from './scenario-types.js';
 import { AiVerdict, ConsensusVerdict } from './types.js';
 
@@ -59,14 +60,19 @@ export class AiEntryRevalidation extends EventEmitter {
     this.mockEvaluator = fn;
   }
 
-  public async revalidate(scenario: Scenario, currentPrice: number): Promise<{
+  public async revalidate(scenario: Scenario, currentPrice: number, watchPlan?: AiWatchPlan): Promise<{
     consensus: ConsensusVerdict;
     scenario: Scenario;
     revalidationRecord: ScenarioRevalidationRecord;
     reason?: string;
   }> {
     const revalId = `reval_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
-    this.scenarioRegistry.transitionStatus(scenario.id, 'AI_REVALIDATING', 'Ejecutando reevaluación con IA en zona', { currentPrice });
+    this.scenarioRegistry.transitionStatus(scenario.id, 'AI_REVALIDATING', 'Ejecutando reevaluación inteligente con IA en zona', { currentPrice });
+
+    const activePlan = watchPlan || scenario.watchPlan;
+    if (activePlan) {
+      activePlan.status = 'REVALIDATING';
+    }
 
     // 1. Mock Evaluator (for unit testing deterministic scenarios)
     if (this.mockEvaluator) {
@@ -87,11 +93,12 @@ export class AiEntryRevalidation extends EventEmitter {
           rr12Confirmed: !!scenario.target12Price,
           rr14Confirmed: !!scenario.target14Price,
           costUsd: 0.001,
+          watchPlanId: activePlan?.id,
         },
       };
 
       this.db.saveScenarioRevalidation(revalidationRecord);
-      const outcome = this.applyConsensusOutcome(scenario, consensus, currentPrice, revalidationRecord);
+      const outcome = this.applyConsensusOutcome(scenario, consensus, currentPrice, revalidationRecord, activePlan);
       return {
         consensus,
         scenario: outcome.scenario,
@@ -109,10 +116,11 @@ export class AiEntryRevalidation extends EventEmitter {
         timestamp: Date.now(),
         consensusVerdict: 'DISCARDED',
         priceAtRevalidation: currentPrice,
-        details: { invalidationTrigger: reason, costUsd: 0 },
+        details: { invalidationTrigger: reason, costUsd: 0, watchPlanId: activePlan?.id },
       };
       this.db.saveScenarioRevalidation(record);
       const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'CANCELLED', reason, { currentPrice });
+      if (activePlan) activePlan.status = 'CANCELLED';
       return { consensus: 'DISCARDED', scenario: updated || scenario, revalidationRecord: record, reason };
     }
 
@@ -133,7 +141,7 @@ export class AiEntryRevalidation extends EventEmitter {
         timestamp: Date.now(),
         consensusVerdict: 'WAITING_CONDITIONS',
         priceAtRevalidation: currentPrice,
-        details: { invalidationTrigger: reason, costUsd: 0 },
+        details: { invalidationTrigger: reason, costUsd: 0, watchPlanId: activePlan?.id },
       };
       this.db.saveScenarioRevalidation(record);
       const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'WAITING_CONFIRMATION', reason, { currentPrice });
@@ -145,7 +153,7 @@ export class AiEntryRevalidation extends EventEmitter {
       provider: openaiConfigured ? 'OPENAI' : 'GEMINI',
       model: openaiConfigured ? this.openaiAdapter.getModel() : this.geminiAdapter.getModel(),
       task: 'SCENARIO_REVALIDATION',
-      estimatedTokens: 2000,
+      estimatedTokens: 2500,
     });
 
     if (!resv.allowed) {
@@ -156,41 +164,62 @@ export class AiEntryRevalidation extends EventEmitter {
         timestamp: Date.now(),
         consensusVerdict: 'DISCARDED',
         priceAtRevalidation: currentPrice,
-        details: { invalidationTrigger: reason, costUsd: 0 },
+        details: { invalidationTrigger: reason, costUsd: 0, watchPlanId: activePlan?.id },
       };
       this.db.saveScenarioRevalidation(record);
       const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'CANCELLED', reason, { currentPrice });
+      if (activePlan) activePlan.status = 'CANCELLED';
       return { consensus: 'DISCARDED', scenario: updated || scenario, revalidationRecord: record, reason };
     }
 
-    // 5. Query models
+    // 5. Query models with full context of plan and market evolution
     let openaiVerdict: AiVerdict = 'WAIT';
     let geminiVerdict: AiVerdict = 'WAIT';
     let openaiReason = '';
     let geminiReason = '';
     let totalCostUsd = 0;
 
-    try {
-      const prompt = `REEVALUACIÓN DE ENTRADA: El precio de BTCUSDT alcanzó la zona operativa registrada.
-Escenario Original:
-- ID: ${scenario.id}
-- Dirección: ${scenario.direction}
-- Zona: [${scenario.entryZoneMin} - ${scenario.entryZoneMax}]
-- Precio Actual: ${currentPrice}
-- Stop Loss: ${scenario.stopLossPrice}
-- Target 1:2: ${scenario.target12Price} (Net R:R: ${scenario.netRR12})
-- Target 1:4: ${scenario.target14Price} (Net R:R: ${scenario.netRR14})
-- R:R Mode: ${scenario.rrModeAvailable}
+    const timeElapsedSec = Math.round((Date.now() - scenario.discoveryTimestamp) / 1000);
+    const priceEvolutionPcnt = ((currentPrice - scenario.targetEntry) / scenario.targetEntry) * 100;
 
-Evalúa si la hipótesis sigue plenamente vigente y si hay confirmación para entrar ahora.
+    const evolutionSummary = `Tiempo transcurrido desde descubrimiento: ${timeElapsedSec}s. Desviación actual vs entrada teórica: ${priceEvolutionPcnt.toFixed(2)}% ($${currentPrice} vs $${scenario.targetEntry}).`;
+
+    try {
+      const prompt = `REEVALUACIÓN DE ENTRADA DISCRECIONAL (AI_WATCH_PLAN):
+El precio de BTCUSDT alcanzó la zona o satisfizo las condiciones observables del plan.
+
+CONTRATO DE VIGILANCIA ORIGINAL (AI_WATCH_PLAN):
+- ID Plan: ${activePlan?.id || scenario.id}
+- Dirección: ${scenario.direction}
+- Tesis Original: ${activePlan?.marketThesis || scenario.argumentsFor[0] || 'N/A'}
+- Horizonte: ${activePlan?.horizon || scenario.horizon || 'INTRADAY'}
+- Temporalidad: ${scenario.timeframe}
+- Zona Operativa: [${scenario.entryZoneMin} - ${scenario.entryZoneMax}]
+- Precio Actual: $${currentPrice}
+- Entrada Teórica: $${scenario.targetEntry}
+- Stop Loss Estructural: $${scenario.stopLossPrice}
+- Target 1:2: $${scenario.target12Price} (Net R:R: ${scenario.netRR12})
+- Target 1:4: $${scenario.target14Price} (Net R:R: ${scenario.netRR14})
+- Secuencia de Confirmaciones: ${JSON.stringify(activePlan?.confirmationSequence || [])}
+- Condiciones de Invalidación: ${JSON.stringify(activePlan?.invalidationConditions?.map((i) => i.description) || scenario.invalidationTriggers)}
+
+EVOLUCIÓN OBSERVADA:
+${evolutionSummary}
+
+CRITERIO DE DECISIÓN:
+Evalúa si la hipótesis original sigue plenamente vigente tras la llegada del precio a la zona.
+- Emite APPROVE solo si hay absorción o mitigación favorable sin indicios de trampa de liquidez en contra.
+- Emite WAIT si el precio llegó con volumen impulsivo adverso y se requiere confirmación adicional en 5m/1m.
+- Emite REJECT si la estructura se degradó, si hubo barrido violento o si el riesgo/beneficio se distorsionó.
+
 Responde estrictamente en JSON:
 {
   "verdict": "APPROVE" | "WAIT" | "REJECT",
-  "reasoning": "...",
-  "argumentsFor": ["..."],
-  "argumentsAgainst": ["..."],
+  "reasoning": "Explicación rigurosa de la decisión",
+  "argumentsFor": ["Evidencia a favor"],
+  "argumentsAgainst": ["Evidencia en contra"],
   "targetsStillValid": true,
-  "invalidationRisk": "..."
+  "invalidationRisk": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
 }`;
 
       const [openaiRes, geminiRes] = await Promise.all([
@@ -214,11 +243,11 @@ Responde estrictamente en JSON:
           provider: openaiConfigured ? 'OPENAI' : 'GEMINI',
           model: openaiConfigured ? this.openaiAdapter.getModel() : this.geminiAdapter.getModel(),
           task: 'SCENARIO_REVALIDATION',
-          promptTokens: 1000,
-          completionTokens: 300,
+          promptTokens: 1200,
+          completionTokens: 350,
           costUsd: totalCostUsd,
           status: 'SUCCESS',
-          latencyMs: 900,
+          latencyMs: 950,
         });
       }
     }
@@ -247,11 +276,13 @@ Responde estrictamente en JSON:
         rr12Confirmed: !!scenario.target12Price,
         rr14Confirmed: !!scenario.target14Price,
         costUsd: totalCostUsd,
+        marketEvolutionSummary: evolutionSummary,
+        watchPlanId: activePlan?.id,
       },
     };
 
     this.db.saveScenarioRevalidation(revalidationRecord);
-    const outcome = this.applyConsensusOutcome(scenario, consensus, currentPrice, revalidationRecord);
+    const outcome = this.applyConsensusOutcome(scenario, consensus, currentPrice, revalidationRecord, activePlan);
     return {
       consensus,
       scenario: outcome.scenario,
@@ -274,12 +305,43 @@ Responde estrictamente en JSON:
     scenario: Scenario,
     consensus: ConsensusVerdict,
     currentPrice: number,
-    record: ScenarioRevalidationRecord
+    record: ScenarioRevalidationRecord,
+    watchPlan?: AiWatchPlan
   ): { scenario: Scenario; reason?: string } {
     if (consensus === 'AUTHORIZED') {
       if (scenario.direction === 'NEUTRAL') {
         const reason = 'Escenario en observación neutral sin dirección operativa ejecutable';
         return { scenario, reason };
+      }
+
+      // Check Pre-breached Stop Loss
+      if (scenario.direction === 'LONG' && currentPrice <= scenario.stopLossPrice) {
+        const reason = `Stop Loss ya alcanzado antes de validar entrada (Precio ${currentPrice} <= SL ${scenario.stopLossPrice})`;
+        const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'INVALIDATED', reason, { currentPrice })!;
+        if (watchPlan) watchPlan.status = 'INVALIDATED';
+        this.notifyCancelled(scenario, reason);
+        return { scenario: updated, reason };
+      }
+      if (scenario.direction === 'SHORT' && currentPrice >= scenario.stopLossPrice) {
+        const reason = `Stop Loss ya alcanzado antes de validar entrada (Precio ${currentPrice} >= SL ${scenario.stopLossPrice})`;
+        const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'INVALIDATED', reason, { currentPrice })!;
+        if (watchPlan) watchPlan.status = 'INVALIDATED';
+        this.notifyCancelled(scenario, reason);
+        return { scenario: updated, reason };
+      }
+
+      // Dynamic Price Drift Calculation (Tolerance aware)
+      const riskDistance = Math.abs(scenario.targetEntry - scenario.stopLossPrice);
+      const maxDriftByCeiling = scenario.targetEntry * 0.0015; // 0.15%
+      const maxDriftByRisk = riskDistance * 0.10; // 10% risk distance
+      const maxAllowedDriftUsdt = Math.max(0.5, Math.min(maxDriftByCeiling, maxDriftByRisk));
+      const actualDriftUsdt = Math.abs(currentPrice - scenario.targetEntry);
+
+      if (actualDriftUsdt > maxAllowedDriftUsdt) {
+        const reason = `Desviación de precio post-análisis dinámica superada (${actualDriftUsdt.toFixed(2)} USDT > máximo permitido ${maxAllowedDriftUsdt.toFixed(2)} USDT)`;
+        const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'EXPIRED', reason, { currentPrice })!;
+        if (watchPlan) watchPlan.status = 'EXPIRED';
+        return { scenario: updated, reason };
       }
 
       // Deterministic Quant Risk verification: re-check net R:R at current price
@@ -295,8 +357,9 @@ Responde estrictamente en JSON:
       });
 
       if (riskCalc.qualifiedMode === 'NONE') {
-        const reason = `R:R neto en precio actual (${currentPrice}) no alcanza el umbral mínimo 1:2`;
+        const reason = `R:R neto en precio actual (${currentPrice}) no alcanza el umbral mínimo 1:2 tras deducción de comisiones`;
         const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'CANCELLED', reason, { currentPrice })!;
+        if (watchPlan) watchPlan.status = 'CANCELLED';
         this.notifyCancelled(scenario, reason);
         return { scenario: updated, reason };
       }
@@ -308,8 +371,12 @@ Responde estrictamente en JSON:
         { currentPrice, netRR12: riskCalc.calculation12?.netRR, netRR14: riskCalc.calculation14?.netRR }
       )!;
 
+      if (watchPlan) {
+        watchPlan.status = 'ENTRY_VALIDATED';
+      }
+
       this.notifyEntryValidated(updated, currentPrice, riskCalc);
-      this.emit('entry_validated', { scenario: updated, currentPrice, riskCalc });
+      this.emit('entry_validated', { scenario: updated, currentPrice, riskCalc, watchPlan });
       return { scenario: updated };
     }
 
@@ -322,6 +389,7 @@ Responde estrictamente en JSON:
     // DISCARDED / REJECT
     const reason = 'Rechazo por discrepancia técnica, riesgo de trampa de liquidez o R:R insuficiente';
     const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'CANCELLED', reason, { currentPrice })!;
+    if (watchPlan) watchPlan.status = 'CANCELLED';
     this.notifyCancelled(scenario, reason);
     return { scenario: updated, reason };
   }
@@ -335,7 +403,7 @@ Responde estrictamente en JSON:
       sc.target12Price ? `*TP 1:2:* $${sc.target12Price.toFixed(1)} (Net R:R: ${riskCalc.netRR12}R)` : '',
       sc.target14Price ? `*TP 1:4:* $${sc.target14Price.toFixed(1)} (Net R:R: ${riskCalc.netRR14}R)` : '',
       `*Estructura:* ${sc.structureType}`,
-      `*Consenso:* Aprobado por analistas IA`,
+      `*Consenso:* Aprobado por analistas IA sobre AI_WATCH_PLAN`,
       `*Garantía:* Modo de prueba / paper trading. Cero órdenes reales en Bybit.`,
     ].filter(Boolean).join('\n');
 

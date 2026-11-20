@@ -3,7 +3,7 @@ import { MarketCoordinator } from '../market/market-coordinator.js';
 import { ScenarioRegistry } from './scenario-registry.js';
 import { TelegramNotifier } from '../notifications/telegram-notifier.js';
 import { WebPushNotifier } from '../notifications/web-push-notifier.js';
-import { Scenario } from '../ai/scenario-types.js';
+import { Scenario, WatchCondition, AiWatchPlan } from '../ai/scenario-types.js';
 
 export interface WatcherOptions {
   approachThresholdPct?: number; // default 0.35%
@@ -61,32 +61,76 @@ export class AlgorithmicWatcher extends EventEmitter {
 
     for (const sc of activeScenarios) {
       // 1. Expiration check
-      if (now > sc.validUntilTimestamp) {
+      const validUntil = sc.watchPlan?.expirationTimestamp || sc.validUntilTimestamp;
+      if (now > validUntil) {
         this.scenarioRegistry.transitionStatus(
           sc.id,
           'EXPIRED',
-          'Vigencia temporal agotada sin mitigación de la zona',
+          'Vigencia temporal agotada sin mitigación de la zona o cumplimiento de condiciones',
           { currentPrice }
         );
+        if (sc.watchPlan) {
+          sc.watchPlan.status = 'EXPIRED';
+        }
         this.emit('scenario_expired', { scenarioId: sc.id, reason: 'EXPIRED_TIME' });
         continue;
       }
 
-      // 2. Early Invalidation check (breaching Stop Loss prior to entry)
-      const isLong = sc.direction === 'LONG';
-      const isInvalidated = isLong
-        ? currentPrice <= sc.stopLossPrice
-        : currentPrice >= sc.stopLossPrice;
+      // 2. Invalidation conditions check (Structured Plan or Default Stop Loss)
+      let isInvalidated = false;
+      let invalidationReason = '';
+
+      if (sc.watchPlan?.invalidationConditions && sc.watchPlan.invalidationConditions.length > 0) {
+        for (const invCond of sc.watchPlan.invalidationConditions) {
+          if (this.evaluateCondition(invCond, currentPrice, spreadPcnt)) {
+            isInvalidated = true;
+            invalidationReason = invCond.description;
+            invCond.isMet = true;
+            invCond.metTimestamp = now;
+            break;
+          }
+        }
+      }
+
+      // Fallback structural check if not already triggered
+      if (!isInvalidated) {
+        const isLong = sc.direction === 'LONG';
+        if (isLong && currentPrice <= sc.stopLossPrice) {
+          isInvalidated = true;
+          invalidationReason = `Stop Loss estructural vulnerado (${currentPrice.toFixed(1)} <= SL ${sc.stopLossPrice.toFixed(1)})`;
+        } else if (!isLong && sc.direction === 'SHORT' && currentPrice >= sc.stopLossPrice) {
+          isInvalidated = true;
+          invalidationReason = `Stop Loss estructural vulnerado (${currentPrice.toFixed(1)} >= SL ${sc.stopLossPrice.toFixed(1)})`;
+        }
+      }
 
       if (isInvalidated) {
-        const reason = `Stop Loss estructural vulnerado (${currentPrice.toFixed(1)} vs SL ${sc.stopLossPrice.toFixed(1)})`;
-        this.scenarioRegistry.transitionStatus(sc.id, 'INVALIDATED', reason, { currentPrice });
-        this.notifyCancelled(sc, reason);
-        this.emit('scenario_invalidated', { scenarioId: sc.id, reason });
+        this.scenarioRegistry.transitionStatus(sc.id, 'INVALIDATED', invalidationReason, { currentPrice });
+        if (sc.watchPlan) {
+          sc.watchPlan.status = 'INVALIDATED';
+        }
+        this.notifyCancelled(sc, invalidationReason);
+        this.emit('scenario_invalidated', { scenarioId: sc.id, reason: invalidationReason });
         continue;
       }
 
-      // 3. Distance to entry zone calculation
+      // 3. Evaluate Observable Conditions in AI Watch Plan
+      let allRequiredConditionsMet = true;
+      if (sc.watchPlan?.observableConditions && sc.watchPlan.observableConditions.length > 0) {
+        for (const cond of sc.watchPlan.observableConditions) {
+          if (cond.automatable) {
+            const conditionMet = this.evaluateCondition(cond, currentPrice, spreadPcnt);
+            if (conditionMet) {
+              cond.isMet = true;
+              cond.metTimestamp = cond.metTimestamp || now;
+            } else if (!cond.isMet) {
+              allRequiredConditionsMet = false;
+            }
+          }
+        }
+      }
+
+      // 4. Distance to entry zone calculation
       const { inZone, distPct } = this.calculateDistance(sc, currentPrice);
 
       // Update tracked metrics on scenario
@@ -96,30 +140,54 @@ export class AlgorithmicWatcher extends EventEmitter {
         lastCheckedTimestamp: now,
       });
 
-      // 4. In Zone Trigger -> Request AI Revalidation
-      if (inZone) {
+      // 5. In Zone Trigger or All Plan Conditions Met -> Request AI Revalidation
+      const shouldTrigger = inZone || (allRequiredConditionsMet && (sc.watchPlan?.observableConditions?.length || 0) > 0);
+
+      if (shouldTrigger) {
+        // If plan has non-automatable conditions, do not auto-approve entry; flag waiting confirmation
+        if (sc.watchPlan && !sc.watchPlan.automatable) {
+          if (sc.status !== 'WAITING_CONFIRMATION') {
+            const reason = `El plan contiene condiciones no automatizables (${(sc.watchPlan.nonAutomatableConditions || []).join(', ')}). Esperando confirmación discrecional.`;
+            this.scenarioRegistry.transitionStatus(sc.id, 'WAITING_CONFIRMATION', reason, { currentPrice });
+          }
+          continue;
+        }
+
         if (sc.status !== 'IN_ZONE' && sc.status !== 'REVALIDATION_REQUESTED' && sc.status !== 'AI_REVALIDATING' && sc.status !== 'ENTRY_VALIDATED') {
+          const triggerReason = inZone
+            ? `Precio alcanzó la zona operativa [${sc.entryZoneMin} - ${sc.entryZoneMax}]`
+            : `Condiciones observables del AI_WATCH_PLAN satisfechas`;
+
           this.scenarioRegistry.transitionStatus(
             sc.id,
             'IN_ZONE',
-            `Precio alcanzó la zona operativa [${sc.entryZoneMin} - ${sc.entryZoneMax}]`,
+            triggerReason,
             { currentPrice, distPct }
           );
 
           this.scenarioRegistry.transitionStatus(
             sc.id,
             'REVALIDATION_REQUESTED',
-            'Iniciando reevaluación de IA ante mitigación de zona',
+            'Iniciando reevaluación inteligente con OpenAI y Gemini ante activación del plan',
             { currentPrice }
           );
 
+          if (sc.watchPlan) {
+            sc.watchPlan.status = 'TRIGGERED';
+          }
+
           this.notifyInZone(sc, currentPrice);
-          this.emit('revalidation_requested', { scenario: sc, currentPrice });
+          this.emit('revalidation_requested', {
+            scenario: sc,
+            watchPlan: sc.watchPlan,
+            currentPrice,
+            triggerReason,
+          });
         }
         continue;
       }
 
-      // 5. Approaching Zone Trigger
+      // 6. Approaching Zone Trigger
       if (distPct <= this.approachThresholdPct) {
         if (sc.status === 'SCENARIO_REGISTERED' || sc.status === 'SCENARIO_MONITORING') {
           this.scenarioRegistry.transitionStatus(
@@ -146,8 +214,94 @@ export class AlgorithmicWatcher extends EventEmitter {
   }
 
   public evaluateCandleClose(candle: any): void {
-    // When a candle closes, re-check active scenarios for structural invalidation
+    const activeScenarios = this.scenarioRegistry.getAllActive();
+    if (activeScenarios.length === 0) return;
+
+    for (const sc of activeScenarios) {
+      if (sc.watchPlan?.observableConditions) {
+        for (const cond of sc.watchPlan.observableConditions) {
+          if (cond.operator === 'CANDLE_CLOSE_ABOVE' && cond.params.level !== undefined) {
+            if (candle.close >= cond.params.level) {
+              cond.isMet = true;
+              cond.metTimestamp = Date.now();
+            }
+          } else if (cond.operator === 'CANDLE_CLOSE_BELOW' && cond.params.level !== undefined) {
+            if (candle.close <= cond.params.level) {
+              cond.isMet = true;
+              cond.metTimestamp = Date.now();
+            }
+          }
+        }
+      }
+    }
+
     this.evaluateTick(candle.close);
+  }
+
+  public evaluateCondition(cond: WatchCondition, currentPrice: number, spreadPcnt: number, candle?: any): boolean {
+    const p = cond.params || {};
+    switch (cond.operator) {
+      case 'PRICE_IN_RANGE': {
+        const min = p.minLevel !== undefined ? p.minLevel : 0;
+        const max = p.maxLevel !== undefined ? p.maxLevel : Infinity;
+        return currentPrice >= min && currentPrice <= max;
+      }
+      case 'PRICE_TOUCH_LEVEL': {
+        if (p.level === undefined) return false;
+        const tol = p.tolerancePct !== undefined ? p.tolerancePct : 0.001; // default 0.1%
+        return Math.abs(currentPrice - p.level) / p.level <= tol;
+      }
+      case 'PRICE_CROSS_ABOVE': {
+        if (p.level === undefined) return false;
+        return currentPrice >= p.level;
+      }
+      case 'PRICE_CROSS_BELOW': {
+        if (p.level === undefined) return false;
+        return currentPrice <= p.level;
+      }
+      case 'SPREAD_TOLERANCE': {
+        const maxSpread = p.threshold !== undefined ? p.threshold : 0.05;
+        return spreadPcnt <= maxSpread;
+      }
+      case 'RSI_THRESHOLD': {
+        if (p.threshold === undefined) return true;
+        const tf = p.timeframe || '15m';
+        const analysis = this.coordinator.getSetupEngine()?.getAnalysis(tf);
+        if (!analysis) return true;
+        if (p.comparison === 'GREATER_THAN') return analysis.rsi >= p.threshold;
+        if (p.comparison === 'LESS_THAN') return analysis.rsi <= p.threshold;
+        return true;
+      }
+      case 'CANDLE_CLOSE_ABOVE': {
+        if (p.level === undefined || !candle) return false;
+        return candle.close >= p.level;
+      }
+      case 'CANDLE_CLOSE_BELOW': {
+        if (p.level === undefined || !candle) return false;
+        return candle.close <= p.level;
+      }
+      case 'STRUCTURE_BREAK': {
+        const tf = p.timeframe || '5m';
+        const analysis = this.coordinator.getSetupEngine()?.getAnalysis(tf);
+        if (!analysis?.structure?.structureBreaks) return false;
+        return analysis.structure.structureBreaks.some((b: any) =>
+          (!p.direction || b.direction === p.direction)
+        );
+      }
+      case 'SWEEP_CONFIRMED': {
+        const tf = p.timeframe || '15m';
+        const analysis = this.coordinator.getSetupEngine()?.getAnalysis(tf);
+        if (!analysis?.structure?.sweeps) return false;
+        return analysis.structure.sweeps.some((s: any) =>
+          (!p.direction || s.direction === p.direction)
+        );
+      }
+      case 'TIME_ELAPSED': {
+        return true;
+      }
+      default:
+        return false;
+    }
   }
 
   public calculateDistance(scenario: Scenario, currentPrice: number): { inZone: boolean; distPct: number } {
@@ -159,34 +313,31 @@ export class AlgorithmicWatcher extends EventEmitter {
         return { inZone: true, distPct: 0 };
       }
       if (currentPrice < minZone) {
-        // Price pulled back deeper than zone but above SL
         return { inZone: true, distPct: 0 };
       }
-      // Price is above zone, approaching downwards
       const distPct = Math.max(0, ((currentPrice - maxZone) / currentPrice) * 100);
       return { inZone: false, distPct: Number(distPct.toFixed(2)) };
-    } else {
-      // SHORT
+    } else if (scenario.direction === 'SHORT') {
       if (currentPrice >= minZone && currentPrice <= maxZone) {
         return { inZone: true, distPct: 0 };
       }
       if (currentPrice > maxZone) {
-        // Price pulled back higher than zone but below SL
         return { inZone: true, distPct: 0 };
       }
-      // Price is below zone, approaching upwards
       const distPct = Math.max(0, ((minZone - currentPrice) / currentPrice) * 100);
       return { inZone: false, distPct: Number(distPct.toFixed(2)) };
     }
+
+    return { inZone: false, distPct: 0 };
   }
 
   private notifyApproaching(sc: Scenario, currentPrice: number, distPct: number): void {
     const last = this.lastAlertTimestamps.get(`app_${sc.id}`) || 0;
-    if (Date.now() - last < 5 * 60 * 1000) return; // 5 min deduplication
+    if (Date.now() - last < 5 * 60 * 1000) return;
     this.lastAlertTimestamps.set(`app_${sc.id}`, Date.now());
 
     const title = `⚠️ ${sc.symbol} Aproximándose a Zona Registrada`;
-    const msg = `El precio ($${currentPrice.toFixed(1)}) está a sólo ${distPct.toFixed(2)}% de la zona operativa [${sc.entryZoneMin} - ${sc.entryZoneMax}] (${sc.direction}).\nTodavía NO existe entrada validada.`;
+    const msg = `El precio ($${currentPrice.toFixed(1)}) está a sólo ${distPct.toFixed(2)}% de la zona operativa [${sc.entryZoneMin} - ${sc.entryZoneMax}] (${sc.direction}).\nAI_WATCH_PLAN activo. Todavía NO existe entrada validada.`;
 
     this.telegramNotifier?.sendMessage?.(`*${title}*\n\n${msg}`, 'APPROACHING_ALERT');
     this.webPushNotifier?.broadcast?.({ title, body: msg });
@@ -194,7 +345,7 @@ export class AlgorithmicWatcher extends EventEmitter {
 
   private notifyInZone(sc: Scenario, currentPrice: number): void {
     const title = `🎯 ${sc.symbol} en Zona Operativa`;
-    const msg = `${sc.symbol} alcanzó la zona operativa [${sc.entryZoneMin} - ${sc.entryZoneMax}]. OpenAI y Gemini están revisando las condiciones actuales para revalidación.`;
+    const msg = `${sc.symbol} activó condiciones en zona [${sc.entryZoneMin} - ${sc.entryZoneMax}]. Consultando reevaluación inteligente con OpenAI y Gemini...`;
 
     this.telegramNotifier?.sendMessage?.(`*${title}*\n\n${msg}`, 'IN_ZONE_ALERT');
     this.webPushNotifier?.broadcast?.({ title, body: msg });

@@ -5,14 +5,28 @@ import { MarketSnapshot, MarketSnapshotTimeframeSummary } from './types.js';
 import { SUPPORTED_TIMEFRAMES } from '../types/market.js';
 
 export class SnapshotBuilder {
-  public static build(coordinator: MarketCoordinator, setup: SetupCandidate): MarketSnapshot {
+  public static build(coordinator: MarketCoordinator, setup?: SetupCandidate | any): MarketSnapshot {
     const marketState = coordinator.getMarketState();
+    const fallbackPrice = marketState.ticker?.lastPrice || 65000;
+    const effectiveSetup = setup || {
+      id: `setup_disc_${Date.now()}`,
+      symbol: marketState.symbol || 'BTCUSDT',
+      strategy: 'AI_DISCRETIONARY_DISCOVERY',
+      direction: 'NEUTRAL',
+      timeframe: '15m',
+      entryPrice: fallbackPrice,
+      stopLossPrice: fallbackPrice - 500,
+      takeProfitPrice: fallbackPrice + 2000,
+      riskReward: { grossRR: 4.0, netRR: 4.0, isValid: true },
+      evidence: ['Snapshot para análisis de mercado autónomo'],
+    };
+
     const ticker = marketState.ticker || {
-      lastPrice: setup.entryPrice,
-      markPrice: setup.entryPrice,
-      indexPrice: setup.entryPrice,
-      bid1Price: setup.entryPrice - 0.1,
-      ask1Price: setup.entryPrice + 0.1,
+      lastPrice: effectiveSetup.entryPrice,
+      markPrice: effectiveSetup.entryPrice,
+      indexPrice: effectiveSetup.entryPrice,
+      bid1Price: effectiveSetup.entryPrice - 0.1,
+      ask1Price: effectiveSetup.entryPrice + 0.1,
       spread: 0.1,
       spreadPcnt: 0.0001,
       fundingRate: 0.0001,
@@ -65,11 +79,11 @@ export class SnapshotBuilder {
     const rawPayload = JSON.stringify({
       symbol: marketState.symbol,
       timestamp,
-      setupId: setup.id,
-      entry: setup.entryPrice,
-      sl: setup.stopLossPrice,
-      tp: setup.takeProfitPrice,
-      netRR: setup.riskReward.netRR,
+      setupId: effectiveSetup.id,
+      entry: effectiveSetup.entryPrice,
+      sl: effectiveSetup.stopLossPrice,
+      tp: effectiveSetup.takeProfitPrice,
+      netRR: effectiveSetup.riskReward?.netRR || 4.0,
     });
 
     const snapshotId = `snap_${createHash('sha256').update(rawPayload).digest('hex').substring(0, 16)}`;
@@ -100,7 +114,7 @@ export class SnapshotBuilder {
         isSynced: ob?.isSynced ?? false,
       },
       multiTimeframe,
-      candidateSetup: JSON.parse(JSON.stringify(setup)),
+      candidateSetup: JSON.parse(JSON.stringify(effectiveSetup)),
       dataIntegrity: {
         wsConnected: marketState.wsConnected,
         isOrderBookSynced: ob?.isSynced ?? false,

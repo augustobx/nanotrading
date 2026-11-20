@@ -3,7 +3,7 @@ import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import { Candle, Timeframe } from '../types/market.js';
 import { config } from '../config/index.js';
-import { Scenario, ScenarioLifecycleEvent, ScenarioRevalidationRecord, ScenarioStatus } from '../ai/scenario-types.js';
+import { Scenario, ScenarioLifecycleEvent, ScenarioRevalidationRecord, ScenarioStatus, AiWatchPlan, WatchPlanStatus } from '../ai/scenario-types.js';
 
 export class DatabaseService {
   private db: DatabaseSync;
@@ -383,6 +383,34 @@ export class DatabaseService {
 
       CREATE INDEX IF NOT EXISTS idx_scen_reval_id 
       ON scenario_revalidations(scenario_id, timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS ai_watch_plans (
+        id TEXT PRIMARY KEY,
+        scenario_id TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        horizon TEXT NOT NULL,
+        primary_timeframe TEXT NOT NULL,
+        watch_zone_min REAL NOT NULL,
+        watch_zone_max REAL NOT NULL,
+        target_entry REAL NOT NULL,
+        candidate_stop_loss REAL NOT NULL,
+        candidate_tp12 REAL,
+        candidate_tp14 REAL,
+        rr_eligibility TEXT NOT NULL,
+        status TEXT NOT NULL,
+        automatable INTEGER NOT NULL,
+        expiration_timestamp INTEGER NOT NULL,
+        plan_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_watch_plans_status 
+      ON ai_watch_plans(status, expiration_timestamp DESC);
+
+      CREATE INDEX IF NOT EXISTS idx_watch_plans_scen_id 
+      ON ai_watch_plans(scenario_id);
 
       CREATE TABLE IF NOT EXISTS discovery_scheduler_config (
         id TEXT PRIMARY KEY,
@@ -1741,7 +1769,15 @@ export class DatabaseService {
       currentPrice: scenario.currentPrice,
       lastCheckedTimestamp: scenario.lastCheckedTimestamp,
       isSimulated: scenario.isSimulated,
+      watchPlan: scenario.watchPlan,
+      aiMarketThesis: scenario.aiMarketThesis,
+      horizon: scenario.horizon,
+      missingConditions: scenario.missingConditions,
+      confidenceDisclaimer: scenario.confidenceDisclaimer,
     };
+    if (scenario.watchPlan) {
+      this.saveWatchPlan(scenario.watchPlan);
+    }
     this.db.prepare(`
       INSERT INTO scenarios (
         id, symbol, direction, timeframe, structure_type, proposed_by, models_used,
@@ -1965,6 +2001,147 @@ export class DatabaseService {
       currentPrice: payload.currentPrice,
       lastCheckedTimestamp: payload.lastCheckedTimestamp,
       isSimulated: payload.isSimulated,
+      watchPlan: payload.watchPlan,
+      aiMarketThesis: payload.aiMarketThesis,
+      horizon: payload.horizon,
+      missingConditions: payload.missingConditions,
+      confidenceDisclaimer: payload.confidenceDisclaimer,
+      createdAt: Number(r.created_at),
+      updatedAt: Number(r.updated_at),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // AI Watch Plans (Fase 5C)
+  // ---------------------------------------------------------------------------
+  public saveWatchPlan(plan: AiWatchPlan): void {
+    if (this.isClosed) return;
+    const now = Date.now();
+    try {
+      this.db.prepare(`
+        INSERT INTO ai_watch_plans (
+          id, scenario_id, symbol, direction, horizon, primary_timeframe,
+          watch_zone_min, watch_zone_max, target_entry, candidate_stop_loss,
+          candidate_tp12, candidate_tp14, rr_eligibility, status,
+          automatable, expiration_timestamp, plan_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          status = excluded.status,
+          automatable = excluded.automatable,
+          expiration_timestamp = excluded.expiration_timestamp,
+          plan_json = excluded.plan_json,
+          updated_at = excluded.updated_at
+      `).run(
+        plan.id,
+        plan.scenarioId,
+        plan.symbol,
+        plan.direction,
+        plan.horizon,
+        plan.primaryTimeframe,
+        plan.watchZone.minPrice,
+        plan.watchZone.maxPrice,
+        plan.watchZone.targetEntry,
+        plan.candidateStopLoss,
+        plan.candidateTakeProfits?.tp12 ?? null,
+        plan.candidateTakeProfits?.tp14 ?? null,
+        plan.rrEligibility,
+        plan.status,
+        plan.automatable ? 1 : 0,
+        plan.expirationTimestamp,
+        JSON.stringify(plan),
+        plan.createdAt || now,
+        plan.updatedAt || now
+      );
+    } catch {}
+  }
+
+  public getWatchPlanById(id: string): AiWatchPlan | null {
+    if (this.isClosed) return null;
+    try {
+      const row = this.db.prepare('SELECT * FROM ai_watch_plans WHERE id = ?').get(id) as any;
+      if (!row) return null;
+      return this.mapWatchPlanRow(row);
+    } catch {
+      return null;
+    }
+  }
+
+  public getWatchPlanByScenarioId(scenarioId: string): AiWatchPlan | null {
+    if (this.isClosed) return null;
+    try {
+      const row = this.db.prepare('SELECT * FROM ai_watch_plans WHERE scenario_id = ? ORDER BY created_at DESC LIMIT 1').get(scenarioId) as any;
+      if (!row) return null;
+      return this.mapWatchPlanRow(row);
+    } catch {
+      return null;
+    }
+  }
+
+  public getActiveWatchPlans(): AiWatchPlan[] {
+    if (this.isClosed) return [];
+    try {
+      const rows = this.db.prepare(`
+        SELECT * FROM ai_watch_plans 
+        WHERE status IN ('PENDING', 'ACTIVE', 'TRIGGERED', 'REVALIDATING')
+        ORDER BY created_at DESC
+      `).all() as any[];
+      return rows.map((r) => this.mapWatchPlanRow(r));
+    } catch {
+      return [];
+    }
+  }
+
+  public updateWatchPlanStatus(id: string, status: WatchPlanStatus, updates?: Partial<AiWatchPlan>): void {
+    if (this.isClosed) return;
+    try {
+      const existing = this.getWatchPlanById(id);
+      if (!existing) return;
+      const merged: AiWatchPlan = {
+        ...existing,
+        ...updates,
+        status,
+        updatedAt: Date.now(),
+      };
+      this.saveWatchPlan(merged);
+    } catch {}
+  }
+
+  private mapWatchPlanRow(r: any): AiWatchPlan {
+    let full: any = {};
+    try {
+      full = r.plan_json ? JSON.parse(r.plan_json) : {};
+    } catch {}
+
+    return {
+      id: r.id,
+      scenarioId: r.scenario_id,
+      symbol: r.symbol,
+      direction: r.direction,
+      marketThesis: full.marketThesis || r.market_thesis || '',
+      horizon: r.horizon,
+      primaryTimeframe: r.primary_timeframe,
+      watchZone: {
+        minPrice: Number(r.watch_zone_min),
+        maxPrice: Number(r.watch_zone_max),
+        targetEntry: Number(r.target_entry),
+      },
+      candidateStopLoss: Number(r.candidate_stop_loss),
+      candidateTakeProfits: {
+        tp12: r.candidate_tp12 !== null ? Number(r.candidate_tp12) : undefined,
+        tp14: r.candidate_tp14 !== null ? Number(r.candidate_tp14) : undefined,
+        structuralTarget: full.candidateTakeProfits?.structuralTarget,
+      },
+      rrEligibility: r.rr_eligibility,
+      observableConditions: full.observableConditions || [],
+      confirmationSequence: full.confirmationSequence || [],
+      invalidationConditions: full.invalidationConditions || [],
+      expirationTimestamp: Number(r.expiration_timestamp),
+      reevaluationTriggers: full.reevaluationTriggers || [],
+      reasoningVersion: full.reasoningVersion || 'v1',
+      status: r.status,
+      automatable: Boolean(r.automatable),
+      nonAutomatableConditions: full.nonAutomatableConditions,
+      lastEvaluatedTimestamp: full.lastEvaluatedTimestamp,
       createdAt: Number(r.created_at),
       updatedAt: Number(r.updated_at),
     };

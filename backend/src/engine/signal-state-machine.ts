@@ -40,6 +40,7 @@ export interface SignalInstance {
   riskUsdt: number;
   state: SignalState;
   entryMode: EntryMode;
+  rrMode?: 'RR_1_2' | 'RR_1_4';
   evaluationMode?: AiEvaluationMode;
   simulatedEntryTime?: number;
   exitTime?: number;
@@ -182,6 +183,7 @@ export class SignalStateMachine extends EventEmitter {
       riskUsdt,
       state: 'ENTRY_TRIGGERED',
       entryMode: 'SIMULATED_PAPER_ENTRY',
+      rrMode: ratioTarget,
       evaluationMode: 'DUAL_AI',
       simulatedEntryTime: Date.now(),
       mfePrice: currentPrice,

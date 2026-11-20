@@ -201,6 +201,8 @@ export class ApiServer {
         this.sendMarketIntelligence(res);
       } else if (pathname === '/api/v1/discovery/scenarios' && req.method === 'GET') {
         this.sendScenarios(req, res, url);
+      } else if (pathname === '/api/v1/discovery/watch-plans' && req.method === 'GET') {
+        this.sendWatchPlans(res);
       } else if (pathname.startsWith('/api/v1/discovery/scenarios/') && pathname.endsWith('/revalidate') && req.method === 'POST') {
         const parts = pathname.split('/');
         const scenarioId = parts[5];
@@ -1790,6 +1792,12 @@ export class ApiServer {
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, count: scenarios.length, data: scenarios }));
+  }
+
+  private sendWatchPlans(res: http.ServerResponse): void {
+    const plans = this.db.getActiveWatchPlans();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, count: plans.length, data: plans }));
   }
 
   private sendScenarioDetail(res: http.ServerResponse, id: string): void {

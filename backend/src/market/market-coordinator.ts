@@ -260,9 +260,9 @@ export class MarketCoordinator extends EventEmitter {
     });
 
     // Wire Algorithmic Watcher & Scenario Events
-    this.algorithmicWatcher.on('revalidation_requested', async ({ scenario, currentPrice }) => {
+    this.algorithmicWatcher.on('revalidation_requested', async ({ scenario, watchPlan, currentPrice }) => {
       try {
-        await this.aiRevalidation.revalidate(scenario, currentPrice);
+        await this.aiRevalidation.revalidate(scenario, currentPrice, watchPlan);
       } catch (err: any) {
         if (!this.isStopped) {
           this.db.logEvent('ERROR', 'AIRevalidation', err.message);
