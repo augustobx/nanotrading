@@ -383,6 +383,88 @@ export class DatabaseService {
 
       CREATE INDEX IF NOT EXISTS idx_scen_reval_id 
       ON scenario_revalidations(scenario_id, timestamp DESC);
+
+      CREATE TABLE IF NOT EXISTS discovery_scheduler_config (
+        id TEXT PRIMARY KEY,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        interval_minutes INTEGER NOT NULL DEFAULT 60,
+        trigger_on_1h_close INTEGER NOT NULL DEFAULT 1,
+        trigger_on_15m_structure INTEGER NOT NULL DEFAULT 1,
+        min_price_move_pct REAL NOT NULL DEFAULT 1.5,
+        min_cooldown_minutes INTEGER NOT NULL DEFAULT 15,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS historical_candles (
+        symbol TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        timestamp INTEGER NOT NULL,
+        open REAL NOT NULL,
+        high REAL NOT NULL,
+        low REAL NOT NULL,
+        close REAL NOT NULL,
+        volume REAL NOT NULL,
+        turnover REAL NOT NULL,
+        PRIMARY KEY (symbol, timeframe, timestamp)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_hist_candles_tf_time
+      ON historical_candles(symbol, timeframe, timestamp ASC);
+
+      CREATE TABLE IF NOT EXISTS backtest_runs (
+        id TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        start_timestamp INTEGER NOT NULL,
+        end_timestamp INTEGER NOT NULL,
+        in_sample_end_timestamp INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        total_trades INTEGER NOT NULL DEFAULT 0,
+        win_rate REAL NOT NULL DEFAULT 0,
+        profit_factor REAL NOT NULL DEFAULT 0,
+        expectancy_r REAL NOT NULL DEFAULT 0,
+        max_drawdown_pct REAL NOT NULL DEFAULT 0,
+        net_pnl_usdt REAL NOT NULL DEFAULT 0,
+        net_pnl_r REAL NOT NULL DEFAULT 0,
+        in_sample_metrics_json TEXT,
+        out_sample_metrics_json TEXT,
+        breakdown_json TEXT,
+        config_json TEXT,
+        created_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backtest_runs_time
+      ON backtest_runs(created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS backtest_trades (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        strategy TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        ratio_target TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        entry_timestamp INTEGER NOT NULL,
+        exit_timestamp INTEGER NOT NULL,
+        entry_price REAL NOT NULL,
+        stop_loss_price REAL NOT NULL,
+        take_profit_price REAL NOT NULL,
+        exit_price REAL NOT NULL,
+        outcome TEXT NOT NULL,
+        realized_net_pnl_usdt REAL NOT NULL,
+        realized_net_r REAL NOT NULL,
+        mfe_price REAL NOT NULL,
+        mfe_r REAL NOT NULL,
+        mae_price REAL NOT NULL,
+        mae_r REAL NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        is_in_sample INTEGER NOT NULL,
+        fees_usdt REAL NOT NULL,
+        spread_cost_usdt REAL NOT NULL,
+        slippage_cost_usdt REAL NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_backtest_trades_run
+      ON backtest_trades(run_id, entry_timestamp ASC);
     `);
 
     // Signal columns migration for tracking metrics
@@ -1869,6 +1951,426 @@ export class DatabaseService {
       createdAt: Number(r.created_at),
       updatedAt: Number(r.updated_at),
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Discovery Scheduler Configuration
+  // ---------------------------------------------------------------------------
+  public getDiscoverySchedulerConfig(): {
+    enabled: boolean;
+    intervalMinutes: number;
+    triggerOn1hClose: boolean;
+    triggerOn15mStructure: boolean;
+    minPriceMovePct: number;
+    minCooldownMinutes: number;
+    updatedAt: number;
+  } {
+    if (this.isClosed) {
+      return {
+        enabled: true,
+        intervalMinutes: 60,
+        triggerOn1hClose: true,
+        triggerOn15mStructure: true,
+        minPriceMovePct: 1.5,
+        minCooldownMinutes: 15,
+        updatedAt: Date.now(),
+      };
+    }
+    try {
+      const row = this.db.prepare('SELECT * FROM discovery_scheduler_config WHERE id = ?').get('default') as any;
+      if (!row) {
+        return {
+          enabled: true,
+          intervalMinutes: 60,
+          triggerOn1hClose: true,
+          triggerOn15mStructure: true,
+          minPriceMovePct: 1.5,
+          minCooldownMinutes: 15,
+          updatedAt: Date.now(),
+        };
+      }
+      return {
+        enabled: Boolean(row.enabled),
+        intervalMinutes: Number(row.interval_minutes),
+        triggerOn1hClose: Boolean(row.trigger_on_1h_close),
+        triggerOn15mStructure: Boolean(row.trigger_on_15m_structure),
+        minPriceMovePct: Number(row.min_price_move_pct),
+        minCooldownMinutes: Number(row.min_cooldown_minutes),
+        updatedAt: Number(row.updated_at),
+      };
+    } catch {
+      return {
+        enabled: true,
+        intervalMinutes: 60,
+        triggerOn1hClose: true,
+        triggerOn15mStructure: true,
+        minPriceMovePct: 1.5,
+        minCooldownMinutes: 15,
+        updatedAt: Date.now(),
+      };
+    }
+  }
+
+  public saveDiscoverySchedulerConfig(config: {
+    enabled: boolean;
+    intervalMinutes: number;
+    triggerOn1hClose: boolean;
+    triggerOn15mStructure: boolean;
+    minPriceMovePct: number;
+    minCooldownMinutes: number;
+  }): void {
+    if (this.isClosed) return;
+    try {
+      this.db.prepare(`
+        INSERT INTO discovery_scheduler_config (
+          id, enabled, interval_minutes, trigger_on_1h_close, trigger_on_15m_structure, min_price_move_pct, min_cooldown_minutes, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          enabled = excluded.enabled,
+          interval_minutes = excluded.interval_minutes,
+          trigger_on_1h_close = excluded.trigger_on_1h_close,
+          trigger_on_15m_structure = excluded.trigger_on_15m_structure,
+          min_price_move_pct = excluded.min_price_move_pct,
+          min_cooldown_minutes = excluded.min_cooldown_minutes,
+          updated_at = excluded.updated_at
+      `).run(
+        'default',
+        config.enabled ? 1 : 0,
+        config.intervalMinutes,
+        config.triggerOn1hClose ? 1 : 0,
+        config.triggerOn15mStructure ? 1 : 0,
+        config.minPriceMovePct,
+        config.minCooldownMinutes,
+        Date.now()
+      );
+    } catch (err: any) {
+      this.logEvent('ERROR', 'Database', `Error saving discovery scheduler config: ${err.message}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Historical Candles for Backtesting
+  // ---------------------------------------------------------------------------
+  public saveHistoricalCandles(candles: Candle[]): number {
+    if (this.isClosed || candles.length === 0) return 0;
+    const stmt = this.db.prepare(`
+      INSERT INTO historical_candles (
+        symbol, timeframe, timestamp, open, high, low, close, volume, turnover
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(symbol, timeframe, timestamp) DO UPDATE SET
+        open = excluded.open,
+        high = excluded.high,
+        low = excluded.low,
+        close = excluded.close,
+        volume = excluded.volume,
+        turnover = excluded.turnover
+    `);
+
+    let count = 0;
+    this.db.exec('BEGIN TRANSACTION');
+    try {
+      for (const c of candles) {
+        stmt.run(
+          c.symbol,
+          c.timeframe,
+          c.timestamp,
+          c.open,
+          c.high,
+          c.low,
+          c.close,
+          c.volume,
+          c.turnover || 0
+        );
+        count++;
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+
+    return count;
+  }
+
+  public getHistoricalCandles(
+    symbol: string,
+    timeframe: string,
+    startTime?: number,
+    endTime?: number,
+    limit?: number
+  ): Candle[] {
+    if (this.isClosed) return [];
+    try {
+      let query = 'SELECT * FROM historical_candles WHERE symbol = ? AND timeframe = ?';
+      const params: any[] = [symbol, timeframe];
+
+      if (startTime !== undefined) {
+        query += ' AND timestamp >= ?';
+        params.push(startTime);
+      }
+      if (endTime !== undefined) {
+        query += ' AND timestamp <= ?';
+        params.push(endTime);
+      }
+      query += ' ORDER BY timestamp ASC';
+      if (limit !== undefined && limit > 0) {
+        query += ` LIMIT ${limit}`;
+      }
+
+      const rows = this.db.prepare(query).all(...params) as any[];
+      return rows.map((r) => ({
+        symbol: r.symbol,
+        timeframe: r.timeframe,
+        timestamp: Number(r.timestamp),
+        open: Number(r.open),
+        high: Number(r.high),
+        low: Number(r.low),
+        close: Number(r.close),
+        volume: Number(r.volume),
+        turnover: Number(r.turnover),
+        confirmed: true,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  public getHistoricalCandleStats(symbol: string, timeframe: string): {
+    count: number;
+    earliest: number | null;
+    latest: number | null;
+  } {
+    if (this.isClosed) return { count: 0, earliest: null, latest: null };
+    try {
+      const row = this.db.prepare(`
+        SELECT COUNT(*) as cnt, MIN(timestamp) as min_ts, MAX(timestamp) as max_ts
+        FROM historical_candles
+        WHERE symbol = ? AND timeframe = ?
+      `).get(symbol, timeframe) as any;
+
+      return {
+        count: Number(row?.cnt || 0),
+        earliest: row?.min_ts ? Number(row.min_ts) : null,
+        latest: row?.max_ts ? Number(row.max_ts) : null,
+      };
+    } catch {
+      return { count: 0, earliest: null, latest: null };
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Backtest Runs and Trades
+  // ---------------------------------------------------------------------------
+  public saveBacktestRun(run: {
+    id: string;
+    symbol: string;
+    startTimestamp: number;
+    endTimestamp: number;
+    inSampleEndTimestamp: number;
+    status: string;
+    totalTrades: number;
+    winRate: number;
+    profitFactor: number;
+    expectancyR: number;
+    maxDrawdownPct: number;
+    netPnlUsdt: number;
+    netPnlR: number;
+    inSampleMetrics: any;
+    outSampleMetrics: any;
+    breakdown: any;
+    config: any;
+    createdAt?: number;
+  }): void {
+    if (this.isClosed) return;
+    this.db.prepare(`
+      INSERT INTO backtest_runs (
+        id, symbol, start_timestamp, end_timestamp, in_sample_end_timestamp,
+        status, total_trades, win_rate, profit_factor, expectancy_r,
+        max_drawdown_pct, net_pnl_usdt, net_pnl_r,
+        in_sample_metrics_json, out_sample_metrics_json, breakdown_json, config_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        status = excluded.status,
+        total_trades = excluded.total_trades,
+        win_rate = excluded.win_rate,
+        profit_factor = excluded.profit_factor,
+        expectancy_r = excluded.expectancy_r,
+        max_drawdown_pct = excluded.max_drawdown_pct,
+        net_pnl_usdt = excluded.net_pnl_usdt,
+        net_pnl_r = excluded.net_pnl_r,
+        in_sample_metrics_json = excluded.in_sample_metrics_json,
+        out_sample_metrics_json = excluded.out_sample_metrics_json,
+        breakdown_json = excluded.breakdown_json,
+        config_json = excluded.config_json
+    `).run(
+      run.id,
+      run.symbol,
+      run.startTimestamp,
+      run.endTimestamp,
+      run.inSampleEndTimestamp,
+      run.status,
+      run.totalTrades,
+      run.winRate,
+      run.profitFactor,
+      run.expectancyR,
+      run.maxDrawdownPct,
+      run.netPnlUsdt,
+      run.netPnlR,
+      JSON.stringify(run.inSampleMetrics || {}),
+      JSON.stringify(run.outSampleMetrics || {}),
+      JSON.stringify(run.breakdown || {}),
+      JSON.stringify(run.config || {}),
+      run.createdAt || Date.now()
+    );
+  }
+
+  public getBacktestRuns(limit: number = 20): any[] {
+    if (this.isClosed) return [];
+    try {
+      const rows = this.db.prepare('SELECT * FROM backtest_runs ORDER BY created_at DESC LIMIT ?').all(limit) as any[];
+      return rows.map((r) => ({
+        id: r.id,
+        symbol: r.symbol,
+        startTimestamp: Number(r.start_timestamp),
+        endTimestamp: Number(r.end_timestamp),
+        inSampleEndTimestamp: Number(r.in_sample_end_timestamp),
+        status: r.status,
+        totalTrades: Number(r.total_trades),
+        winRate: Number(r.win_rate),
+        profitFactor: Number(r.profit_factor),
+        expectancyR: Number(r.expectancy_r),
+        maxDrawdownPct: Number(r.max_drawdown_pct),
+        netPnlUsdt: Number(r.net_pnl_usdt),
+        netPnlR: Number(r.net_pnl_r),
+        inSampleMetrics: JSON.parse(r.in_sample_metrics_json || '{}'),
+        outSampleMetrics: JSON.parse(r.out_sample_metrics_json || '{}'),
+        breakdown: JSON.parse(r.breakdown_json || '{}'),
+        config: JSON.parse(r.config_json || '{}'),
+        createdAt: Number(r.created_at),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  public getBacktestRunById(id: string): any | null {
+    if (this.isClosed) return null;
+    try {
+      const r = this.db.prepare('SELECT * FROM backtest_runs WHERE id = ?').get(id) as any;
+      if (!r) return null;
+      return {
+        id: r.id,
+        symbol: r.symbol,
+        startTimestamp: Number(r.start_timestamp),
+        endTimestamp: Number(r.end_timestamp),
+        inSampleEndTimestamp: Number(r.in_sample_end_timestamp),
+        status: r.status,
+        totalTrades: Number(r.total_trades),
+        winRate: Number(r.win_rate),
+        profitFactor: Number(r.profit_factor),
+        expectancyR: Number(r.expectancy_r),
+        maxDrawdownPct: Number(r.max_drawdown_pct),
+        netPnlUsdt: Number(r.net_pnl_usdt),
+        netPnlR: Number(r.net_pnl_r),
+        inSampleMetrics: JSON.parse(r.in_sample_metrics_json || '{}'),
+        outSampleMetrics: JSON.parse(r.out_sample_metrics_json || '{}'),
+        breakdown: JSON.parse(r.breakdown_json || '{}'),
+        config: JSON.parse(r.config_json || '{}'),
+        createdAt: Number(r.created_at),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public saveBacktestTrades(trades: any[]): number {
+    if (this.isClosed || trades.length === 0) return 0;
+    const stmt = this.db.prepare(`
+      INSERT INTO backtest_trades (
+        id, run_id, symbol, strategy, direction, ratio_target, timeframe,
+        entry_timestamp, exit_timestamp, entry_price, stop_loss_price, take_profit_price,
+        exit_price, outcome, realized_net_pnl_usdt, realized_net_r,
+        mfe_price, mfe_r, mae_price, mae_r, duration_ms, is_in_sample,
+        fees_usdt, spread_cost_usdt, slippage_cost_usdt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    let count = 0;
+    this.db.exec('BEGIN TRANSACTION');
+    try {
+      for (const t of trades) {
+        stmt.run(
+          t.id,
+          t.runId,
+          t.symbol,
+          t.strategy,
+          t.direction,
+          t.ratioTarget,
+          t.timeframe,
+          t.entryTimestamp,
+          t.exitTimestamp,
+          t.entryPrice,
+          t.stopLossPrice,
+          t.takeProfitPrice,
+          t.exitPrice,
+          t.outcome,
+          t.realizedNetPnlUsdt,
+          t.realizedNetR,
+          t.mfePrice || 0,
+          t.mfeR || 0,
+          t.maePrice || 0,
+          t.maeR || 0,
+          t.durationMs,
+          t.isInSample ? 1 : 0,
+          t.feesUsdt || 0,
+          t.spreadCostUsdt || 0,
+          t.slippageCostUsdt || 0
+        );
+        count++;
+      }
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+
+    return count;
+  }
+
+  public getBacktestTrades(runId: string, limit: number = 500): any[] {
+    if (this.isClosed) return [];
+    try {
+      const rows = this.db.prepare('SELECT * FROM backtest_trades WHERE run_id = ? ORDER BY entry_timestamp ASC LIMIT ?').all(runId, limit) as any[];
+      return rows.map((r) => ({
+        id: r.id,
+        runId: r.run_id,
+        symbol: r.symbol,
+        strategy: r.strategy,
+        direction: r.direction,
+        ratioTarget: r.ratio_target,
+        timeframe: r.timeframe,
+        entryTimestamp: Number(r.entry_timestamp),
+        exitTimestamp: Number(r.exit_timestamp),
+        entryPrice: Number(r.entry_price),
+        stopLossPrice: Number(r.stop_loss_price),
+        takeProfitPrice: Number(r.take_profit_price),
+        exitPrice: Number(r.exit_price),
+        outcome: r.outcome,
+        realizedNetPnlUsdt: Number(r.realized_net_pnl_usdt),
+        realizedNetR: Number(r.realized_net_r),
+        mfePrice: Number(r.mfe_price),
+        mfeR: Number(r.mfe_r),
+        maePrice: Number(r.mae_price),
+        maeR: Number(r.mae_r),
+        durationMs: Number(r.duration_ms),
+        isInSample: Boolean(r.is_in_sample),
+        feesUsdt: Number(r.fees_usdt),
+        spreadCostUsdt: Number(r.spread_cost_usdt),
+        slippageCostUsdt: Number(r.slippage_cost_usdt),
+      }));
+    } catch {
+      return [];
+    }
   }
 
   public close(): void {

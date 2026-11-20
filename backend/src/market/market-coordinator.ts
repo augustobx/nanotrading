@@ -29,6 +29,7 @@ import { ScenarioRegistry } from '../engine/scenario-registry.js';
 import { AiMarketDiscoveryEngine } from '../ai/ai-market-discovery.js';
 import { AlgorithmicWatcher } from '../engine/algorithmic-watcher.js';
 import { AiEntryRevalidation } from '../ai/ai-revalidation.js';
+import { AutonomousDiscoveryScheduler } from '../ai/autonomous-discovery-scheduler.js';
 
 export class MarketCoordinator extends EventEmitter {
   private restClient: BybitRestClient;
@@ -48,6 +49,7 @@ export class MarketCoordinator extends EventEmitter {
   private aiDiscoveryEngine: AiMarketDiscoveryEngine;
   private algorithmicWatcher: AlgorithmicWatcher;
   private aiRevalidation: AiEntryRevalidation;
+  private discoveryScheduler: AutonomousDiscoveryScheduler;
   private db: DatabaseService;
   private symbol: string;
   private instrumentInfo: InstrumentInfo | null = null;
@@ -152,6 +154,12 @@ export class MarketCoordinator extends EventEmitter {
       db: this.db,
       telegramNotifier: this.telegramNotifier,
       webPushNotifier: this.webPushNotifier,
+    });
+    this.discoveryScheduler = new AutonomousDiscoveryScheduler({
+      coordinator: this,
+      discoveryEngine: this.aiDiscoveryEngine,
+      hardBudgetManager,
+      db: this.db,
     });
 
     this.setupListeners();
@@ -311,6 +319,7 @@ export class MarketCoordinator extends EventEmitter {
       // 7. Start 24/7 background monitor worker & Algorithmic Watcher
       this.marketMonitorWorker.start();
       this.algorithmicWatcher.start();
+      this.discoveryScheduler.start();
 
       // 8. Start periodic audit snapshot timer (every 60s)
       this.startSnapshotTimer();
@@ -509,6 +518,10 @@ export class MarketCoordinator extends EventEmitter {
     return this.aiRevalidation;
   }
 
+  public getDiscoveryScheduler(): AutonomousDiscoveryScheduler {
+    return this.discoveryScheduler;
+  }
+
   public setKillSwitch(active: boolean, reason?: string): void {
     config.security.killSwitchActive = active;
     this.db.logEvent('WARN', 'Security', `Kill Switch ${active ? 'ACTIVATED' : 'DEACTIVATED'}: ${reason || 'Acción administrativa'}`);
@@ -525,6 +538,7 @@ export class MarketCoordinator extends EventEmitter {
     this.isStopped = true;
     this.marketMonitorWorker.stop();
     this.algorithmicWatcher.stop();
+    this.discoveryScheduler.stop();
     if (this.snapshotIntervalTimer) {
       clearInterval(this.snapshotIntervalTimer);
       this.snapshotIntervalTimer = null;

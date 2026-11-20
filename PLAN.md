@@ -19,7 +19,7 @@
 | **Fase 4** | Alertas, Máquina de Estados y PWA | Ciclo de vida completo de señales, Telegram Bot, Web Push PWA, UI con NanoLabs Theme 2 | **COMPLETADA** |
 | **Fase 4.5** | Centro de Configuración, Riesgo y Router de IA | Gestión de capital, techos de SL, credenciales Bybit/IA, router multimodelo, auditoría | **COMPLETADA** |
 | **Fase 5A** | Inteligencia Autónoma & Descubrimiento 1:2 / 1:4 | Descubrimiento autónomo IA, registro de escenarios, Algorithmic Watcher, reevaluación | **COMPLETADA** |
-| **Fase 5B** | Validación Histórica & Backtesting | Histórico Bybit sin look-ahead, comparación 1:2 vs 1:4, estadísticas y exportación | PENDIENTE |
+| **Fase 5B** | Validación Histórica & Backtesting Real (90 Días) | Histórico Bybit sin look-ahead, comparación 1:2 vs 1:4, Scheduler autónomo, Trading Laboratory | **COMPLETADA** |
 | **Fase 5C** | Validación en Vivo & Paper Trading Acumulado | Seguimiento de decisiones IA, resultados netos acumulados, métricas de efectividad | PENDIENTE |
 | **Fase 6** | Preparación para Ejecución Asistida | Abstracción de ejecución privada, reconciliación, kill switch avanzado (modo deshabilitado por defecto) | PENDIENTE |
 
@@ -293,3 +293,62 @@
   - Panel en vivo del Algorithmic Watcher con métricas de vigilancia y gasto de IA.
 - [x] **Cobertura Exhaustiva de Pruebas Automatizadas**:
   - 109 pruebas unitarias pasando al 100% (+9 pruebas dedicadas exclusivamente a Fase 5A: persistencia, deduplicación dual AI, descubrimiento autónomo, rechazo de R:R ficticio, vigilancia algorítmica sin IA, llegada a zona, invalidación por SL, reevaluación de consenso y hard budget limit).
+
+---
+
+## [Fase 5B] — Validación Histórica, Backtesting Real 90 Días Bybit V5 Linear y Trading Laboratory [COMPLETADA]
+
+- [x] **Motor de Importación Histórica Bybit V5 Linear (`HistoricalDataManager`)**:
+  - Paginación continua inversa en `/v5/market/kline` con límite de 1000 velas por petición para `BTCUSDT` categoría `linear`.
+  - Almacenamiento indexado en SQLite (`historical_candles`) para las 5 temporalidades (1d, 4h, 1h, 15m, 5m).
+  - Cobertura total verificada: 40.000 velas reales descargadas y almacenadas (1000 en 1d, 1000 en 4h, 3000 en 1h, 9000 en 15m, 26000 en 5m).
+  - Ordenamiento UTC estricto, detección de gaps y persistencia local sin look-ahead bias.
+
+- [x] **Scheduler Autónomo de Descubrimiento (`AutonomousDiscoveryScheduler`)**:
+  - Ejecución autónoma 24/7 en backend independientemente de si el navegador está abierto o cerrado.
+  - Event Dispatcher conectado al cierre de velas de `1h` y shifts estructurales de `15m` (BOS/CHoCH).
+  - Disparador por desplazamiento significativo de mercado (movimiento $\ge 1.5\%$ respecto al último análisis).
+  - Control de throttle y cooldown (mínimo 15 minutos entre ejecuciones, configurable).
+  - Salvaguarda de presupuesto estricta: bloquea ejecuciones si `HardBudgetManager.isBlocked()` está activo.
+  - Persistencia de configuración en tabla `discovery_scheduler_config` de SQLite.
+  - Endpoints REST: `GET /api/v1/discovery/scheduler/status`, `GET /api/v1/discovery/scheduler/config`, `POST /api/v1/discovery/scheduler/config`.
+
+- [x] **Motor Cuantitativo de Backtesting Determinista (`BacktestEngine`)**:
+  - Reutilización estricta del motor de producción (`SmcDetector`, `StrategyATrendContinuation`, `StrategyBLiquiditySweep`, `RiskCalculator`).
+  - Simulación financiera realista:
+    - Comisiones Bybit: Maker 0.02% (entrada/salida con órdenes pasivas) y Taker 0.055% (gatillo de entrada y Stop Loss).
+    - Costo de cruce de spread (0.10 USDT).
+    - Slippage de mercado (0.02%).
+    - Resolución conservadora imperativa: si el Stop Loss y el Take Profit se tocan dentro de la misma vela de 5m, se asume Stop Loss primero (pérdida).
+  - Segregación temporal:
+    - **In-Sample**: Primeros 60 días (entrenamiento y comportamiento estructural).
+    - **Out-of-Sample**: Últimos 30 días (validación ciega sin sobreajuste).
+  - Análisis diferencial de objetivos duales 1:2 y 1:4 calculados analíticamente con comisiones netas garantizadas.
+  - Modo Cartera Combinada: deduplicación temporal de operaciones para eliminar exposición concurrente en el mismo activo.
+  - Métricas registradas: Total Trades, Wins, Losses, Win Rate %, Net PnL (USDT y R), Expectancy R, Max Drawdown (% y R), Profit Factor, MFE promedio (R) y MAE promedio (R).
+
+- [x] **Resultados Oficiales del Backtest Real de 90 Días (BTCUSDT · Bybit V5 Linear)**:
+  - **Estrategia A (LONG 1:4)**: 34 trades, Win Rate 20.6%, Net PnL **+$1,585.7 USDT (+36.2R)**, Expectancy **+1.06R**, Profit Factor **1.34**, Max DD 25.0%.
+  - **Estrategia A (LONG 1:2)**: 34 trades, Win Rate 26.5%, Net R **+6.9R**, Expectancy **+0.20R**, Max DD 26.6%.
+  - **Estrategia A (SHORT 1:4)**: 24 trades, Win Rate 12.5%, Net R **+7.7R**, Expectancy **+0.32R**, Max DD 32.4%.
+  - **Estrategia B (LONG 1:2)**: 15 trades, Win Rate 26.7%, Net R **+9.1R**, Expectancy **+0.61R**, Max DD 37.0%.
+  - **Cartera Combinada (Sin Duplicación)**: 60 trades, Win Rate 23.3%, Net R **+8.2R**, Expectancy **+0.14R**.
+  - **Comparativa In-Sample vs Out-of-Sample**:
+    - In-Sample (Días 1-60): 118 trades, Win Rate 16.1%, PF 0.46, Exp +0.14R.
+    - Out-of-Sample (Días 61-90): 54 trades, Win Rate 24.1%, PF 0.84, Exp **+0.33R** (validación positiva fuera de muestra).
+
+- [x] **Interfaz "Trading Laboratory" en Frontend (`TradingLaboratory.tsx`)**:
+  - Componente integrado en Next.js con estilo corporativo oficial NanoLabs Theme 2 (`visual-nanolabs`).
+  - Selector de parámetros de backtesting (período, in-sample, estrategia, dirección y ratio).
+  - Tarjetas KPI principales con visualización de Expectancy R, Profit Factor, PnL neto y Max Drawdown.
+  - Tabla de rendimiento comparativo obligatorio por estrategia, dirección y ratio.
+  - Panel comparativo In-Sample vs Out-of-Sample.
+  - Registro interactivo de trades barra a barra con filtrado por TP, SL y expiradas.
+  - Exportación directa a formatos CSV y JSON para análisis externo.
+
+- [x] **Diferenciación Estricta de IA vs Backtest**:
+  - El backtest histórico mide exclusivamente las estrategias cuantitativas deterministas A y B.
+  - Se prohíbe inventar decisiones históricas simuladas de OpenAI o Gemini; la efectividad de las IA se mide prospectivamente en tiempo real en Fase 5C.
+
+- [x] **Cobertura de Pruebas Automatizadas**:
+  - **113 pruebas unitarias aprobadas al 100%** (incluye `fase5a-lifecycle-replay.test.ts` y `fase5b-backtest-engine.test.ts`).

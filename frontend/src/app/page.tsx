@@ -11,6 +11,7 @@ import { SignalLifecycleMonitor } from '../components/SignalLifecycleMonitor';
 import { NotificationsModal } from '../components/NotificationsModal';
 import { ConfigCenterModal } from '../components/config/ConfigCenterModal';
 import { AiTradingIntelligence } from '../components/AiTradingIntelligence';
+import TradingLaboratory from '../components/TradingLaboratory';
 import {
   Activity,
   Shield,
@@ -747,6 +748,9 @@ export default function DashboardPage() {
 
         {/* AI Trading Intelligence · Autonomous Discovery, Watcher & Dual 1:2 / 1:4 Targets (Phase 5A) */}
         <AiTradingIntelligence />
+
+        {/* Trading Laboratory · Backtesting Cuantitativo 90 Días (Phase 5B) */}
+        <TradingLaboratory />
 
         {/* Signal Lifecycle 24/7 Monitor (Phase 4) */}
         <SignalLifecycleMonitor

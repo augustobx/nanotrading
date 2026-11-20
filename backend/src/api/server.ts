@@ -8,6 +8,9 @@ import { authManager } from '../security/auth-manager.js';
 import { maskSecret, encryptSecret, decryptSecret } from '../security/encryption.js';
 import { RiskCalculator } from '../engine/risk-calculator.js';
 import { AI_MODELS_CATALOG, calculateCallCost } from '../ai/models-catalog.js';
+import { BybitRestClient } from '../bybit/bybit-rest-client.js';
+import { HistoricalDataManager } from '../backtest/historical-data-manager.js';
+import { BacktestEngine } from '../backtest/backtest-engine.js';
 
 export class ApiServer {
   private server: http.Server;
@@ -19,10 +22,14 @@ export class ApiServer {
   private startTime: number = Date.now();
   private rateLimitMap: Map<string, { count: number; resetTime: number }> = new Map();
   private evaluationsInProgress: Set<string> = new Set();
+  private historicalDataManager: HistoricalDataManager;
+  private backtestEngine: BacktestEngine;
 
   constructor(coordinator: MarketCoordinator, db: DatabaseService, port?: number, host?: string) {
     this.coordinator = coordinator;
     this.db = db;
+    this.historicalDataManager = new HistoricalDataManager(new BybitRestClient(), this.db);
+    this.backtestEngine = new BacktestEngine(this.historicalDataManager, this.db);
     authManager.setDatabase(this.db);
     this.port = port !== undefined ? port : config.port;
     this.host = host || config.host;
@@ -50,6 +57,21 @@ export class ApiServer {
     }
     entry.count++;
     return true;
+  }
+
+  private async readJsonBody<T = any>(req: http.IncomingMessage): Promise<T> {
+    return new Promise((resolve, reject) => {
+      let data = '';
+      req.on('data', (chunk) => (data += chunk));
+      req.on('end', () => {
+        try {
+          resolve(data ? JSON.parse(data) : ({} as T));
+        } catch (err) {
+          reject(new Error('Invalid JSON'));
+        }
+      });
+      req.on('error', reject);
+    });
   }
 
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -189,6 +211,35 @@ export class ApiServer {
         this.sendScenarioDetail(res, scenarioId);
       } else if (pathname === '/api/v1/discovery/trigger' && req.method === 'POST') {
         this.handleTriggerDiscovery(req, res);
+      } else if (pathname === '/api/v1/discovery/scheduler/status' && req.method === 'GET') {
+        this.sendDiscoverySchedulerStatus(res);
+      } else if (pathname === '/api/v1/discovery/scheduler/config' && req.method === 'GET') {
+        this.sendDiscoverySchedulerConfig(res);
+      } else if (pathname === '/api/v1/discovery/scheduler/config' && req.method === 'POST') {
+        this.handleUpdateDiscoverySchedulerConfig(req, res);
+      } else if (pathname === '/api/v1/backtest/data/status' && req.method === 'GET') {
+        this.sendBacktestDataStatus(res);
+      } else if (pathname === '/api/v1/backtest/data/import' && req.method === 'POST') {
+        this.handleBacktestImport(req, res);
+      } else if (pathname === '/api/v1/backtest/run' && req.method === 'POST') {
+        this.handleBacktestRun(req, res);
+      } else if (pathname === '/api/v1/backtest/runs' && req.method === 'GET') {
+        const limit = parseInt(url.searchParams.get('limit') || '20', 10);
+        this.sendBacktestRuns(res, limit);
+      } else if (pathname.startsWith('/api/v1/backtest/runs/') && pathname.endsWith('/export') && req.method === 'GET') {
+        const parts = pathname.split('/');
+        const runId = parts[5];
+        const format = (url.searchParams.get('format') || 'json') as 'csv' | 'json';
+        this.sendBacktestExport(res, runId, format);
+      } else if (pathname.startsWith('/api/v1/backtest/runs/') && pathname.endsWith('/trades') && req.method === 'GET') {
+        const parts = pathname.split('/');
+        const runId = parts[5];
+        const limit = parseInt(url.searchParams.get('limit') || '500', 10);
+        this.sendBacktestRunTrades(res, runId, limit);
+      } else if (pathname.startsWith('/api/v1/backtest/runs/') && req.method === 'GET') {
+        const parts = pathname.split('/');
+        const runId = parts[5];
+        this.sendBacktestRunDetail(res, runId);
       } else if (pathname === '/api/v1/events' && req.method === 'GET') {
         const limit = parseInt(url.searchParams.get('limit') || '50', 10);
         this.sendEvents(res, limit);
@@ -1808,6 +1859,127 @@ export class ApiServer {
     } catch (err: any) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+  }
+
+  private sendDiscoverySchedulerStatus(res: http.ServerResponse): void {
+    const status = this.coordinator.getDiscoveryScheduler().getStatus();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: status }));
+  }
+
+  private sendDiscoverySchedulerConfig(res: http.ServerResponse): void {
+    const config = this.coordinator.getDiscoveryScheduler().getConfig();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: config }));
+  }
+
+  private async handleUpdateDiscoverySchedulerConfig(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'No autorizado' }));
+      return;
+    }
+    try {
+      const body = await this.readJsonBody(req);
+      const updated = this.coordinator.getDiscoveryScheduler().updateConfig(body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: updated }));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+  }
+
+  private sendBacktestDataStatus(res: http.ServerResponse): void {
+    const status = this.historicalDataManager.getDataStatus(90);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: status }));
+  }
+
+  private async handleBacktestImport(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'No autorizado' }));
+      return;
+    }
+    try {
+      const body = await this.readJsonBody(req).catch(() => ({ days: 90 }));
+      const days = Number(body?.days || 90);
+      const summary = await this.historicalDataManager.importAllTimeframes(days);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: summary }));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+  }
+
+  private async handleBacktestRun(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    if (!this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'No autorizado' }));
+      return;
+    }
+    try {
+      const body = await this.readJsonBody(req).catch(() => ({}));
+      const report = await this.backtestEngine.runBacktest(body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, data: report }));
+    } catch (err: any) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: err.message }));
+    }
+  }
+
+  private sendBacktestRuns(res: http.ServerResponse, limit: number): void {
+    const runs = this.db.getBacktestRuns(limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: runs }));
+  }
+
+  private sendBacktestRunDetail(res: http.ServerResponse, id: string): void {
+    const run = this.db.getBacktestRunById(id);
+    if (!run) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Backtest run no encontrado' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: run }));
+  }
+
+  private sendBacktestRunTrades(res: http.ServerResponse, id: string, limit: number): void {
+    const trades = this.db.getBacktestTrades(id, limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: trades }));
+  }
+
+  private sendBacktestExport(res: http.ServerResponse, id: string, format: 'csv' | 'json'): void {
+    const trades = this.db.getBacktestTrades(id, 5000);
+    if (format === 'csv') {
+      const headers = [
+        'id', 'strategy', 'direction', 'ratioTarget', 'entryTimestamp', 'exitTimestamp',
+        'entryPrice', 'stopLossPrice', 'takeProfitPrice', 'exitPrice', 'outcome',
+        'realizedNetPnlUsdt', 'realizedNetR', 'mfeR', 'maeR', 'durationMs', 'isInSample', 'feesUsdt'
+      ];
+      let csv = headers.join(',') + '\n';
+      for (const t of trades) {
+        csv += [
+          t.id, t.strategy, t.direction, t.ratioTarget, t.entryTimestamp, t.exitTimestamp,
+          t.entryPrice, t.stopLossPrice, t.takeProfitPrice, t.exitPrice, t.outcome,
+          t.realizedNetPnlUsdt, t.realizedNetR, t.mfeR, t.maeR, t.durationMs, t.isInSample ? 1 : 0, t.feesUsdt
+        ].join(',') + '\n';
+      }
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="backtest_${id}.csv"`);
+      res.writeHead(200);
+      res.end(csv);
+    } else {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="backtest_${id}.json"`);
+      res.writeHead(200);
+      res.end(JSON.stringify(trades, null, 2));
     }
   }
 

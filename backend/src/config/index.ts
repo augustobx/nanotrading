@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import fs from 'fs';
 
 // Load .env if present
 dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
@@ -92,7 +93,11 @@ export const config: AppConfig = {
   },
   storage: {
     dbType: (process.env.DB_TYPE as 'sqlite' | 'postgres') || 'sqlite',
-    sqlitePath: process.env.DB_SQLITE_PATH || path.resolve(process.cwd(), './data/trading.db'),
+    sqlitePath: process.env.DB_SQLITE_PATH || (
+      fs.existsSync(path.resolve(process.cwd(), './backend/data/trading.db'))
+        ? path.resolve(process.cwd(), './backend/data/trading.db')
+        : path.resolve(process.cwd(), './data/trading.db')
+    ),
     postgres: {
       host: process.env.DB_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5432', 10),

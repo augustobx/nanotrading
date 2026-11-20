@@ -263,6 +263,73 @@ export class RiskCalculator {
   }
 
   /**
+   * Analytically solves for the exact take profit price required to achieve
+   * a specific net Risk/Reward ratio after deducting maker/taker fees, spread, and slippage.
+   */
+  public static solveTargetPriceForNetRR(params: {
+    direction: 'LONG' | 'SHORT';
+    entryPrice: number;
+    stopLossPrice: number;
+    targetNetRR: number;
+    accountBalance?: number;
+    riskPercent?: number;
+    spread?: number;
+    slippageRate?: number;
+    makerFeeRate?: number;
+    takerFeeRate?: number;
+    tickSize?: number;
+    qtyStep?: number;
+  }): number {
+    const {
+      direction,
+      entryPrice,
+      stopLossPrice,
+      targetNetRR,
+      accountBalance = 10000,
+      riskPercent = 1.0,
+      spread = 0.1,
+      slippageRate = 0.0002,
+      makerFeeRate = 0.0002,
+      takerFeeRate = 0.00055,
+      tickSize = 0.1,
+      qtyStep = 0.001,
+    } = params;
+
+    // Use dummy TP to obtain accurate position size and net loss
+    const dummyTp = direction === 'LONG' ? entryPrice + 1000 : entryPrice - 1000;
+    const baseCalc = this.calculate({
+      direction,
+      entryPrice,
+      stopLossPrice,
+      takeProfitPrice: dummyTp,
+      accountBalance,
+      riskPercent,
+      spread,
+      slippageRate,
+      tickSize,
+      qtyStep,
+      feeStructure: { makerFeeRate, takerFeeRate },
+      minRequiredRR: 0.1,
+    });
+
+    const posBTC = baseCalc.positionSizeBTC;
+    if (posBTC <= 0) return dummyTp;
+
+    const netLoss = baseCalc.netLossUSDT;
+    const entryFee = baseCalc.entryFeeUSDT;
+    const spreadCost = baseCalc.spreadCostUSDT;
+    const slippageCost = baseCalc.slippageCostUSDT;
+
+    const numerator = targetNetRR * netLoss + entryFee + posBTC * entryPrice * makerFeeRate + spreadCost + slippageCost;
+    const denominator = posBTC * (1 - makerFeeRate);
+    const deltaPrice = numerator / denominator;
+
+    const solvedPrice = direction === 'LONG' ? entryPrice + deltaPrice : entryPrice - deltaPrice;
+    const factor = Math.round(1 / tickSize);
+    return Math.round(solvedPrice * factor) / factor;
+  }
+
+  /**
    * Evaluates a setup against both 1:2 and 1:4 Risk/Reward targets using real structural levels.
    * "La distancia del objetivo NO debe calcularse arbitrariamente para obtener un ratio deseado.
    *  Primero:
