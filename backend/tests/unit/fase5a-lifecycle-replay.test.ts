@@ -30,6 +30,15 @@ class MockCoordinator extends EventEmitter {
     this.marketState.lastWsMessageTimestamp = Date.now();
     this.emit('state_updated', this.marketState);
   }
+
+  public getSetupEngine() {
+    return {
+      getAnalysis: (tf: string) => ({
+        atr: 250,
+        trend: 'BULLISH',
+      }),
+    };
+  }
 }
 
 test('Fase 5A — Lifecycle Replay Completo: Registro -> Aproximación -> In-Zone -> Reevaluación -> Señal Validada', async () => {

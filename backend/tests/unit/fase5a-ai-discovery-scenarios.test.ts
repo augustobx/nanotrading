@@ -56,6 +56,14 @@ function createTestHarness() {
     timestamp: Date.now(),
   };
 
+  (coordinator.getSetupEngine() as any).latestAnalyses.set('15m', {
+    timeframe: '15m',
+    trend: 'BULLISH',
+    rsi: 55,
+    atr: 250,
+    structure: { swings: [], breaks: [], fvgs: [], sweeps: [] },
+  });
+
   const hardBudgetManager = new HardBudgetManager(
     {
       dailyBudgetLimitUsd: 5.0,

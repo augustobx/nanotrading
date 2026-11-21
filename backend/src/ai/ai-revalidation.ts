@@ -496,8 +496,11 @@ Responde estrictamente en JSON:
           'Exposición máxima de cartera',
         capUsdt.enabled && slUsdt > capUsdt.value && 'Distancia máxima SL en USDT',
         monetaryCap.enabled && nextLoss > monetaryCap.value && 'Pérdida monetaria máxima de SL',
-        atrCap.enabled && Number.isFinite(atr15m) && (atr15m as number) > 0 &&
-          slUsdt > (atr15m as number) * atrCap.value && 'Distancia máxima SL en ATR',
+        atrCap.enabled && (
+          !Number.isFinite(atr15m) || (atr15m as number) <= 0
+            ? 'Distancia máxima SL en ATR (ATR 15m no disponible o inválido)'
+            : slUsdt > (atr15m as number) * atrCap.value && 'Distancia máxima SL en ATR'
+        ),
       ].filter(Boolean);
       if (violations.length) {
         const reason = 'Restricciones de riesgo: ' + violations.join('; ');

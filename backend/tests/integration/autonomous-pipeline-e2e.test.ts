@@ -152,6 +152,15 @@ function createPipelineTestRig() {
   // Disable background scheduler to prevent interference with test events
   coordinator.getDiscoveryScheduler().updateConfig({ enabled: false });
 
+  // Provide valid ATR 15m in setupEngine so risk policy ATR cap check can evaluate cleanly
+  (coordinator.getSetupEngine() as any).latestAnalyses.set('15m', {
+    timeframe: '15m',
+    trend: 'BULLISH',
+    rsi: 55,
+    atr: 250,
+    structure: { swings: [], breaks: [], fvgs: [], sweeps: [] },
+  });
+
   return { coordinator, db };
 }
 
@@ -485,6 +494,63 @@ test('PR 4.1 E2E Pipeline: AlgorithmicWatcher -> AiEntryRevalidation -> MarketCo
       assert.equal(sc.status, 'CANCELLED');
       assert.match(sc.rejectionReason || '', /R:R|umbral|comisiones/i);
       assert.equal(stateMachine.getActiveSignals().length, initialCount, 'Zero señales nuevas con R:R neto insuficiente');
+    });
+
+    // ------------------------------------------------------------------------
+    // 9. RIESGO BLOQUEANTE: ATR 15m ausente o inválido con límite ATR habilitado
+    // ------------------------------------------------------------------------
+    await t.test('9. Riesgo bloqueante: ATR 15m ausente o inválido cancela entrada y no registra señal aunque IA emita APPROVE', async () => {
+      const initialCount = stateMachine.getActiveSignals().length;
+
+      // Scenario in zone 57000 (distinct price to prevent deduplication)
+      const scenario = makeScenario('sc_pipe_risk_no_atr_09', 'LONG', 56900, 57100, 57000, 56500, 58200, 59500);
+      const plan = makeWatchPlan('sc_pipe_risk_no_atr_09', 'LONG', 56900, 57100, 57000, 56500, 58200, 59500);
+      scenario.watchPlan = plan;
+      registry.registerScenario(scenario);
+      db.saveWatchPlan(plan);
+
+      aiRevalidation.setMockEvaluator(() => ({
+        openaiVerdict: 'APPROVE',
+        geminiVerdict: 'APPROVE',
+        reasoning: 'IA aprueba pero ATR 15m ausente/inválido debe bloquearla fail-closed',
+      }));
+
+      // Simulate ATR 15m missing / invalid (delete '15m' from latestAnalyses)
+      const savedAtr = (coordinator.getSetupEngine() as any).latestAnalyses.get('15m');
+      (coordinator.getSetupEngine() as any).latestAnalyses.delete('15m');
+
+      try {
+        (coordinator as any).currentTicker.lastPrice = 57000;
+        (coordinator as any).currentTicker.markPrice = 57000;
+        (coordinator as any).currentTicker.timestamp = Date.now();
+
+        coordinator.emit('state_updated', {
+          ticker: {
+            lastPrice: 57000,
+            markPrice: 57000,
+            spread: 0.1,
+            spreadPcnt: 0.0001,
+          },
+        });
+
+        await new Promise((r) => setTimeout(r, 60));
+
+        const sc = registry.getScenario('sc_pipe_risk_no_atr_09');
+        assert.ok(sc, 'Escenario debe encontrarse en registro');
+        assert.equal(sc.status, 'CANCELLED');
+        assert.match(sc.rejectionReason || '', /ATR/i);
+        assert.equal(stateMachine.getActiveSignals().length, initialCount, 'Zero señales nuevas con ATR ausente');
+
+        // Check SQLite: no signal must be registered for this scenario
+        const dbSignals = db.getSignals(10);
+        const signalFound = dbSignals.find((s: any) => s.setupId === 'sc_pipe_risk_no_atr_09');
+        assert.equal(signalFound, undefined, 'No signal in SQLite for rejected scenario');
+      } finally {
+        // Restore valid ATR 15m
+        if (savedAtr) {
+          (coordinator.getSetupEngine() as any).latestAnalyses.set('15m', savedAtr);
+        }
+      }
     });
   } finally {
     watcher.stop();
