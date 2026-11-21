@@ -227,6 +227,22 @@ test('Fase 5A - ScenarioRegistry: deduplicates and groups similar proposals from
 test('Fase 5A - AI Market Discovery: detects valid scenarios with dual 1:2 and 1:4 targets', async () => {
   const h = createTestHarness();
   try {
+    // The production verifier MUST see actual structural anchors; mock-only
+    // tests provide explicit market facts instead of accepting fabricated levels.
+    const buildSummary = h.discoveryEngine.buildMarketIntelligenceSummary.bind(h.discoveryEngine);
+    (h.discoveryEngine as any).buildMarketIntelligenceSummary = () => ({
+      ...buildSummary(),
+      currentPrice: 64100,
+      timeframes: {
+        '15m': {
+          activeSwings: { low: { price: 63600 }, high: { price: 66600 } },
+          activeFvgDetails: [
+            { type: 'BULLISH', bottom: 64000, top: 64200 },
+            { type: 'BEARISH', bottom: 65300, top: 65400 },
+          ],
+        },
+      },
+    });
     h.discoveryEngine.setMockEvaluator((summary) => ({
       openai: {
         bias: 'BULLISH',

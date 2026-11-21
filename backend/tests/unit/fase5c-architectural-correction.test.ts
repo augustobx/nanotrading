@@ -66,13 +66,14 @@ class MockMarketCoordinator extends EventEmitter {
         structure: {
           swings: [
             { type: 'LOW', price: 64100, label: 'HL', timestamp: Date.now() - 3600000 },
-            { type: 'HIGH', price: 65800, label: 'HH', timestamp: Date.now() - 1800000 },
+            { type: 'HIGH', price: 67200, label: 'HH', timestamp: Date.now() - 1800000 },
           ],
           structureBreaks: [
             { type: 'BOS', direction: 'BULLISH', brokenLevel: 65100, timestamp: Date.now() - 900000 },
           ],
           fvgs: [
             { type: 'BULLISH', top: 64600, bottom: 64400, size: 200, status: 'ACTIVE' },
+            { type: 'BEARISH', top: 65900, bottom: 65700, size: 200, status: 'ACTIVE' },
           ],
           orderBlocks: [
             { type: 'BULLISH', top: 64350, bottom: 64100, status: 'ACTIVE' },

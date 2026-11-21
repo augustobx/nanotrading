@@ -267,9 +267,15 @@ test('Fase 5C.2 — NEUTRAL_OBSERVATION never triggers entry revalidation and tr
   assert.strictEqual(revalidationEventFired, false);
   assert.strictEqual(breakoutEventFired, false);
 
-  // Tick breaking through range ceiling (> rangeHigh): triggers breakout event and autonomous AI discovery!
+  // Tick breaking range is merely a wick; a CLOSED matching candle confirms.
   const ceiling = neutralSc.entryZoneMax;
   watcher.evaluateTick(ceiling + 100);
+  assert.strictEqual(breakoutEventFired, false);
+  watcher.evaluateCandleClose({
+    timeframe: neutralSc.timeframe, timestamp: neutralSc.discoveryTimestamp + 1000,
+    confirmed: true, open: ceiling - 50, high: ceiling + 110,
+    low: ceiling - 70, close: ceiling + 100, volume: 100,
+  });
 
   assert.strictEqual(breakoutEventFired, true);
   assert.strictEqual(revalidationEventFired, false); // Crucial: NEVER revalidated as trade!

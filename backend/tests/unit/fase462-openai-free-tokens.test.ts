@@ -64,7 +64,7 @@ describe('Fase 4.6.2 — Corrección Oficial de Tokens Gratuitos de OpenAI (Data
     assert.strictEqual(benefit.discountStatus, 'NONE');
     assert.strictEqual(benefit.discountUsd, 0);
     assert.strictEqual(benefit.netCostUsd, 0.02);
-    assert.match(benefit.reason, /no verificado/i);
+    assert.match(benefit.reason, /costo bruto completo/i);
     assert.strictEqual(budget.getRemainingFreeTokens('MAIN'), 0);
   });
 
