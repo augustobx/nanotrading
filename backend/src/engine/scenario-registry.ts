@@ -119,7 +119,6 @@ export class ScenarioRegistry extends EventEmitter {
       else if (toStatus === 'EXPIRED') updated.watchPlan.status = 'EXPIRED';
       else if (toStatus === 'CANCELLED') updated.watchPlan.status = 'CANCELLED';
       else if (toStatus === 'COMPLETED') updated.watchPlan.status = 'COMPLETED';
-      else if (toStatus === 'DISCARDED') updated.watchPlan.status = 'DISCARDED';
       else if (toStatus === 'IN_ZONE' || toStatus === 'REVALIDATION_REQUESTED') updated.watchPlan.status = 'TRIGGERED';
       else if (toStatus === 'AI_REVALIDATING') updated.watchPlan.status = 'REVALIDATING';
       this.db.saveWatchPlan(updated.watchPlan);
