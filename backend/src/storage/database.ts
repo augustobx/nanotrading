@@ -515,6 +515,8 @@ export class DatabaseService {
       'realized_net_pnl_usdt REAL',
       "entry_mode TEXT DEFAULT 'SIGNALS_ONLY'",
       "evaluation_mode TEXT DEFAULT 'DUAL_AI'",
+      'risk_usdt REAL',
+      'position_size_btc REAL',
     ];
     for (const col of extraCols) {
       try {
@@ -625,8 +627,8 @@ export class DatabaseService {
     `);
 
     this.insertSignalStmt = this.db.prepare(`
-      INSERT INTO signals (id, setup_id, timestamp, symbol, strategy, direction, timeframe, entry_price, stop_loss, take_profit, rr_net, consensus_verdict, openai_verdict, gemini_verdict, status, rejection_reason, snapshot_id, created_at, evaluation_mode)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO signals (id, setup_id, timestamp, symbol, strategy, direction, timeframe, entry_price, stop_loss, take_profit, rr_net, consensus_verdict, openai_verdict, gemini_verdict, status, rejection_reason, snapshot_id, created_at, evaluation_mode, risk_usdt, position_size_btc)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         rejection_reason = excluded.rejection_reason,
@@ -925,7 +927,9 @@ export class DatabaseService {
         signal.rejectionReason || null,
         signal.snapshotId || null,
         signal.createdAt || Date.now(),
-        signal.evaluationMode || 'DUAL_AI'
+        signal.evaluationMode || 'DUAL_AI',
+        signal.riskUsdt ?? null,
+        signal.positionSizeBTC ?? null
       );
     } catch {}
   }
@@ -953,6 +957,8 @@ export class DatabaseService {
       snapshotId: r.snapshot_id,
       createdAt: Number(r.created_at),
       evaluationMode: r.evaluation_mode || 'DUAL_AI',
+      riskUsdt: r.risk_usdt != null ? Number(r.risk_usdt) : null,
+      positionSizeBTC: r.position_size_btc != null ? Number(r.position_size_btc) : null,
       simulatedEntryTime: r.simulated_entry_time ? Number(r.simulated_entry_time) : null,
       exitTime: r.exit_time ? Number(r.exit_time) : null,
       durationMs: r.duration_ms ? Number(r.duration_ms) : null,
@@ -1162,6 +1168,8 @@ export class DatabaseService {
         snapshotId: r.snapshot_id,
         createdAt: Number(r.created_at),
         evaluationMode: r.evaluation_mode || 'DUAL_AI',
+        riskUsdt: r.risk_usdt != null ? Number(r.risk_usdt) : null,
+        positionSizeBTC: r.position_size_btc != null ? Number(r.position_size_btc) : null,
         simulatedEntryTime: r.simulated_entry_time ? Number(r.simulated_entry_time) : null,
         exitTime: r.exit_time ? Number(r.exit_time) : null,
         durationMs: r.duration_ms ? Number(r.duration_ms) : null,
