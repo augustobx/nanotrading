@@ -162,17 +162,17 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
   };
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-4 shadow-xl">
+    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-4 shadow-xl">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-3 border-b border-slate-800/80 mb-3 gap-2">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800/80 mb-3 gap-2">
         <div className="flex items-center gap-2">
           <Brain className="w-4 h-4 text-[var(--color-brand,#FF6600)]" />
-          <h3 className="font-display font-bold text-sm text-slate-200 uppercase tracking-wider">
+          <h3 className="font-display font-bold text-sm text-slate-800 dark:text-slate-200 uppercase tracking-wider">
             Inteligencia Artificial Cuantitativa & Motor de Consenso
           </h3>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10px] font-mono bg-purple-500/10 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded font-bold">
+          <span className="text-[10px] font-mono bg-purple-500/10 text-purple-600 dark:text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded font-bold">
             Modo: {aiStatus?.executionMode || 'SIGNALS_ONLY'}
           </span>
           {getModeBadge(currentMode)}
@@ -183,30 +183,30 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
       <div className="flex items-center gap-2 mb-3">
         <button
           onClick={() => setActiveTab('status')}
-          className={`px-3 py-1 text-xs font-mono rounded-lg transition-colors ${
+          className={`px-3 py-1 text-xs font-mono rounded-lg transition-colors cursor-pointer ${
             activeTab === 'status'
               ? 'bg-[var(--color-brand,#FF6600)] text-white font-bold'
-              : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
+              : 'bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
           }`}
         >
           Modelos & Fallback
         </button>
         <button
           onClick={() => setActiveTab('signals')}
-          className={`px-3 py-1 text-xs font-mono rounded-lg transition-colors flex items-center gap-1.5 ${
+          className={`px-3 py-1 text-xs font-mono rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer ${
             activeTab === 'signals'
               ? 'bg-[var(--color-brand,#FF6600)] text-white font-bold'
-              : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
+              : 'bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
           }`}
         >
           Señales Evaluadas ({signals.length})
         </button>
         <button
           onClick={() => setActiveTab('reviews')}
-          className={`px-3 py-1 text-xs font-mono rounded-lg transition-colors ${
+          className={`px-3 py-1 text-xs font-mono rounded-lg transition-colors cursor-pointer ${
             activeTab === 'reviews'
               ? 'bg-[var(--color-brand,#FF6600)] text-white font-bold'
-              : 'bg-slate-800/60 text-slate-400 hover:text-slate-200'
+              : 'bg-slate-100 dark:bg-slate-800/60 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
           }`}
         >
           Auditorías Históricas ({aiReviews.length})
@@ -217,9 +217,9 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
         <div className="space-y-3">
           {/* Policy Banner */}
           {aiStatus?.fallbackPolicy && (
-            <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between text-xs font-mono">
-              <span className="text-slate-300 flex items-center gap-1.5">
-                <Zap className="w-3.5 h-3.5 text-amber-400" />
+            <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs font-mono">
+              <span className="text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                <Zap className="w-3.5 h-3.5 text-amber-500 dark:text-amber-400" />
                 {aiStatus.fallbackPolicy.description}
               </span>
               <span className="text-[10px] text-slate-500">
@@ -230,33 +230,33 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {/* OpenAI Card */}
-            <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-900/60 flex flex-col justify-between">
+            <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/60 flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <div className="w-6 h-6 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center">
-                      <Brain className="w-3.5 h-3.5 text-emerald-400" />
+                      <Brain className="w-3.5 h-3.5 text-emerald-500 dark:text-emerald-400" />
                     </div>
                     <div>
-                      <h4 className="font-display font-bold text-xs text-white">OpenAI</h4>
-                      <p className="text-[10px] text-slate-400 font-mono">
+                      <h4 className="font-display font-bold text-xs text-slate-900 dark:text-white">OpenAI</h4>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
                         {openaiConfig?.model || 'gpt-4o'} (Analista Técnico Cuantitativo)
                       </p>
                     </div>
                   </div>
                   {getProviderStatusBadge(openaiConfig)}
                 </div>
-                <p className="text-xs text-slate-400 leading-relaxed mb-3">
+                <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed mb-3">
                   Evalúa la confluencia de estructura multitemporal, zonas Premium/Discount, retrocesos a FVG/OB y verosimilitud del ratio R:R $\ge$ 1:4.
                 </p>
                 {openaiConfig?.lastError && (
-                  <div className="p-2 mb-2 rounded bg-rose-500/10 border border-rose-500/20 text-[10px] text-rose-300 font-mono truncate">
+                  <div className="p-2 mb-2 rounded bg-rose-500/10 border border-rose-500/20 text-[10px] text-rose-500 dark:text-rose-300 font-mono truncate">
                     Último error: {openaiConfig.lastError}
                   </div>
                 )}
               </div>
 
-              <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-[10px] font-mono text-slate-500">
+              <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800 text-[10px] font-mono text-slate-500">
                 <span>Llamadas: {costTracker?.callsByProvider?.OPENAI || 0}</span>
                 <span>
                   {openaiConfig?.lastSuccessTimestamp
@@ -267,33 +267,33 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
             </div>
 
             {/* Gemini Card */}
-            <div className="p-3.5 rounded-xl border border-slate-800 bg-slate-900/60 flex flex-col justify-between">
+            <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/60 flex flex-col justify-between">
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2">
                     <div className="w-6 h-6 rounded-lg bg-blue-500/10 border border-blue-500/30 flex items-center justify-center">
-                      <Cpu className="w-3.5 h-3.5 text-blue-400" />
+                      <Cpu className="w-3.5 h-3.5 text-blue-500 dark:text-blue-400" />
                     </div>
                     <div>
-                      <h4 className="font-display font-bold text-xs text-white">Google Gemini</h4>
-                      <p className="text-[10px] text-slate-400 font-mono">
+                      <h4 className="font-display font-bold text-xs text-slate-900 dark:text-white">Google Gemini</h4>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
                         {geminiConfig?.model || 'gemini-2.0-flash'} (Auditor Crítico de Riesgos)
                       </p>
                     </div>
                   </div>
                   {getProviderStatusBadge(geminiConfig)}
                 </div>
-                <p className="text-xs text-slate-400 leading-relaxed mb-3">
+                <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed mb-3">
                   Actúa como abogado del diablo independiente. Busca contradicciones, trampas de liquidez, absorción adversa en el libro de órdenes y razones para descartar el setup.
                 </p>
                 {geminiConfig?.lastError && (
-                  <div className="p-2 mb-2 rounded bg-rose-500/10 border border-rose-500/20 text-[10px] text-rose-300 font-mono truncate">
+                  <div className="p-2 mb-2 rounded bg-rose-500/10 border border-rose-500/20 text-[10px] text-rose-500 dark:text-rose-300 font-mono truncate">
                     Último error: {geminiConfig.lastError}
                   </div>
                 )}
               </div>
 
-              <div className="flex items-center justify-between pt-2 border-t border-slate-800 text-[10px] font-mono text-slate-500">
+              <div className="flex items-center justify-between pt-2 border-t border-slate-200 dark:border-slate-800 text-[10px] font-mono text-slate-500">
                 <span>Llamadas: {costTracker?.callsByProvider?.GEMINI || 0}</span>
                 <span>
                   {geminiConfig?.lastSuccessTimestamp
@@ -305,18 +305,18 @@ export function AiAnalystsCard({ aiStatus, signals = [], aiReviews = [] }: AiAna
           </div>
 
           {/* Cost Tracker Bar */}
-          <div className="p-3 rounded-xl bg-slate-900/40 border border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
-            <div className="flex items-center gap-2 text-slate-300">
-              <DollarSign className="w-4 h-4 text-emerald-400" />
+          <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs font-mono">
+            <div className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+              <DollarSign className="w-4 h-4 text-emerald-500 dark:text-emerald-400" />
               <span>Gasto Diario:</span>
-              <strong className="text-white">${costTracker?.dailySpendUsd?.toFixed(4) || '0.0000'}</strong>
+              <strong className="text-slate-900 dark:text-white">${costTracker?.dailySpendUsd?.toFixed(4) || '0.0000'}</strong>
               <span className="text-slate-500">/ ${costTracker?.dailyBudgetUsd?.toFixed(2) || '5.00'} límite</span>
             </div>
 
-            <div className="flex items-center gap-3 text-slate-400 text-[11px]">
-              <span>Tokens totales: <strong className="text-slate-200">{costTracker?.totalTokens || 0}</strong></span>
-              <span>Consultas totales: <strong className="text-slate-200">{costTracker?.totalCalls || 0}</strong></span>
-              <span>Disponible hoy: <strong className="text-emerald-400">${costTracker?.dailyBudgetRemainingUsd?.toFixed(4) || '5.0000'}</strong></span>
+            <div className="flex items-center gap-3 text-slate-600 dark:text-slate-400 text-[11px]">
+              <span>Tokens totales: <strong className="text-slate-800 dark:text-slate-200">{costTracker?.totalTokens || 0}</strong></span>
+              <span>Consultas totales: <strong className="text-slate-800 dark:text-slate-200">{costTracker?.totalCalls || 0}</strong></span>
+              <span>Disponible hoy: <strong className="text-emerald-600 dark:text-emerald-400">${costTracker?.dailyBudgetRemainingUsd?.toFixed(4) || '5.0000'}</strong></span>
             </div>
           </div>
         </div>

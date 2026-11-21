@@ -71,6 +71,8 @@ interface CandleChartProps {
   structureBreaks?: BreakData[];
   fvgs?: FvgData[];
   scenarios?: any[];
+  selectedScenarioId?: string | null;
+  onSelectScenario?: (id: string | null) => void;
   symbol?: string;
   isDark?: boolean;
 }
@@ -86,6 +88,8 @@ export function CandleChart({
   structureBreaks = [],
   fvgs = [],
   scenarios = [],
+  selectedScenarioId = null,
+  onSelectScenario,
   symbol = 'BTCUSDT',
   isDark = true,
 }: CandleChartProps) {
@@ -354,13 +358,19 @@ export function CandleChart({
 
     // Scenarios Lines (Autonomous AI Entry, SL, TP 1:4)
     if (showScenarios && scenarios && scenarios.length > 0) {
-      const activeScenario = [...scenarios].reverse().find(
-        (s) =>
-          ['SCENARIO_MONITORING', 'APPROACHING_ZONE', 'IN_ZONE', 'REVALIDATION_REQUESTED', 'AI_REVALIDATING', 'ENTRY_VALIDATED'].includes(s.status) &&
-          s.direction !== 'NEUTRAL' &&
-          Number.isFinite(s.targetEntry) &&
-          Number.isFinite(s.stopLossPrice)
-      );
+      let activeScenario: any = null;
+      if (selectedScenarioId) {
+        activeScenario = scenarios.find((s) => s.id === selectedScenarioId);
+      }
+      if (!activeScenario) {
+        activeScenario = [...scenarios].reverse().find(
+          (s) =>
+            ['SCENARIO_MONITORING', 'APPROACHING_ZONE', 'IN_ZONE', 'REVALIDATION_REQUESTED', 'AI_REVALIDATING', 'ENTRY_VALIDATED'].includes(s.status) &&
+            s.direction !== 'NEUTRAL' &&
+            Number.isFinite(s.targetEntry) &&
+            Number.isFinite(s.stopLossPrice)
+        );
+      }
       if (activeScenario) {
         try {
           const isValidated = activeScenario.status === 'ENTRY_VALIDATED' || activeScenario.status === 'SIGNAL_GENERATED';
@@ -443,28 +453,30 @@ export function CandleChart({
         } catch {}
       }
     }
-  }, [fvgs, scenarios, showFvg, showScenarios]);
+  }, [fvgs, scenarios, selectedScenarioId, showFvg, showScenarios]);
 
   const activeCandle = hoverData || currentCandle || (candles.length > 0 ? candles[candles.length - 1] : null);
   const priceColor =
-    activeCandle && activeCandle.close >= activeCandle.open ? 'text-emerald-400' : 'text-rose-400';
+    activeCandle && activeCandle.close >= activeCandle.open ? 'text-emerald-500 dark:text-emerald-400' : 'text-rose-500 dark:text-rose-400';
+
+  const selectedScenario = selectedScenarioId ? scenarios.find((s) => s.id === selectedScenarioId) : null;
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-4 shadow-xl">
+    <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-4 shadow-xl">
       {/* Top Header Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800/80 pb-3">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
-            <span className="font-display font-extrabold text-white text-base tracking-wide">
+            <span className="font-display font-extrabold text-slate-900 dark:text-white text-base tracking-wide">
               {symbol}
             </span>
-            <span className="rounded-md bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
+            <span className="rounded-md bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider">
               Bybit V5 Linear
             </span>
           </div>
 
           {/* Timeframe Selector */}
-          <div className="flex items-center gap-1 rounded-xl bg-slate-900/90 p-1 border border-slate-800">
+          <div className="flex items-center gap-1 rounded-xl bg-slate-100 dark:bg-slate-900/90 p-1 border border-slate-200 dark:border-slate-800">
             {TIMEFRAMES.map((tf) => (
               <button
                 key={tf}
@@ -472,7 +484,7 @@ export function CandleChart({
                 className={`px-2.5 py-1 text-xs font-bold rounded-lg transition-all ${
                   timeframe === tf
                     ? 'bg-[var(--color-brand,#FF6600)] text-white shadow-md'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800/50'
                 }`}
               >
                 {tf}
@@ -485,39 +497,39 @@ export function CandleChart({
         {activeCandle && (
           <div className="flex flex-wrap items-center gap-3 text-xs font-mono">
             <div>
-              <span className="text-slate-500">O: </span>
-              <span className="text-slate-200 font-semibold">{activeCandle.open.toFixed(1)}</span>
+              <span className="text-slate-400 dark:text-slate-500">O: </span>
+              <span className="text-slate-700 dark:text-slate-200 font-semibold">{activeCandle.open.toFixed(1)}</span>
             </div>
             <div>
-              <span className="text-slate-500">H: </span>
-              <span className="text-slate-200 font-semibold">{activeCandle.high.toFixed(1)}</span>
+              <span className="text-slate-400 dark:text-slate-500">H: </span>
+              <span className="text-slate-700 dark:text-slate-200 font-semibold">{activeCandle.high.toFixed(1)}</span>
             </div>
             <div>
-              <span className="text-slate-500">L: </span>
-              <span className="text-slate-200 font-semibold">{activeCandle.low.toFixed(1)}</span>
+              <span className="text-slate-400 dark:text-slate-500">L: </span>
+              <span className="text-slate-700 dark:text-slate-200 font-semibold">{activeCandle.low.toFixed(1)}</span>
             </div>
             <div>
-              <span className="text-slate-500">C: </span>
+              <span className="text-slate-400 dark:text-slate-500">C: </span>
               <span className={`font-bold ${priceColor}`}>{activeCandle.close.toFixed(1)}</span>
             </div>
             <div>
-              <span className="text-slate-500">Vol: </span>
-              <span className="text-slate-300 font-semibold">{activeCandle.volume.toFixed(3)} BTC</span>
+              <span className="text-slate-400 dark:text-slate-500">Vol: </span>
+              <span className="text-slate-700 dark:text-slate-300 font-semibold">{activeCandle.volume.toFixed(3)} BTC</span>
             </div>
           </div>
         )}
       </div>
 
       {/* Layer Toggles Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-slate-800/50 text-[11px] font-mono">
-        <span className="text-slate-400 font-semibold uppercase tracking-wider">Capas SMC / ICT:</span>
+      <div className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-slate-200 dark:border-slate-800/50 text-[11px] font-mono">
+        <span className="text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider">Capas SMC / ICT:</span>
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setShowSwings(!showSwings)}
             className={`px-2 py-0.5 rounded-md border transition-all ${
               showSwings
-                ? 'border-sky-500/40 bg-sky-500/10 text-sky-400 font-bold'
-                : 'border-slate-800 text-slate-500 hover:text-slate-300'
+                ? 'border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400 font-bold'
+                : 'border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
             }`}
           >
             ● Swings (HH/LL)
@@ -526,8 +538,8 @@ export function CandleChart({
             onClick={() => setShowBreaks(!showBreaks)}
             className={`px-2 py-0.5 rounded-md border transition-all ${
               showBreaks
-                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400 font-bold'
-                : 'border-slate-800 text-slate-500 hover:text-slate-300'
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-bold'
+                : 'border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
             }`}
           >
             ● BOS / CHoCH
@@ -536,8 +548,8 @@ export function CandleChart({
             onClick={() => setShowFvg(!showFvg)}
             className={`px-2 py-0.5 rounded-md border transition-all ${
               showFvg
-                ? 'border-amber-500/40 bg-amber-500/10 text-amber-400 font-bold'
-                : 'border-slate-800 text-slate-500 hover:text-slate-300'
+                ? 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold'
+                : 'border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
             }`}
           >
             ● FVG / Zonas
@@ -547,13 +559,37 @@ export function CandleChart({
             className={`px-2 py-0.5 rounded-md border transition-all ${
               showScenarios
                 ? 'border-[var(--color-brand,#FF6600)] bg-[var(--color-brand,#FF6600)]/10 text-[var(--color-brand,#FF6600)] font-bold'
-                : 'border-slate-800 text-slate-500 hover:text-slate-300'
+                : 'border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
             }`}
           >
             ● Escenario IA (SL/TP)
           </button>
         </div>
       </div>
+
+      {/* Selected Scenario Notification Banner */}
+      {selectedScenario && (
+        <div className="flex items-center justify-between px-3 py-1.5 mt-2 rounded-lg bg-[var(--color-brand,#FF6600)]/10 border border-[var(--color-brand,#FF6600)]/30 text-xs">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-[var(--color-brand,#FF6600)] animate-ping" />
+            <span className="text-[var(--color-brand,#FF6600)] font-bold">
+              Escenario seleccionado en gráfico:
+            </span>
+            <span className="font-mono text-slate-800 dark:text-slate-200">
+              {selectedScenario.direction} @ ${selectedScenario.targetEntry?.toFixed(1)} · SL ${selectedScenario.stopLossPrice?.toFixed(1)}
+              {selectedScenario.target14Price ? ` · TP 1:4 $${selectedScenario.target14Price.toFixed(1)}` : ''}
+            </span>
+          </div>
+          {onSelectScenario && (
+            <button
+              onClick={() => onSelectScenario(null)}
+              className="text-[11px] font-mono text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 underline cursor-pointer"
+            >
+              Restablecer automático
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Candlestick Canvas Container */}
       <div ref={chartContainerRef} className="w-full relative mt-3 rounded-lg overflow-hidden" />
