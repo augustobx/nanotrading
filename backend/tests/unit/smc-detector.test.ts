@@ -40,7 +40,7 @@ test('SmcDetector - Swing detection strictly prevents look-ahead bias', () => {
 
   // Critical verification: confirmedAtIndex must be index + rightBars = 3 + 3 = 6
   assert.equal(swingHigh?.confirmedAtIndex, 6);
-  assert.equal(swingHigh?.confirmedAtTimestamp, candles[6].timestamp);
+  assert.equal(swingHigh?.confirmedAtTimestamp, candles[6].timestamp + 15 * 60 * 1000);
 });
 
 test('SmcDetector - Bullish and Bearish Fair Value Gaps (FVG)', () => {
