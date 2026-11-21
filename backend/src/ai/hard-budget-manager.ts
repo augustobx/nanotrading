@@ -1052,6 +1052,15 @@ export class HardBudgetManager {
     this.config.blockedReason = reason;
     this.config.updatedAt = Date.now();
     this.triggeredThresholds.add(100);
+    try {
+      this.db?.saveHardBudgetConfig(this.config);
+    } catch {
+      // Keep in-memory hard stop active; a persistent ledger outage is fatal
+      // to safe AI budgeting and must never be silently interpreted as $0.
+      this.notifiers.logAudit?.('AI_BUDGET', 'HARD_STOP_PERSISTENCE_FAILED', {
+        reasonCode: 'AI_LEDGER_WRITE_FAILED',
+      });
+    }
 
     const title = '🛑 SUSPENSIÓN DE LLAMADAS PAGAS DE IA (Límite 100%)';
     const msg = `Se ha alcanzado el límite presupuestario de IA: ${reason}. Las llamadas pagadas quedan suspendidas (AI_BUDGET_EXCEEDED). El monitoreo de mercado Bybit y las estrategias cuantitativas SMC continúan al 100% sin interrupciones.`;
