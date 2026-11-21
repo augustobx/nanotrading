@@ -19,7 +19,7 @@ export class GeminiAdapter {
 
   constructor(options: GeminiAdapterOptions = {}) {
     this.apiKey = options.apiKey !== undefined ? options.apiKey : (process.env.GEMINI_API_KEY || '');
-    this.model = getValidatedModel(options.model || process.env.GEMINI_MODEL || 'gemini-2.0-flash', 'GEMINI');
+    this.model = getValidatedModel(options.model || process.env.GEMINI_MODEL || 'gemini-2.5-flash', 'GEMINI');
     this.timeoutMs = options.timeoutMs || 25000;
     this.mockEvaluator = options.mockEvaluator;
     if (!this.apiKey && !this.mockEvaluator) {

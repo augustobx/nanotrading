@@ -195,21 +195,77 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
   },
 
   // ---------------------------------------------------------------------------
-  // Google Gemini Models (Official Google GenAI API - Verified as of 2025/2026)
+  // Google Gemini Models (Official Google GenAI API - Verified Live with Google)
   // ---------------------------------------------------------------------------
+  'gemini-2.5-flash': {
+    id: 'gemini-2.5-flash',
+    provider: 'GEMINI',
+    displayName: 'Google Gemini 2.5 Flash',
+    status: 'ACTIVE',
+    pricingEffectiveDate: '2025-06-01',
+    estimatedInputCostPerMillion: 0.10,
+    estimatedOutputCostPerMillion: 0.40,
+    costNote: 'Versión estable oficial de Gemini 2.5 Flash de Google AI Studio. Soporta hasta 1M tokens de contexto y JSON estructurado. Modelo recomendado por defecto.',
+    maxTokens: 8192,
+    temperature: 0.1,
+    supportsStructuredJson: true,
+    isDefault: true,
+  },
+  'gemini-2.5-flash-lite': {
+    id: 'gemini-2.5-flash-lite',
+    provider: 'GEMINI',
+    displayName: 'Google Gemini 2.5 Flash Lite',
+    status: 'ACTIVE',
+    pricingEffectiveDate: '2025-07-01',
+    estimatedInputCostPerMillion: 0.075,
+    estimatedOutputCostPerMillion: 0.30,
+    costNote: 'Versión ligera de Gemini 2.5 Flash-Lite para auditorías continuas y monitoreo de alta frecuencia.',
+    maxTokens: 4096,
+    temperature: 0.1,
+    supportsStructuredJson: true,
+    isDefault: false,
+  },
+  'gemini-2.5-pro': {
+    id: 'gemini-2.5-pro',
+    provider: 'GEMINI',
+    displayName: 'Google Gemini 2.5 Pro',
+    status: 'ACTIVE',
+    pricingEffectiveDate: '2025-06-17',
+    estimatedInputCostPerMillion: 1.25,
+    estimatedOutputCostPerMillion: 5.00,
+    costNote: 'Versión estable de Gemini 2.5 Pro para análisis de razonamiento profundo y correlación multitemporal compleja.',
+    maxTokens: 8192,
+    temperature: 0.1,
+    supportsStructuredJson: true,
+    isDefault: false,
+  },
+  'gemini-3.8-flash': {
+    id: 'gemini-3.8-flash',
+    provider: 'GEMINI',
+    displayName: 'Google Gemini 3.8 Flash',
+    status: 'ACTIVE',
+    pricingEffectiveDate: '2026-01-01',
+    estimatedInputCostPerMillion: 0.10,
+    estimatedOutputCostPerMillion: 0.40,
+    costNote: 'Modelo avanzado de última generación Gemini 3.8 Flash de Google DeepMind.',
+    maxTokens: 8192,
+    temperature: 0.1,
+    supportsStructuredJson: true,
+    isDefault: false,
+  },
   'gemini-2.0-flash': {
     id: 'gemini-2.0-flash',
     provider: 'GEMINI',
     displayName: 'Google Gemini 2.0 Flash',
-    status: 'ACTIVE',
+    status: 'RETIRED',
     pricingEffectiveDate: '2025-02-01',
     estimatedInputCostPerMillion: 0.10,
     estimatedOutputCostPerMillion: 0.40,
-    costNote: 'Tarifa oficial Google AI Studio. Optimizado para latencia ultrabaja, visión y JSON estructurado. Modelo recomendado por defecto.',
+    costNote: 'Modelo retirado oficialmente por Google en la API. Redirige automáticamente a gemini-2.5-flash.',
     maxTokens: 4096,
     temperature: 0.1,
-    supportsStructuredJson: true,
-    isDefault: true,
+    supportsStructuredJson: false,
+    isDefault: false,
   },
   'gemini-2.0-flash-lite': {
     id: 'gemini-2.0-flash-lite',
@@ -327,9 +383,9 @@ export function isModelCompatible(modelId: string): { compatible: boolean; reaso
  * Validates requested model and falls back safely to default active model if incompatible
  */
 export function getValidatedModel(requestedModel: string, provider: AiProvider): string {
-  // Handle alias redirects for nonexistent/preview models to stable equivalents
-  if (requestedModel === 'gemini-2.5-flash') return 'gemini-2.0-flash';
-  if (requestedModel === 'gemini-2.5-pro') return 'gemini-1.5-pro';
+  // Handle redirects from retired models to current live models
+  if (requestedModel === 'gemini-2.0-flash') return 'gemini-2.5-flash';
+  if (requestedModel === 'gemini-2.0-flash-lite') return 'gemini-2.5-flash-lite';
 
   const check = isModelCompatible(requestedModel);
   if (check.compatible) {
@@ -337,7 +393,7 @@ export function getValidatedModel(requestedModel: string, provider: AiProvider):
   }
 
   // Fallback to provider default active model
-  const defaultModel = provider === 'OPENAI' ? 'gpt-4o' : 'gemini-2.0-flash';
+  const defaultModel = provider === 'OPENAI' ? 'gpt-4o' : 'gemini-2.5-flash';
   return defaultModel;
 }
 
