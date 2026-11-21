@@ -904,7 +904,10 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     if ((target12 !== undefined && (!Number.isFinite(target12) || target12 <= 0)) ||
         (target14 !== undefined && (!Number.isFinite(target14) || target14 <= 0))) return null;
 
-    // Run strict quantitative net R:R calculation
+    // Use the actual administrative account policy and the live spread for
+    // discovery previews. Hard-coded 10k/1% creates misleading RR/position sizing.
+    const policy = this.coordinator.getRiskPolicyManager?.()?.getPolicy?.();
+    const ticker = this.coordinator.getMarketState?.()?.ticker;
     const dualCalc = RiskCalculator.calculateDualTargets({
       direction,
       entryPrice: targetEntry,
@@ -912,8 +915,11 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       candidateTargets: [target12, target14].filter((n): n is number => typeof n === 'number'),
       explicit12Price: target12,
       explicit14Price: target14,
-      accountBalance: 10000,
-      riskPercent: 1.0,
+      accountBalance: policy?.capitalUsdt ?? 10000,
+      riskPercent: policy?.maxRiskPerTradePercent ?? 0.5,
+      spread: ticker && Number.isFinite(ticker.spread) && ticker.spread >= 0 ? ticker.spread : 0.1,
+      minRRShort: policy?.minRRShort ?? 2.0,
+      minRRExtended: policy?.minRRExtended ?? 4.0,
       feeStructure: {
         makerFeeRate: 0.00020,
         takerFeeRate: 0.00055,
@@ -923,6 +929,14 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     if (dualCalc.qualifiedMode === 'NONE') {
       // Rejects scenarios that don't reach net 1:2
       return null;
+    }
+
+    if (policy) {
+      const valid12 = policy.rrTargetMode !== 'RR_1_4' && dualCalc.calculation12?.isValid &&
+        dualCalc.calculation12.netRR >= Math.max(policy.minNetRR, policy.minRRShort);
+      const valid14 = policy.rrTargetMode !== 'RR_1_2' && dualCalc.calculation14?.isValid &&
+        dualCalc.calculation14.netRR >= Math.max(policy.minNetRR, policy.minRRExtended);
+      if (!valid12 && !valid14) return null;
     }
 
     const id = candidate.id || `scen_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;

@@ -51,10 +51,12 @@ export class SetupEngine extends EventEmitter {
     }
 
     // Evaluate Strategies
-    const candles4h = this.candleManager.getCandles('4h', 100);
-    const candles1h = this.candleManager.getCandles('1h', 100);
-    const candles15m = this.candleManager.getCandles('15m', 100);
-    const candles5m = this.candleManager.getCandles('5m', 100);
+    const closed = (tf: Timeframe) =>
+      this.candleManager.getCandles(tf, 100).filter((c) => c.confirmed !== false);
+    const candles4h = closed('4h');
+    const candles1h = closed('1h');
+    const candles15m = closed('15m');
+    const candles5m = closed('5m');
 
     const stratA = StrategyATrendContinuation.evaluate(candles4h, candles1h, candles15m, candles5m, spread);
     if (stratA) {
@@ -78,7 +80,9 @@ export class SetupEngine extends EventEmitter {
   }
 
   public evaluateTimeframe(tf: Timeframe): MultiTimeframeAnalysis | null {
-    const candles = this.candleManager.getCandles(tf, 100);
+    // Never calculate structural signals from a still-forming candle.
+    const candles = this.candleManager.getCandles(tf, 100)
+      .filter((c) => c.confirmed !== false);
     if (candles.length < 5) return null;
 
     const closes = candles.map((c) => c.close);
