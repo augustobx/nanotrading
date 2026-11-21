@@ -67,7 +67,10 @@ export class AiEntryRevalidation extends EventEmitter {
     revalidationRecord: ScenarioRevalidationRecord;
     reason?: string;
   }> {
-    const revalId = `reval_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const now = Date.now();
+    const revalId = `reval_${now}_${crypto.randomBytes(3).toString('hex')}`;
+    // Durable cross-restart cooldown: even denied/uncertain checks are attempts.
+    this.scenarioRegistry.updateMetrics(scenario.id, { lastRevalidationTimestamp: now });
     this.scenarioRegistry.transitionStatus(scenario.id, 'AI_REVALIDATING', 'Ejecutando reevaluación inteligente con IA en zona', { currentPrice });
 
     const activePlan = watchPlan || scenario.watchPlan;

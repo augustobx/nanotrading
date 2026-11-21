@@ -515,8 +515,10 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         // If no candidate scenarios were passed and bias is NEUTRAL
         if (registered.length === 0 && candidateScenarios.length === 0) {
           const neutralScenario = this.buildNeutralObservationScenario(summary, snapshotId, 0.001, mockResult.openai, mockResult.gemini, triggerSource);
-          this.scenarioRegistry.registerScenario(neutralScenario);
-          registered.push(neutralScenario);
+          if (neutralScenario) {
+            this.scenarioRegistry.registerScenario(neutralScenario);
+            registered.push(neutralScenario);
+          }
         }
 
         summary.lastDiscoveryTimestamp = Date.now();
@@ -643,7 +645,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       // register a formal NEUTRAL observation scenario (preserving "no operar es una decisión válida")
       if (discoveredScenarios.length === 0) {
         const neutralScenario = this.buildNeutralObservationScenario(summary, snapshotId, totalCostUsd, openaiDiscovery, geminiDiscovery, triggerSource);
-        discoveredScenarios.push(neutralScenario);
+        if (neutralScenario) discoveredScenarios.push(neutralScenario);
       }
 
       // Register all valid scenarios in registry
@@ -669,13 +671,34 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     openaiDiscovery?: any,
     geminiDiscovery?: any,
     triggerSource: TriggerSource = 'AUTOMATIC_SCHEDULER'
-  ): Scenario {
+  ): Scenario | null {
     const openaiConfigured = this.openaiAdapter.isConfigured();
     const geminiConfigured = this.geminiAdapter.isConfigured();
 
     const tf15 = (summary.timeframes as any)?.['15m'];
-    const rangeHigh = tf15?.activeSwings?.high?.price || Number((summary.currentPrice * 1.006).toFixed(1));
-    const rangeLow = tf15?.activeSwings?.low?.price || Number((summary.currentPrice * 0.994).toFixed(1));
+    const structuralHigh = tf15?.activeSwings?.high?.price;
+    const structuralLow = tf15?.activeSwings?.low?.price;
+    let rangeHigh = structuralHigh;
+    let rangeLow = structuralLow;
+
+    if (!Number.isFinite(rangeHigh) || !Number.isFinite(rangeLow) || rangeHigh <= rangeLow) {
+      // Fallback is OBSERVED OHLC, never a synthetic +/-0.6% price estimate.
+      const closed = (this.coordinator.getCandleManager?.()?.getCandles('15m', 30) || [])
+        .filter((c: any) => c.confirmed === true && Number.isFinite(c.high) &&
+          Number.isFinite(c.low) && c.high >= c.low && c.low > 0)
+        .slice(-20);
+      if (closed.length < 10) return null;
+      rangeHigh = Math.max(...closed.map((c: any) => c.high));
+      rangeLow = Math.min(...closed.map((c: any) => c.low));
+    }
+
+    // Degenerate ranges are not actionable observations and must not be
+    // persisted as "2 verified levels" or trigger further paid discovery.
+    if (!Number.isFinite(rangeHigh) || !Number.isFinite(rangeLow) ||
+        rangeLow <= 0 || rangeHigh <= rangeLow ||
+        (rangeHigh - rangeLow) / summary.currentPrice < 0.0005) {
+      return null;
+    }
 
     const rawJustification =
       openaiDiscovery?.marketAnalysis?.noTradeJustification ||

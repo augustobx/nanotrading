@@ -197,6 +197,7 @@ export interface Scenario {
   distanceToZonePct?: number;
   currentPrice?: number;
   lastCheckedTimestamp?: number;
+  lastRevalidationTimestamp?: number;
   isSimulated?: boolean;
   kind?: ScenarioKind;
   triggerSource?: TriggerSource;
