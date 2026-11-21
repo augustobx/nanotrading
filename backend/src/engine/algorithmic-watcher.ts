@@ -54,7 +54,8 @@ export class AlgorithmicWatcher extends EventEmitter {
   }
 
   public evaluateTick(currentPrice: number, spreadPcnt: number = 0.001): void {
-    const activeScenarios = this.scenarioRegistry.getAllActive();
+    const inactiveStatuses = ['EXPIRED', 'INVALIDATED', 'CANCELLED', 'COMPLETED', 'DISCARDED'];
+    const activeScenarios = this.scenarioRegistry.getAllActive().filter((s) => !inactiveStatuses.includes(s.status));
     if (activeScenarios.length === 0) return;
 
     const now = Date.now();
@@ -76,13 +77,59 @@ export class AlgorithmicWatcher extends EventEmitter {
         continue;
       }
 
-      // 2. Invalidation conditions check (Structured Plan or Default Stop Loss)
+      // 2. NEUTRAL_OBSERVATION check: Monitor range breakout ONLY. NEVER revalidate as a trade entry!
+      if (sc.kind === 'NEUTRAL_OBSERVATION' || sc.direction === 'NEUTRAL') {
+        let breakoutOccurred = false;
+        let breakoutReason = '';
+
+        // Check if price broke through dynamic range boundaries
+        if (sc.entryZoneMax > 0 && currentPrice > sc.entryZoneMax) {
+          breakoutOccurred = true;
+          breakoutReason = `Ruptura alcista de rango neutral: precio $${currentPrice.toFixed(1)} superó techo $${sc.entryZoneMax.toFixed(1)}`;
+        } else if (sc.entryZoneMin > 0 && currentPrice < sc.entryZoneMin) {
+          breakoutOccurred = true;
+          breakoutReason = `Ruptura bajista de rango neutral: precio $${currentPrice.toFixed(1)} perforó piso $${sc.entryZoneMin.toFixed(1)}`;
+        }
+
+        // Check any observable conditions on the neutral plan
+        if (!breakoutOccurred && sc.watchPlan?.observableConditions) {
+          for (const cond of sc.watchPlan.observableConditions) {
+            if (this.evaluateCondition(cond, currentPrice, spreadPcnt, undefined, sc.discoveryTimestamp)) {
+              cond.isMet = true;
+              cond.metTimestamp = now;
+              breakoutOccurred = true;
+              breakoutReason = cond.description;
+              break;
+            }
+          }
+        }
+
+        if (breakoutOccurred) {
+          this.scenarioRegistry.transitionStatus(
+            sc.id,
+            'COMPLETED',
+            `${breakoutReason}. Ruptura confirmada: solicitando nuevo descubrimiento de IA.`,
+            { currentPrice }
+          );
+          if (sc.watchPlan) {
+            sc.watchPlan.status = 'COMPLETED';
+          }
+          this.emit('neutral_range_breakout', { scenario: sc, breakoutPrice: currentPrice, reason: breakoutReason });
+          // Autonomous Trigger: When neutral observation breaks out, trigger a fresh AI market discovery
+          this.coordinator.getDiscoveryScheduler?.()?.triggerDiscovery?.('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', currentPrice);
+        }
+
+        // Never evaluate entry revalidation for neutral observations
+        continue;
+      }
+
+      // 3. Invalidation conditions check (Structured Plan or Default Stop Loss)
       let isInvalidated = false;
       let invalidationReason = '';
 
       if (sc.watchPlan?.invalidationConditions && sc.watchPlan.invalidationConditions.length > 0) {
         for (const invCond of sc.watchPlan.invalidationConditions) {
-          if (this.evaluateCondition(invCond, currentPrice, spreadPcnt)) {
+          if (this.evaluateCondition(invCond, currentPrice, spreadPcnt, undefined, sc.discoveryTimestamp)) {
             isInvalidated = true;
             invalidationReason = invCond.description;
             invCond.isMet = true;
@@ -114,23 +161,40 @@ export class AlgorithmicWatcher extends EventEmitter {
         continue;
       }
 
-      // 3. Evaluate Observable Conditions in AI Watch Plan
+      // 4. Evaluate Observable Conditions in Strict Sequential Order (1 -> 2 -> 3...)
       let allRequiredConditionsMet = true;
       if (sc.watchPlan?.observableConditions && sc.watchPlan.observableConditions.length > 0) {
-        for (const cond of sc.watchPlan.observableConditions) {
+        const sortedConditions = [...sc.watchPlan.observableConditions].sort(
+          (a, b) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
+        );
+        let sequenceBlocked = false;
+
+        for (const cond of sortedConditions) {
+          if (cond.isMet) {
+            continue;
+          }
+          if (sequenceBlocked) {
+            allRequiredConditionsMet = false;
+            continue;
+          }
+
           if (cond.automatable) {
-            const conditionMet = this.evaluateCondition(cond, currentPrice, spreadPcnt);
+            const conditionMet = this.evaluateCondition(cond, currentPrice, spreadPcnt, undefined, sc.discoveryTimestamp);
             if (conditionMet) {
               cond.isMet = true;
-              cond.metTimestamp = cond.metTimestamp || now;
-            } else if (!cond.isMet) {
+              cond.metTimestamp = now;
+            } else {
               allRequiredConditionsMet = false;
+              sequenceBlocked = true; // Subsequent sequence steps cannot be fulfilled yet
             }
+          } else {
+            allRequiredConditionsMet = false;
+            sequenceBlocked = true;
           }
         }
       }
 
-      // 4. Distance to entry zone calculation
+      // 5. Distance to entry zone calculation
       const { inZone, distPct } = this.calculateDistance(sc, currentPrice);
 
       // Update tracked metrics on scenario
@@ -140,10 +204,8 @@ export class AlgorithmicWatcher extends EventEmitter {
         lastCheckedTimestamp: now,
       });
 
-      // 5. In Zone Trigger or All Plan Conditions Met -> Request AI Revalidation
-      const shouldTrigger = inZone || (allRequiredConditionsMet && (sc.watchPlan?.observableConditions?.length || 0) > 0);
-
-      if (shouldTrigger) {
+      // 6. In Zone Trigger
+      if (inZone) {
         // If plan has non-automatable conditions, do not auto-approve entry; flag waiting confirmation
         if (sc.watchPlan && !sc.watchPlan.automatable) {
           if (sc.status !== 'WAITING_CONFIRMATION') {
@@ -153,10 +215,16 @@ export class AlgorithmicWatcher extends EventEmitter {
           continue;
         }
 
+        // For automatable plans: all required conditions must be satisfied in sequential order
+        if (!allRequiredConditionsMet && (sc.watchPlan?.observableConditions?.length || 0) > 0) {
+          // Conditions are still pending in sequence, remain in monitoring
+          continue;
+        }
+
         if (sc.status !== 'IN_ZONE' && sc.status !== 'REVALIDATION_REQUESTED' && sc.status !== 'AI_REVALIDATING' && sc.status !== 'ENTRY_VALIDATED') {
           const triggerReason = inZone
             ? `Precio alcanzó la zona operativa [${sc.entryZoneMin} - ${sc.entryZoneMax}]`
-            : `Condiciones observables del AI_WATCH_PLAN satisfechas`;
+            : `Condiciones observables del AI_WATCH_PLAN satisfechas en secuencia`;
 
           this.scenarioRegistry.transitionStatus(
             sc.id,
@@ -187,7 +255,7 @@ export class AlgorithmicWatcher extends EventEmitter {
         continue;
       }
 
-      // 6. Approaching Zone Trigger
+      // 7. Approaching Zone Trigger
       if (distPct <= this.approachThresholdPct) {
         if (sc.status === 'SCENARIO_REGISTERED' || sc.status === 'SCENARIO_MONITORING') {
           this.scenarioRegistry.transitionStatus(
@@ -238,7 +306,13 @@ export class AlgorithmicWatcher extends EventEmitter {
     this.evaluateTick(candle.close);
   }
 
-  public evaluateCondition(cond: WatchCondition, currentPrice: number, spreadPcnt: number, candle?: any): boolean {
+  public evaluateCondition(
+    cond: WatchCondition,
+    currentPrice: number,
+    spreadPcnt: number,
+    candle?: any,
+    discoveryTimestamp?: number
+  ): boolean {
     const p = cond.params || {};
     switch (cond.operator) {
       case 'PRICE_IN_RANGE': {
@@ -285,7 +359,8 @@ export class AlgorithmicWatcher extends EventEmitter {
         const analysis = this.coordinator.getSetupEngine()?.getAnalysis(tf);
         if (!analysis?.structure?.structureBreaks) return false;
         return analysis.structure.structureBreaks.some((b: any) =>
-          (!p.direction || b.direction === p.direction)
+          (!p.direction || b.direction === p.direction) &&
+          (!discoveryTimestamp || !b.timestamp || b.timestamp >= discoveryTimestamp)
         );
       }
       case 'SWEEP_CONFIRMED': {
@@ -293,7 +368,8 @@ export class AlgorithmicWatcher extends EventEmitter {
         const analysis = this.coordinator.getSetupEngine()?.getAnalysis(tf);
         if (!analysis?.structure?.sweeps) return false;
         return analysis.structure.sweeps.some((s: any) =>
-          (!p.direction || s.direction === p.direction)
+          (!p.direction || s.direction === p.direction) &&
+          (!discoveryTimestamp || !s.timestamp || s.timestamp >= discoveryTimestamp)
         );
       }
       case 'TIME_ELAPSED': {

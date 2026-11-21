@@ -17,11 +17,26 @@ export type ScenarioStatus =
   | 'EXPIRED'
   | 'CANCELLED';
 
+export type ScenarioKind = 'TRADE_SCENARIO' | 'NEUTRAL_OBSERVATION';
+
 export type ScenarioRRMode = 'RR_1_2' | 'RR_1_4' | 'RR_BOTH' | 'NONE';
 
 export type UncertaintyLevel = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export type WatchHorizon = 'SCALP' | 'INTRADAY' | 'SWING';
+
+export type TriggerSource = 'AUTOMATIC_SCHEDULER' | 'MANUAL_TRIGGER' | 'NEUTRAL_BREAKOUT' | 'HISTORIC_REPLAY';
+
+export interface ObservableLevel {
+  price: number;
+  timeframe: Timeframe;
+  levelType: 'SWING_HIGH' | 'SWING_LOW' | 'FVG_TOP' | 'FVG_BOTTOM' | 'ORDER_BLOCK' | 'SUPPORT' | 'RESISTANCE' | 'DYNAMIC_EMA' | 'VWAP' | 'RANGE_BOUNDARY';
+  evidence: string;
+  sourceTimestamp?: number;
+  distancePct: number;
+  relevanceToHorizon: 'HIGH' | 'MEDIUM' | 'LOW' | 'INCOMPATIBLE';
+  isVerified: boolean;
+}
 
 export type WatchOperator =
   | 'PRICE_CROSS_ABOVE'
@@ -69,6 +84,7 @@ export interface WatchCondition {
   metTimestamp?: number;
   metDetails?: string;
   automatable: boolean;
+  sequenceOrder?: number;
 }
 
 export interface WatchTriggerEvent {
@@ -166,6 +182,9 @@ export interface Scenario {
   currentPrice?: number;
   lastCheckedTimestamp?: number;
   isSimulated?: boolean;
+  kind?: ScenarioKind;
+  triggerSource?: TriggerSource;
+  verifiedLevels?: ObservableLevel[];
   // New Architecture Fields:
   watchPlan?: AiWatchPlan;
   aiMarketThesis?: string;

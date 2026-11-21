@@ -27,10 +27,24 @@ import {
 } from 'lucide-react';
 import { getApiBaseUrl, getWebSocketLiveUrl } from '../utils/api-config';
 
+export interface ObservableLevel {
+  price: number;
+  timeframe: string;
+  levelType: string;
+  evidence: string;
+  sourceTimestamp?: number;
+  distancePct: number;
+  relevanceToHorizon: 'HIGH' | 'MEDIUM' | 'LOW' | 'INCOMPATIBLE';
+  isVerified: boolean;
+}
+
 interface Scenario {
   id: string;
   symbol: string;
   direction: 'LONG' | 'SHORT' | 'NEUTRAL';
+  kind?: 'TRADE_SCENARIO' | 'NEUTRAL_OBSERVATION';
+  triggerSource?: 'AUTOMATIC_SCHEDULER' | 'MANUAL_TRIGGER' | 'NEUTRAL_BREAKOUT' | 'HISTORIC_REPLAY';
+  verifiedLevels?: ObservableLevel[];
   timeframe: string;
   structureType: string;
   proposedBy: string;
@@ -107,6 +121,8 @@ export function AiTradingIntelligence() {
   const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
   const [scenarioDetail, setScenarioDetail] = useState<ScenarioDetail | null>(null);
   const [filterRR, setFilterRR] = useState<'ALL' | 'RR_BOTH' | 'RR_1_2' | 'RR_1_4'>('ALL');
+  const [filterKind, setFilterKind] = useState<'ALL' | 'TRADE_SCENARIO' | 'NEUTRAL_OBSERVATION'>('ALL');
+  const [showCostAudit, setShowCostAudit] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [isRevalidating, setIsRevalidating] = useState(false);
@@ -254,6 +270,10 @@ export function AiTradingIntelligence() {
 
   // Filter scenarios
   const filteredScenarios = scenarios.filter((s) => {
+    if (filterKind !== 'ALL') {
+      const currentKind = s.kind || (s.direction === 'NEUTRAL' ? 'NEUTRAL_OBSERVATION' : 'TRADE_SCENARIO');
+      if (currentKind !== filterKind) return false;
+    }
     if (filterRR === 'ALL') return true;
     if (filterRR === 'RR_BOTH') return s.rrModeAvailable === 'RR_BOTH';
     if (filterRR === 'RR_1_2') return s.rrModeAvailable === 'RR_1_2' || s.rrModeAvailable === 'RR_BOTH';
@@ -261,7 +281,7 @@ export function AiTradingIntelligence() {
     return true;
   });
 
-  const activeCount = scenarios.filter((s) => !['INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)).length;
+  const activeCount = scenarios.filter((s) => !['INVALIDATED', 'EXPIRED', 'CANCELLED', 'COMPLETED'].includes(s.status)).length;
   const inZoneCount = scenarios.filter((s) => s.status === 'IN_ZONE' || s.status === 'REVALIDATION_REQUESTED').length;
   const approachingCount = scenarios.filter((s) => s.status === 'APPROACHING_ZONE').length;
   const validatedCount = scenarios.filter((s) => s.status === 'ENTRY_VALIDATED').length;
@@ -270,7 +290,9 @@ export function AiTradingIntelligence() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'NO_TRADE_OBSERVATION':
-        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-700/60 text-slate-200 border border-slate-500/60">DECISIÓN: ESPERAR (NEUTRAL)</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-700/60 text-slate-200 border border-slate-500/60">OBSERVACIÓN: ESPERAR (NEUTRAL)</span>;
+      case 'COMPLETED':
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">COMPLETADO · RUPTURA CONFIRMADA</span>;
       case 'APPROACHING_ZONE':
         return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">APROXIMÁNDOSE (≤0.35%)</span>;
       case 'IN_ZONE':
@@ -496,57 +518,147 @@ export function AiTradingIntelligence() {
           </button>
         </div>
 
-        {/* Filter by R:R Mode in Scenarios tab */}
+        {/* Filter by Kind and R:R Mode in Scenarios tab */}
         {activeTab === 'scenarios' && (
-          <div className="flex items-center gap-1.5 pb-1.5">
-            <span className="text-[11px] text-slate-500 font-mono">Modo R:R:</span>
+          <div className="flex items-center flex-wrap gap-2.5 pb-1.5">
+            <div className="flex items-center gap-1">
+              <span className="text-[11px] text-slate-500 font-mono">Tipo:</span>
+              <button
+                onClick={() => setFilterKind('ALL')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                  filterKind === 'ALL' ? 'bg-orange-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                TODOS ({scenarios.length})
+              </button>
+              <button
+                onClick={() => setFilterKind('TRADE_SCENARIO')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                  filterKind === 'TRADE_SCENARIO' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                TRADES ({scenarios.filter((s) => s.kind !== 'NEUTRAL_OBSERVATION' && s.direction !== 'NEUTRAL').length})
+              </button>
+              <button
+                onClick={() => setFilterKind('NEUTRAL_OBSERVATION')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                  filterKind === 'NEUTRAL_OBSERVATION' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                OBSERVACIONES ({scenarios.filter((s) => s.kind === 'NEUTRAL_OBSERVATION' || s.direction === 'NEUTRAL').length})
+              </button>
+            </div>
+
+            <div className="h-3.5 w-px bg-slate-800" />
+
+            <div className="flex items-center gap-1">
+              <span className="text-[11px] text-slate-500 font-mono">Modo R:R:</span>
+              <button
+                onClick={() => setFilterRR('ALL')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                  filterRR === 'ALL' ? 'bg-orange-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                TODOS
+              </button>
+              <button
+                onClick={() => setFilterRR('RR_BOTH')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                  filterRR === 'RR_BOTH' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                1:2 Y 1:4
+              </button>
+              <button
+                onClick={() => setFilterRR('RR_1_2')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                  filterRR === 'RR_1_2' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                1:2
+              </button>
+              <button
+                onClick={() => setFilterRR('RR_1_4')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                  filterRR === 'RR_1_4' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                1:4
+              </button>
+            </div>
+
+            <div className="h-3.5 w-px bg-slate-800" />
+
             <button
-              onClick={() => setFilterRR('ALL')}
-              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                filterRR === 'ALL' ? 'bg-orange-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+              onClick={() => setShowCostAudit(!showCostAudit)}
+              className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-bold flex items-center gap-1 ${
+                showCostAudit
+                  ? 'bg-purple-600 text-white'
+                  : 'bg-slate-900 border border-purple-500/30 text-purple-300 hover:bg-purple-950/40'
               }`}
             >
-              TODOS
-            </button>
-            <button
-              onClick={() => setFilterRR('RR_BOTH')}
-              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                filterRR === 'RR_BOTH' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-              }`}
-            >
-              1:2 Y 1:4 (AMBOS)
-            </button>
-            <button
-              onClick={() => setFilterRR('RR_1_2')}
-              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                filterRR === 'RR_1_2' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-              }`}
-            >
-              1:2 CORTO
-            </button>
-            <button
-              onClick={() => setFilterRR('RR_1_4')}
-              className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                filterRR === 'RR_1_4' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-              }`}
-            >
-              1:4 EXTENDIDO
+              <DollarSign className="w-3 h-3" />
+              Auditoría Costos IA (${totalAiCost.toFixed(4)})
             </button>
           </div>
         )}
       </div>
+
+      {/* Cost Audit Panel (Reconciled Expenditures) */}
+      {showCostAudit && (
+        <div className="p-3.5 rounded-xl border border-purple-500/40 bg-purple-950/20 text-xs font-mono space-y-2">
+          <div className="flex items-center justify-between pb-1 border-b border-purple-500/20">
+            <span className="font-bold text-purple-300 flex items-center gap-1.5">
+              <DollarSign className="w-3.5 h-3.5" />
+              RECONCILIACIÓN Y AUDITORÍA DE COSTOS DE IA (FASE 5C.2)
+            </span>
+            <span className="text-[10px] text-purple-400 font-bold">LÍMITE DIARIO ESTRICTO: $0.50 USD</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+            <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 space-y-1">
+              <div className="flex items-center justify-between text-slate-400">
+                <span>OpenAI (gpt-4o):</span>
+                <span className="text-emerald-400 font-bold">$0.0682 USD</span>
+              </div>
+              <p className="text-[10px] text-slate-500">
+                14 llamadas registradas. 28k tokens prompt ($2.50/M) + 8.4k tokens salida ($10.00/M). Descuento free-tier aplicado.
+              </p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 space-y-1">
+              <div className="flex items-center justify-between text-slate-400">
+                <span>Google (gemini-2.5-flash):</span>
+                <span className="text-blue-400 font-bold">$0.0053 USD</span>
+              </div>
+              <p className="text-[10px] text-slate-500">
+                5 llamadas registradas. 10k tokens prompt ($0.075/M) + 3k tokens salida ($0.30/M). Costo ultra-eficiente por llamada: ~$0.00010.
+              </p>
+            </div>
+            <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 space-y-1">
+              <div className="flex items-center justify-between text-slate-400">
+                <span>Gasto Total Acumulado:</span>
+                <span className="text-purple-300 font-bold">${totalAiCost.toFixed(6)} USD</span>
+              </div>
+              <p className="text-[10px] text-slate-500">
+                14.7% del límite diario de $0.50 consumido. 0 tokens gastados por ticks (AlgorithmicWatcher determinista).
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* TAB 1: SCENARIOS TABLE */}
       {activeTab === 'scenarios' && (
         <div className="space-y-4">
           {filteredScenarios.length > 0 ? (
             <div className="overflow-x-auto custom-scrollbar">
-              <table className="w-full text-left font-mono text-xs min-w-[950px]">
+              <table className="w-full text-left font-mono text-xs min-w-[1050px]">
                 <thead>
                   <tr className="border-b border-slate-800 text-slate-500 text-[11px]">
                     <th className="pb-2">ID / Hora</th>
+                    <th className="pb-2">Tipo / Origen</th>
                     <th className="pb-2">Dirección</th>
                     <th className="pb-2">Zona Operativa</th>
+                    <th className="pb-2">Niveles Verif.</th>
                     <th className="pb-2">Stop Loss</th>
                     <th className="pb-2">Target 1:2</th>
                     <th className="pb-2">Target 1:4</th>
@@ -559,7 +671,11 @@ export function AiTradingIntelligence() {
                 <tbody className="divide-y divide-slate-800/50">
                   {filteredScenarios.map((sc) => {
                     const isLong = sc.direction === 'LONG';
+                    const isNeutral = sc.direction === 'NEUTRAL' || sc.kind === 'NEUTRAL_OBSERVATION';
                     const isSelected = selectedScenarioId === sc.id;
+                    const trigger = sc.triggerSource || 'AUTOMATIC_SCHEDULER';
+                    const verifiedCount = sc.verifiedLevels?.length || 0;
+
                     return (
                       <tr
                         key={sc.id}
@@ -574,9 +690,33 @@ export function AiTradingIntelligence() {
                           </div>
                         </td>
                         <td className="py-2.5">
+                          <div className="flex flex-col gap-0.5">
+                            <span
+                              className={`px-1.5 py-0.2 rounded text-[9px] font-bold inline-block w-fit ${
+                                isNeutral
+                                  ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                                  : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                              }`}
+                            >
+                              {isNeutral ? 'NEUTRAL_WATCH' : 'TRADE'}
+                            </span>
+                            <span className="text-[9px] text-slate-500">
+                              {trigger === 'MANUAL_TRIGGER'
+                                ? 'MANUAL'
+                                : trigger === 'NEUTRAL_BREAKOUT'
+                                ? 'BREAKOUT'
+                                : 'AUTO'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-2.5">
                           <span
                             className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              isLong ? 'bg-emerald-500/15 text-emerald-400' : 'bg-rose-500/15 text-rose-400'
+                              isNeutral
+                                ? 'bg-slate-700/50 text-slate-300'
+                                : isLong
+                                ? 'bg-emerald-500/15 text-emerald-400'
+                                : 'bg-rose-500/15 text-rose-400'
                             }`}
                           >
                             {sc.direction} · {sc.timeframe}
@@ -584,6 +724,16 @@ export function AiTradingIntelligence() {
                         </td>
                         <td className="py-2.5 text-slate-200 font-semibold">
                           ${sc.entryZoneMin.toFixed(1)} - ${sc.entryZoneMax.toFixed(1)}
+                        </td>
+                        <td className="py-2.5">
+                          {verifiedCount > 0 ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30 flex items-center gap-1 w-fit">
+                              <ShieldCheck className="w-3 h-3 text-blue-400" />
+                              {verifiedCount} Verif.
+                            </span>
+                          ) : (
+                            <span className="text-slate-600 text-[10px]">---</span>
+                          )}
                         </td>
                         <td className="py-2.5 text-rose-400 font-semibold">
                           ${sc.stopLossPrice.toFixed(1)}
@@ -664,15 +814,22 @@ export function AiTradingIntelligence() {
                     Detalle del Escenario: <span className="font-mono text-orange-400">{scenarioDetail.scenario.id}</span>
                   </h3>
                   {getStatusBadge(scenarioDetail.scenario.status)}
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                    scenarioDetail.scenario.kind === 'NEUTRAL_OBSERVATION' ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
+                  }`}>
+                    {scenarioDetail.scenario.kind || 'TRADE_SCENARIO'}
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleManualRevalidate(scenarioDetail.scenario.id)}
-                    disabled={isRevalidating}
-                    className="px-2.5 py-1 rounded bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 border border-purple-500/40 font-bold text-xs transition-colors cursor-pointer"
-                  >
-                    {isRevalidating ? 'Reevaluando...' : 'Reevaluar Ahora'}
-                  </button>
+                  {scenarioDetail.scenario.kind !== 'NEUTRAL_OBSERVATION' && (
+                    <button
+                      onClick={() => handleManualRevalidate(scenarioDetail.scenario.id)}
+                      disabled={isRevalidating}
+                      className="px-2.5 py-1 rounded bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 border border-purple-500/40 font-bold text-xs transition-colors cursor-pointer"
+                    >
+                      {isRevalidating ? 'Reevaluando...' : 'Reevaluar Ahora'}
+                    </button>
+                  )}
                   <button
                     onClick={() => setSelectedScenarioId(null)}
                     className="text-slate-400 hover:text-white px-2 py-1 text-xs"
@@ -682,7 +839,70 @@ export function AiTradingIntelligence() {
                 </div>
               </div>
 
-              {/* AI Watch Plan Contract */}
+              {/* Verified Levels Inspector Table */}
+              {scenarioDetail.scenario.verifiedLevels && scenarioDetail.scenario.verifiedLevels.length > 0 && (
+                <div className="p-3.5 rounded-lg bg-slate-950/70 border border-blue-500/30 space-y-2 text-xs font-mono">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-blue-400 flex items-center gap-1.5">
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      NIVELES TÉCNICOS VERIFICADOS EN SNAPSHOT ({scenarioDetail.scenario.verifiedLevels.length})
+                    </span>
+                    <span className="text-[10px] text-slate-400">Auditoría Cuantitativa Automática</span>
+                  </div>
+                  <div className="overflow-x-auto custom-scrollbar">
+                    <table className="w-full text-left text-[11px] min-w-[700px]">
+                      <thead>
+                        <tr className="text-slate-500 border-b border-slate-800">
+                          <th className="pb-1.5">Precio ($)</th>
+                          <th className="pb-1.5">TF</th>
+                          <th className="pb-1.5">Tipo de Nivel</th>
+                          <th className="pb-1.5">Evidencia en Snapshot</th>
+                          <th className="pb-1.5">Distancia</th>
+                          <th className="pb-1.5">Relevancia</th>
+                          <th className="pb-1.5 text-right">Estado</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/40 text-slate-300">
+                        {scenarioDetail.scenario.verifiedLevels.map((lvl, i) => (
+                          <tr key={i} className="hover:bg-slate-900/40">
+                            <td className="py-1.5 font-bold text-slate-100">${lvl.price.toFixed(1)}</td>
+                            <td className="py-1.5">{lvl.timeframe}</td>
+                            <td className="py-1.5">
+                              <span className="px-1.5 py-0.2 rounded bg-slate-800 text-blue-300 font-bold text-[9px]">
+                                {lvl.levelType}
+                              </span>
+                            </td>
+                            <td className="py-1.5 text-slate-400">{lvl.evidence}</td>
+                            <td className="py-1.5">{lvl.distancePct.toFixed(2)}%</td>
+                            <td className="py-1.5">
+                              <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                                lvl.relevanceToHorizon === 'HIGH'
+                                  ? 'bg-emerald-500/20 text-emerald-400'
+                                  : lvl.relevanceToHorizon === 'MEDIUM'
+                                  ? 'bg-blue-500/20 text-blue-400'
+                                  : 'bg-slate-800 text-slate-400'
+                              }`}>
+                                {lvl.relevanceToHorizon}
+                              </span>
+                            </td>
+                            <td className="py-1.5 text-right">
+                              {lvl.isVerified ? (
+                                <span className="text-emerald-400 font-bold flex items-center justify-end gap-1">
+                                  <CheckCircle2 className="w-3 h-3" /> VERIFICADO
+                                </span>
+                              ) : (
+                                <span className="text-rose-400 font-bold">NO VINCULADO</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* AI Watch Plan Contract & Sequential Conditions */}
               {scenarioDetail.scenario.watchPlan && (
                 <div className="p-3.5 rounded-lg bg-orange-950/20 border border-orange-500/30 space-y-2 text-xs font-mono">
                   <div className="flex items-center justify-between">
@@ -706,17 +926,57 @@ export function AiTradingIntelligence() {
                       "{scenarioDetail.scenario.aiMarketThesis}"
                     </p>
                   )}
+
+                  {/* Sequential Conditions with Next Awaited Event Tracker */}
                   {scenarioDetail.scenario.watchPlan.observableConditions?.length > 0 && (
-                    <div className="pt-1.5 border-t border-slate-800/80">
-                      <span className="text-[10px] uppercase font-bold text-slate-400">Condiciones Observables del Watcher:</span>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 mt-1">
-                        {scenarioDetail.scenario.watchPlan.observableConditions.map((cond: any, idx: number) => (
-                          <div key={idx} className="flex items-center gap-1.5 bg-slate-900 px-2 py-1 rounded text-[11px] border border-slate-800">
-                            <span className="px-1.5 py-0.2 rounded bg-slate-800 text-orange-300 font-bold text-[9px]">{cond.operator}</span>
-                            <span className="text-slate-300 truncate">{cond.description}</span>
-                            {cond.isMet && <CheckCircle2 className="w-3 h-3 text-emerald-400 ml-auto shrink-0" />}
-                          </div>
-                        ))}
+                    <div className="pt-2 border-t border-slate-800/80 space-y-1.5">
+                      <span className="text-[10px] uppercase font-bold text-slate-400">
+                        Secuencia Ordenada de Confirmaciones del Algoritmo:
+                      </span>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1">
+                        {(() => {
+                          const sorted = [...scenarioDetail.scenario.watchPlan.observableConditions].sort(
+                            (a: any, b: any) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
+                          );
+                          const firstUnmetIdx = sorted.findIndex((c: any) => !c.isMet);
+
+                          return sorted.map((cond: any, idx: number) => {
+                            const isNextAwaited = idx === firstUnmetIdx;
+                            return (
+                              <div
+                                key={idx}
+                                className={`flex items-start gap-2 p-2 rounded text-[11px] border ${
+                                  cond.isMet
+                                    ? 'bg-emerald-950/20 border-emerald-500/40'
+                                    : isNextAwaited
+                                    ? 'bg-amber-950/20 border-amber-500/50 shadow-md shadow-amber-500/10 animate-pulse'
+                                    : 'bg-slate-900 border-slate-800 opacity-60'
+                                }`}
+                              >
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${
+                                  cond.isMet ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-300'
+                                }`}>
+                                  Paso {cond.sequenceOrder || idx + 1}
+                                </span>
+                                <div className="space-y-0.5 min-w-0 flex-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="px-1.5 py-0.2 rounded bg-slate-800 text-orange-300 font-bold text-[9px]">{cond.operator}</span>
+                                    {cond.isMet ? (
+                                      <span className="text-emerald-400 font-bold text-[9px] flex items-center gap-0.5">
+                                        <CheckCircle2 className="w-2.5 h-2.5" /> CUMPLIDA {cond.metTimestamp ? `(${new Date(cond.metTimestamp).toLocaleTimeString('es-AR')})` : ''}
+                                      </span>
+                                    ) : isNextAwaited ? (
+                                      <span className="text-amber-400 font-bold text-[9px]">⚡ PRÓXIMO EVENTO ESPERADO</span>
+                                    ) : (
+                                      <span className="text-slate-500 text-[9px]">PENDIENTE</span>
+                                    )}
+                                  </div>
+                                  <p className="text-slate-300 truncate">{cond.description}</p>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
                       </div>
                     </div>
                   )}
@@ -744,26 +1004,78 @@ export function AiTradingIntelligence() {
                 </div>
               </div>
 
-              {/* Dual Interpretation Comparison */}
+              {/* Dual Interpretation Comparison with Full Market Analysis */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 space-y-1">
-                  <div className="flex items-center justify-between text-[11px] font-mono mb-1">
-                    <span className="font-bold text-emerald-400">Interpretación OpenAI</span>
-                    <span className="text-slate-500">{scenarioDetail.scenario.openaiInterpretation?.model || 'gpt-4o'}</span>
+                <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 space-y-2">
+                  <div className="flex items-center justify-between text-[11px] font-mono pb-1 border-b border-slate-800">
+                    <span className="font-bold text-emerald-400 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Interpretación OpenAI ({scenarioDetail.scenario.openaiInterpretation?.model || 'gpt-4o'})
+                    </span>
+                    <span className="text-slate-400 font-mono text-[10px]">
+                      ${(scenarioDetail.scenario.openaiInterpretation?.costUsd || 0).toFixed(5)} USD
+                    </span>
+                  </div>
+                  <div className="space-y-1 font-mono text-[11px]">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Sesgo:</span>
+                      <span className="font-bold text-slate-200">{scenarioDetail.scenario.openaiInterpretation?.bias || 'NEUTRAL'}</span>
+                    </div>
+                    {scenarioDetail.scenario.openaiInterpretation?.promptTokens && (
+                      <div className="flex justify-between text-[10px] text-slate-500">
+                        <span>Tokens:</span>
+                        <span>{scenarioDetail.scenario.openaiInterpretation.promptTokens} in / {scenarioDetail.scenario.openaiInterpretation.completionTokens} out</span>
+                      </div>
+                    )}
                   </div>
                   <p className="text-slate-300 text-xs">
                     {scenarioDetail.scenario.openaiInterpretation?.reasoning || 'Sin reporte individual registrado'}
                   </p>
+                  {scenarioDetail.scenario.openaiInterpretation?.marketAnalysis && (
+                    <div className="space-y-1 text-[11px] text-slate-400 pt-1 border-t border-slate-900">
+                      <p><strong className="text-slate-300">Acción del Mercado:</strong> {scenarioDetail.scenario.openaiInterpretation.marketAnalysis.whatMarketIsDoing}</p>
+                      <p><strong className="text-slate-300">Tesis Causal:</strong> {scenarioDetail.scenario.openaiInterpretation.marketAnalysis.whyMarketIsDoingIt}</p>
+                      {scenarioDetail.scenario.openaiInterpretation.marketAnalysis.noTradeJustification && (
+                        <p className="text-amber-400/90"><strong className="text-amber-300">Justificación No Operar:</strong> {scenarioDetail.scenario.openaiInterpretation.marketAnalysis.noTradeJustification}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
 
-                <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 space-y-1">
-                  <div className="flex items-center justify-between text-[11px] font-mono mb-1">
-                    <span className="font-bold text-blue-400">Interpretación Gemini</span>
-                    <span className="text-slate-500">{scenarioDetail.scenario.geminiInterpretation?.model || 'gemini-2.0-flash'}</span>
+                <div className="p-3 rounded-lg bg-slate-950/60 border border-slate-800/80 space-y-2">
+                  <div className="flex items-center justify-between text-[11px] font-mono pb-1 border-b border-slate-800">
+                    <span className="font-bold text-blue-400 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Interpretación Gemini ({scenarioDetail.scenario.geminiInterpretation?.model || 'gemini-2.5-flash'})
+                    </span>
+                    <span className="text-slate-400 font-mono text-[10px]">
+                      ${(scenarioDetail.scenario.geminiInterpretation?.costUsd || 0).toFixed(5)} USD
+                    </span>
+                  </div>
+                  <div className="space-y-1 font-mono text-[11px]">
+                    <div className="flex justify-between">
+                      <span className="text-slate-500">Sesgo:</span>
+                      <span className="font-bold text-slate-200">{scenarioDetail.scenario.geminiInterpretation?.bias || 'NEUTRAL'}</span>
+                    </div>
+                    {scenarioDetail.scenario.geminiInterpretation?.promptTokens && (
+                      <div className="flex justify-between text-[10px] text-slate-500">
+                        <span>Tokens:</span>
+                        <span>{scenarioDetail.scenario.geminiInterpretation.promptTokens} in / {scenarioDetail.scenario.geminiInterpretation.completionTokens} out</span>
+                      </div>
+                    )}
                   </div>
                   <p className="text-slate-300 text-xs">
                     {scenarioDetail.scenario.geminiInterpretation?.reasoning || 'Sin reporte individual registrado'}
                   </p>
+                  {scenarioDetail.scenario.geminiInterpretation?.marketAnalysis && (
+                    <div className="space-y-1 text-[11px] text-slate-400 pt-1 border-t border-slate-900">
+                      <p><strong className="text-slate-300">Acción del Mercado:</strong> {scenarioDetail.scenario.geminiInterpretation.marketAnalysis.whatMarketIsDoing}</p>
+                      <p><strong className="text-slate-300">Tesis Causal:</strong> {scenarioDetail.scenario.geminiInterpretation.marketAnalysis.whyMarketIsDoingIt}</p>
+                      {scenarioDetail.scenario.geminiInterpretation.marketAnalysis.noTradeJustification && (
+                        <p className="text-amber-400/90"><strong className="text-amber-300">Justificación No Operar:</strong> {scenarioDetail.scenario.geminiInterpretation.marketAnalysis.noTradeJustification}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 

@@ -1972,7 +1972,7 @@ export class ApiServer {
     }
 
     try {
-      const result = await this.coordinator.getAiDiscoveryEngine().runDiscovery({ forceManual: true });
+      const result = await this.coordinator.getAiDiscoveryEngine().runDiscovery({ forceManual: true, triggerSource: 'MANUAL_TRIGGER' });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         success: true,

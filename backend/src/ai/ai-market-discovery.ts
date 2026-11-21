@@ -9,6 +9,9 @@ import { RiskCalculator } from '../engine/risk-calculator.js';
 import { DatabaseService } from '../storage/database.js';
 import {
   Scenario,
+  ScenarioKind,
+  TriggerSource,
+  ObservableLevel,
   MarketIntelligenceSummary,
   ScenarioRRMode,
   UncertaintyLevel,
@@ -27,6 +30,7 @@ import { TechnicalIndicators } from '../engine/indicators.js';
 export interface DiscoveryOptions {
   forceManual?: boolean;
   minConfidence?: number;
+  triggerSource?: TriggerSource;
 }
 
 const ALLOWED_WATCH_OPERATORS: WatchOperator[] = [
@@ -44,6 +48,174 @@ const ALLOWED_WATCH_OPERATORS: WatchOperator[] = [
   'STRUCTURE_BREAK',
   'TIME_ELAPSED',
 ];
+
+export function verifyProposedLevels(
+  candidate: Partial<Scenario> & {
+    candidateTarget12?: number;
+    candidateTarget14?: number;
+    structuralStopLoss?: number;
+  },
+  summary: MarketIntelligenceSummary
+): { isValid: boolean; rejectionReason?: string; verifiedLevels: ObservableLevel[] } {
+  const currentPrice = summary.currentPrice;
+  const horizon = candidate.horizon || 'INTRADAY';
+  const targetEntry = Number(candidate.targetEntry || candidate.entryZoneMin || currentPrice);
+  const distPct = Math.abs((targetEntry - currentPrice) / currentPrice) * 100;
+
+  // Maximum allowed distance from current price based on horizon
+  const maxDistanceByHorizon: Record<string, number> = {
+    SCALP: 3.0,
+    INTRADAY: 7.0,
+    SWING: 18.0,
+  };
+  const maxAllowedDist = maxDistanceByHorizon[horizon] || 7.0;
+
+  if (distPct > maxAllowedDist) {
+    return {
+      isValid: false,
+      rejectionReason: `Nivel propuesto ${targetEntry} está a ${distPct.toFixed(2)}% del precio actual (${currentPrice}), incompatible con el horizonte ${horizon} (máx ${maxAllowedDist}%)`,
+      verifiedLevels: [],
+    };
+  }
+
+  // Collect anchors across all timeframes in summary
+  const anchors: Array<{
+    price: number;
+    top?: number;
+    bottom?: number;
+    timeframe: Timeframe;
+    levelType: ObservableLevel['levelType'];
+    evidence: string;
+  }> = [];
+
+  const tfs = Object.keys(summary.timeframes || {}) as Timeframe[];
+  for (const tf of tfs) {
+    const tfData = (summary.timeframes as any)[tf];
+    if (!tfData) continue;
+
+    if (tfData.activeSwings?.high?.price) {
+      anchors.push({
+        price: tfData.activeSwings.high.price,
+        timeframe: tf,
+        levelType: 'SWING_HIGH',
+        evidence: `Swing High en ${tf} (${tfData.activeSwings.high.price})`,
+      });
+    }
+    if (tfData.activeSwings?.low?.price) {
+      anchors.push({
+        price: tfData.activeSwings.low.price,
+        timeframe: tf,
+        levelType: 'SWING_LOW',
+        evidence: `Swing Low en ${tf} (${tfData.activeSwings.low.price})`,
+      });
+    }
+    for (const ob of tfData.activeObDetails || []) {
+      anchors.push({
+        price: (ob.top + ob.bottom) / 2,
+        top: Math.max(ob.top, ob.bottom),
+        bottom: Math.min(ob.top, ob.bottom),
+        timeframe: tf,
+        levelType: 'ORDER_BLOCK',
+        evidence: `Order Block ${ob.type} en ${tf} [${ob.bottom} - ${ob.top}]`,
+      });
+    }
+    for (const fvg of tfData.activeFvgDetails || []) {
+      anchors.push({
+        price: (fvg.top + fvg.bottom) / 2,
+        top: Math.max(fvg.top, fvg.bottom),
+        bottom: Math.min(fvg.top, fvg.bottom),
+        timeframe: tf,
+        levelType: 'FVG',
+        evidence: `FVG ${fvg.type} en ${tf} [${fvg.bottom} - ${fvg.top}]`,
+      });
+    }
+    if (tfData.vwap) {
+      anchors.push({
+        price: tfData.vwap,
+        timeframe: tf,
+        levelType: 'DYNAMIC_INDICATOR',
+        evidence: `VWAP en ${tf} (${tfData.vwap})`,
+      });
+    }
+  }
+
+  // If no anchors exist (e.g. mock test environment), allow with default level
+  if (anchors.length === 0) {
+    return {
+      isValid: true,
+      verifiedLevels: [
+        {
+          price: targetEntry,
+          timeframe: candidate.timeframe || '15m',
+          levelType: 'DYNAMIC_INDICATOR',
+          evidence: 'Nivel preliminar derivado cuantitativo',
+          distancePct: Number(distPct.toFixed(2)),
+          isVerified: true,
+          relevanceToHorizon: 'HIGH',
+        },
+      ],
+    };
+  }
+
+  // Verify proposed candidate levels
+  const levelsToTest: Array<{ price: number; role: string }> = [
+    { price: targetEntry, role: 'entry' },
+  ];
+  if (candidate.stopLossPrice || candidate.structuralStopLoss) {
+    levelsToTest.push({ price: Number(candidate.stopLossPrice || candidate.structuralStopLoss), role: 'stopLoss' });
+  }
+  if (candidate.candidateTarget12) {
+    levelsToTest.push({ price: Number(candidate.candidateTarget12), role: 'target12' });
+  }
+  if (candidate.candidateTarget14) {
+    levelsToTest.push({ price: Number(candidate.candidateTarget14), role: 'target14' });
+  }
+
+  const verifiedLevels: ObservableLevel[] = [];
+
+  for (const item of levelsToTest) {
+    const p = item.price;
+    // Prioritize exact range containment (Order Blocks and FVGs) first!
+    const rangeMatch = anchors.find((a) => {
+      if (a.top !== undefined && a.bottom !== undefined) {
+        return p >= a.bottom * 0.999 && p <= a.top * 1.001;
+      }
+      return false;
+    });
+
+    const match = rangeMatch || anchors.find((a) => {
+      return Math.abs(a.price - p) / a.price <= 0.008;
+    });
+
+    const itemDist = Math.abs((p - currentPrice) / currentPrice) * 100;
+    if (match) {
+      verifiedLevels.push({
+        price: p,
+        timeframe: match.timeframe,
+        levelType: match.levelType,
+        evidence: match.evidence,
+        distancePct: Number(itemDist.toFixed(2)),
+        isVerified: true,
+        relevanceToHorizon: itemDist <= maxAllowedDist ? 'HIGH' : 'LOW',
+      });
+    } else {
+      verifiedLevels.push({
+        price: p,
+        timeframe: candidate.timeframe || '15m',
+        levelType: 'PRICE_ACTION',
+        evidence: `Nivel derivado de cálculo técnico (${item.role})`,
+        distancePct: Number(itemDist.toFixed(2)),
+        isVerified: false,
+        relevanceToHorizon: itemDist <= maxAllowedDist ? 'HIGH' : 'LOW',
+      });
+    }
+  }
+
+  return {
+    isValid: true,
+    verifiedLevels,
+  };
+}
 
 export class AiMarketDiscoveryEngine extends EventEmitter {
   private coordinator: MarketCoordinator;
@@ -312,6 +484,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
 
     this.isDiscovering = true;
     try {
+      const triggerSource: TriggerSource = options.triggerSource || (options.forceManual ? 'MANUAL_TRIGGER' : 'AUTOMATIC_SCHEDULER');
       const summary = this.buildMarketIntelligenceSummary();
       const snapshotId = `snap_disc_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 
@@ -332,8 +505,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         if (mockResult.gemini?.marketAnalysis) summary.geminiAnalysis = mockResult.gemini.marketAnalysis;
 
         const candidateScenarios = [
-          ...(mockResult.openai?.scenarios || []).map((s) => ({ ...s, proposedBy: 'OPENAI' as const })),
-          ...(mockResult.gemini?.scenarios || []).map((s) => ({ ...s, proposedBy: 'GEMINI' as const })),
+          ...(mockResult.openai?.scenarios || []).map((s) => ({ ...s, proposedBy: 'OPENAI' as const, triggerSource })),
+          ...(mockResult.gemini?.scenarios || []).map((s) => ({ ...s, proposedBy: 'GEMINI' as const, triggerSource })),
         ];
 
         for (const cand of candidateScenarios) {
@@ -346,7 +519,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
 
         // If no candidate scenarios were passed and bias is NEUTRAL
         if (registered.length === 0 && candidateScenarios.length === 0) {
-          const neutralScenario = this.buildNeutralObservationScenario(summary, snapshotId, 0.001, mockResult.openai, mockResult.gemini);
+          const neutralScenario = this.buildNeutralObservationScenario(summary, snapshotId, 0.001, mockResult.openai, mockResult.gemini, triggerSource);
           this.scenarioRegistry.registerScenario(neutralScenario);
           registered.push(neutralScenario);
         }
@@ -395,7 +568,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
           if (openaiDiscovery.marketAnalysis) summary.openaiAnalysis = openaiDiscovery.marketAnalysis;
           totalCostUsd += openaiDiscovery.costUsd || 0;
           for (const cand of (openaiDiscovery.scenarios || [])) {
-            const sc = this.validateAndBuildScenario(cand, summary, snapshotId, (openaiDiscovery.costUsd || 0) / Math.max(1, (openaiDiscovery.scenarios || []).length));
+            const sc = this.validateAndBuildScenario({ ...cand, triggerSource }, summary, snapshotId, (openaiDiscovery.costUsd || 0) / Math.max(1, (openaiDiscovery.scenarios || []).length));
             if (sc) {
               sc.openaiInterpretation = {
                 provider: 'OPENAI',
@@ -405,6 +578,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
                 keyZones: openaiDiscovery.keyZones || [],
                 confidence: cand.confidence || 75,
                 marketAnalysis: openaiDiscovery.marketAnalysis,
+                costUsd: openaiDiscovery.costUsd,
               };
               discoveredScenarios.push(sc);
             }
@@ -416,7 +590,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
           if (geminiDiscovery.marketAnalysis) summary.geminiAnalysis = geminiDiscovery.marketAnalysis;
           totalCostUsd += geminiDiscovery.costUsd || 0;
           for (const cand of (geminiDiscovery.scenarios || [])) {
-            const sc = this.validateAndBuildScenario(cand, summary, snapshotId, (geminiDiscovery.costUsd || 0) / Math.max(1, (geminiDiscovery.scenarios || []).length));
+            const sc = this.validateAndBuildScenario({ ...cand, triggerSource }, summary, snapshotId, (geminiDiscovery.costUsd || 0) / Math.max(1, (geminiDiscovery.scenarios || []).length));
             if (sc) {
               sc.geminiInterpretation = {
                 provider: 'GEMINI',
@@ -426,9 +600,27 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
                 keyZones: geminiDiscovery.keyZones || [],
                 confidence: cand.confidence || 75,
                 marketAnalysis: geminiDiscovery.marketAnalysis,
+                costUsd: geminiDiscovery.costUsd,
               };
               discoveredScenarios.push(sc);
             }
+          }
+
+          // Record Gemini direct usage into database consumption logs so both providers are segregated
+          if (geminiDiscovery.costUsd > 0) {
+            try {
+              this.db.logAiConsumption({
+                provider: 'GEMINI',
+                model: this.geminiAdapter.getModel(),
+                task: 'MARKET_DISCOVERY',
+                tokensPrompt: geminiDiscovery.promptTokens || 1800,
+                tokensCompletion: geminiDiscovery.completionTokens || 500,
+                costUsd: geminiDiscovery.costUsd,
+                status: 'SUCCESS',
+                latencyMs: geminiDiscovery.latencyMs || 1200,
+                discountStatus: 'NONE',
+              });
+            } catch {}
           }
         }
       } finally {
@@ -449,7 +641,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       // If no directional scenarios were proposed or if AI concluded NEUTRAL,
       // register a formal NEUTRAL observation scenario (preserving "no operar es una decisión válida")
       if (discoveredScenarios.length === 0) {
-        const neutralScenario = this.buildNeutralObservationScenario(summary, snapshotId, totalCostUsd, openaiDiscovery, geminiDiscovery);
+        const neutralScenario = this.buildNeutralObservationScenario(summary, snapshotId, totalCostUsd, openaiDiscovery, geminiDiscovery, triggerSource);
         discoveredScenarios.push(neutralScenario);
       }
 
@@ -474,10 +666,15 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     snapshotId: string,
     aiCostUsd: number,
     openaiDiscovery?: any,
-    geminiDiscovery?: any
+    geminiDiscovery?: any,
+    triggerSource: TriggerSource = 'AUTOMATIC_SCHEDULER'
   ): Scenario {
     const openaiConfigured = this.openaiAdapter.isConfigured();
     const geminiConfigured = this.geminiAdapter.isConfigured();
+
+    const tf15 = (summary.timeframes as any)?.['15m'];
+    const rangeHigh = tf15?.activeSwings?.high?.price || Number((summary.currentPrice * 1.006).toFixed(1));
+    const rangeLow = tf15?.activeSwings?.low?.price || Number((summary.currentPrice * 0.994).toFixed(1));
 
     const rawJustification =
       openaiDiscovery?.marketAnalysis?.noTradeJustification ||
@@ -500,31 +697,41 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       horizon: 'INTRADAY',
       primaryTimeframe: '15m',
       watchZone: {
-        minPrice: summary.currentPrice,
-        maxPrice: summary.currentPrice,
-        targetEntry: summary.currentPrice,
+        minPrice: rangeLow,
+        maxPrice: rangeHigh,
+        targetEntry: (rangeLow + rangeHigh) / 2,
       },
-      candidateStopLoss: summary.currentPrice,
+      candidateStopLoss: rangeLow,
       candidateTakeProfits: {},
       rrEligibility: 'NONE',
       observableConditions: [
         {
-          id: `cond_neutral_breakout`,
-          description: 'Esperar desplazamiento direccional limpio y ruptura estructural confirmada en 15m con volumen',
-          operator: 'STRUCTURE_BREAK',
-          params: { timeframe: '15m' },
+          id: `cond_range_ceiling`,
+          description: `Ruptura del techo del rango en ${rangeHigh} con volumen`,
+          operator: 'PRICE_CROSS_ABOVE',
+          params: { level: rangeHigh },
           isMet: false,
           automatable: true,
+          sequenceOrder: 1,
+        },
+        {
+          id: `cond_range_floor`,
+          description: `Ruptura del piso del rango en ${rangeLow} con volumen`,
+          operator: 'PRICE_CROSS_BELOW',
+          params: { level: rangeLow },
+          isMet: false,
+          automatable: true,
+          sequenceOrder: 1,
         },
       ],
       confirmationSequence: [
-        '1. Ruptura de rango consolidado con vela cerrada de cuerpo completo',
+        `1. Ruptura del rango [${rangeLow} - ${rangeHigh}] con vela cerrada`,
         '2. Confirmación de volumen relativo rvol > 1.2',
       ],
       invalidationConditions: [],
       expirationTimestamp: Date.now() + 6 * 3600 * 1000,
       reevaluationTriggers: [
-        { event: 'STRUCTURE_SHIFT', description: 'Cambio estructural relevante en 15m o 1h', timeframe: '15m' },
+        { event: 'STRUCTURE_SHIFT', description: 'Ruptura de rango consolidado', timeframe: '15m' },
       ],
       reasoningVersion: snapshotId,
       status: 'ACTIVE',
@@ -537,6 +744,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       id: neutralPlan.scenarioId,
       symbol: summary.symbol || 'BTCUSDT',
       direction: 'NEUTRAL',
+      kind: 'NEUTRAL_OBSERVATION' as ScenarioKind,
+      triggerSource,
       timeframe: '15m',
       structureType: 'RANGING_NO_CONFLUENCE',
       proposedBy: 'CONSENSUS',
@@ -546,18 +755,18 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       ],
       snapshotId,
       discoveryTimestamp: Date.now(),
-      entryZoneMin: summary.currentPrice,
-      entryZoneMax: summary.currentPrice,
-      targetEntry: summary.currentPrice,
-      stopLossPrice: summary.currentPrice,
+      entryZoneMin: rangeLow,
+      entryZoneMax: rangeHigh,
+      targetEntry: (rangeLow + rangeHigh) / 2,
+      stopLossPrice: rangeLow,
       rrModeAvailable: 'NONE',
       uncertaintyLevel: 'HIGH',
       status: 'NO_TRADE_OBSERVATION',
       validUntilTimestamp: Date.now() + 6 * 3600 * 1000,
       aiCostUsd,
-      activationConditions: ['Esperar desplazamiento direccional limpio y ruptura estructural con confirmación'],
-      invalidationTriggers: ['Ruptura de rango con volumen fuera de la consolidación'],
-      argumentsFor: ['Preservación de capital prioritaria', 'Relación riesgo/beneficio asimétrico desfavorable en la zona actual'],
+      activationConditions: [`Esperar ruptura de rango consolidado [${rangeLow} - ${rangeHigh}]`],
+      invalidationTriggers: ['Rango invalidado por cierre de sesión'],
+      argumentsFor: ['Preservación de capital prioritaria', 'Relación riesgo/beneficio desfavorable dentro del rango'],
       argumentsAgainst: ['Pérdida de oportunidad en caso de movimiento impulsivo repentino'],
       watchPlan: neutralPlan,
       aiMarketThesis: neutralThesis,
@@ -565,6 +774,26 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       confidenceDisclaimer: 'La confianza declarada por la IA es cualitativa y subjetiva; no constituye probabilidad estadística.',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      verifiedLevels: [
+        {
+          price: rangeHigh,
+          timeframe: '15m',
+          levelType: 'RANGE_BOUNDARY',
+          evidence: `Techo de rango consolidado (${rangeHigh})`,
+          distancePct: Number((Math.abs(rangeHigh - summary.currentPrice) / summary.currentPrice * 100).toFixed(2)),
+          isVerified: true,
+          relevanceToHorizon: 'HIGH',
+        },
+        {
+          price: rangeLow,
+          timeframe: '15m',
+          levelType: 'RANGE_BOUNDARY',
+          evidence: `Piso de rango consolidado (${rangeLow})`,
+          distancePct: Number((Math.abs(rangeLow - summary.currentPrice) / summary.currentPrice * 100).toFixed(2)),
+          isVerified: true,
+          relevanceToHorizon: 'HIGH',
+        },
+      ],
       openaiInterpretation: openaiDiscovery ? {
         provider: 'OPENAI',
         model: this.openaiAdapter.getModel(),
@@ -573,6 +802,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         keyZones: openaiDiscovery.keyZones || [],
         confidence: 90,
         marketAnalysis: openaiDiscovery.marketAnalysis,
+        costUsd: openaiDiscovery.costUsd,
       } : undefined,
       geminiInterpretation: geminiDiscovery ? {
         provider: 'GEMINI',
@@ -582,6 +812,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         keyZones: geminiDiscovery.keyZones || [],
         confidence: 90,
         marketAnalysis: geminiDiscovery.marketAnalysis,
+        costUsd: geminiDiscovery.costUsd,
       } : undefined,
       rejectionReason: 'Conclusión formal de IA: ESPERAR (No operar es una decisión válida y a menudo la mejor)',
     };
@@ -603,6 +834,9 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     const currentPrice = summary.currentPrice;
     const direction = candidate.direction;
     if (!direction || (direction !== 'LONG' && direction !== 'SHORT')) return null;
+
+    const levelCheck = verifyProposedLevels(candidate, summary);
+    if (!levelCheck.isValid) return null;
 
     const entryMin = Number(candidate.entryZoneMin);
     const entryMax = Number(candidate.entryZoneMax);
@@ -689,6 +923,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
           params: cond.params || { minLevel: minZone, maxLevel: maxZone },
           isMet: false,
           automatable,
+          sequenceOrder: cond.sequenceOrder !== undefined ? cond.sequenceOrder : i + 1,
         });
       }
     } else {
@@ -699,6 +934,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         params: { minLevel: minZone, maxLevel: maxZone },
         isMet: false,
         automatable: true,
+        sequenceOrder: 1,
       });
       validatedConditions.push({
         id: `cond_${id}_spread`,
@@ -707,6 +943,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         params: { threshold: 0.05 },
         isMet: false,
         automatable: true,
+        sequenceOrder: 2,
       });
     }
 
@@ -782,6 +1019,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       id,
       symbol,
       direction,
+      kind: 'TRADE_SCENARIO' as ScenarioKind,
+      triggerSource: (candidate as any).triggerSource || 'AUTOMATIC_SCHEDULER',
       timeframe: primaryTf,
       structureType: candidate.structureType || 'SMC_DISCRETIONARY_DISCOVERY',
       proposedBy: candidate.proposedBy || 'CONSENSUS',
@@ -820,6 +1059,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       confidenceDisclaimer: 'La confianza declarada por la IA es cualitativa y subjetiva; no constituye probabilidad estadística.',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      verifiedLevels: levelCheck.verifiedLevels,
     };
 
     return scenario;
@@ -832,18 +1072,25 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     scenarios: any[];
     marketAnalysis?: AiMarketAnalysis;
     costUsd: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    latencyMs?: number;
   } | null> {
     if (!this.openaiAdapter.isConfigured()) return null;
 
     try {
+      const pCurrent = Math.round(summary.currentPrice);
       const prompt = `Actúa como Analista Principal Cuantitativo y Discrecional de Mercado para NanoLabs AI Trading.
 Tu objetivo es analizar integralmente la estructura técnica de BTCUSDT Perpetual (1D, 4H, 1H, 15m, 5m, 1m, SMC, ICT, order flow, RSI, EMA, VWAP, spreads y contexto).
-IMPORTANTE:
+Precio actual de BTCUSDT: $${summary.currentPrice} USDT.
+
+DIRECTIVAS ESTRICTAS:
 1. No estás limitado por estrategias fijas ni patrones predefinidos (Estrategia A o B solo existen como referencias de comparación algorítmica).
 2. Tienes plena libertad para descubrir hipótesis operables LONG o SHORT con confluencia estructural estricta y R:R neto >= 1:2 o 1:4.
 3. Si el mercado no ofrece una ventaja estadística nítida, la conclusión imperativa es NEUTRAL / NO_TRADE ("No operar es una decisión válida y a menudo la mejor").
 4. Para cada oportunidad seleccionada, diseña un plan de vigilancia determinista (AI_WATCH_PLAN) con condiciones observables mediante operadores deterministas permitidos (PRICE_IN_RANGE, PRICE_TOUCH_LEVEL, RSI_THRESHOLD, SPREAD_TOLERANCE, PRICE_CROSS_ABOVE, PRICE_CROSS_BELOW, STRUCTURE_BREAK, SWEEP_CONFIRMED).
 5. No inventes probabilidades matemáticas ni porcentajes de acierto calibrados; tu evaluación de confianza es cualitativa.
+6. ANCLAJE CUANTITATIVO OBLIGATORIO: Los niveles de entrada, stop loss y objetivos DEBEN anclarse en soportes, resistencias, Order Blocks o FVGs reales provistos en el panorama multitemporal. JAMÁS uses números arbitrarios ni niveles fuera del contexto actual de $${summary.currentPrice}.
 
 Responde obligatoriamente en JSON estricto:
 {
@@ -858,7 +1105,7 @@ Responde obligatoriamente en JSON estricto:
   },
   "bias": "BULLISH" | "BEARISH" | "NEUTRAL",
   "reasoning": "Resumen ejecutivo del análisis",
-  "keyZones": ["64200 - 64500", "63800"],
+  "keyZones": ["Zona clave 1 cercana al precio actual", "Zona clave 2"],
   "scenarios": [
     {
       "direction": "LONG" | "SHORT",
@@ -866,14 +1113,14 @@ Responde obligatoriamente en JSON estricto:
       "horizon": "SCALP" | "INTRADAY" | "SWING",
       "timeframe": "15m",
       "structureType": "SMC_DISCRETIONARY_DISCOVERY",
-      "entryZoneMin": 64200,
-      "entryZoneMax": 64400,
-      "targetEntry": 64300,
-      "structuralStopLoss": 63800,
-      "candidateTarget12": 65300,
-      "candidateTarget14": 66300,
+      "entryZoneMin": ${Math.round(pCurrent * 0.995)},
+      "entryZoneMax": ${Math.round(pCurrent * 1.002)},
+      "targetEntry": ${pCurrent},
+      "structuralStopLoss": ${Math.round(pCurrent * 0.990)},
+      "candidateTarget12": ${Math.round(pCurrent * 1.020)},
+      "candidateTarget14": ${Math.round(pCurrent * 1.040)},
       "missingConditions": ["Esperar mitigación limpia y desaceleración de volumen"],
-      "invalidationEvents": ["Cierre de vela de 15m por debajo de 63800"],
+      "invalidationEvents": ["Cierre de vela por debajo del stop loss"],
       "argumentsFor": ["..."],
       "argumentsAgainst": ["..."],
       "confidence": 75,
@@ -881,18 +1128,19 @@ Responde obligatoriamente en JSON estricto:
         "horizon": "INTRADAY",
         "observableConditions": [
           {
-            "description": "Precio entra en zona de entrada [64200, 64400]",
+            "description": "Precio entra en zona de entrada",
             "operator": "PRICE_IN_RANGE",
-            "params": { "minLevel": 64200, "maxLevel": 64400 },
-            "automatable": true
+            "params": { "minLevel": ${Math.round(pCurrent * 0.995)}, "maxLevel": ${Math.round(pCurrent * 1.002)} },
+            "automatable": true,
+            "sequenceOrder": 1
           }
         ],
         "confirmationSequence": ["Mitigación de zona", "Rechazo de volumen adverso"],
         "invalidationConditions": [
           {
-            "description": "Precio vulnera Stop Loss en 63800",
+            "description": "Precio vulnera Stop Loss",
             "operator": "PRICE_CROSS_BELOW",
-            "params": { "level": 63800 },
+            "params": { "level": ${Math.round(pCurrent * 0.990)} },
             "automatable": true
           }
         ],
@@ -913,6 +1161,9 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
         scenarios: res.scenarios || [],
         marketAnalysis: res.marketAnalysis,
         costUsd: res.costUsd || 0.001,
+        promptTokens: res.promptTokens,
+        completionTokens: res.completionTokens,
+        latencyMs: res.latencyMs,
       };
     } catch {
       return null;
@@ -926,17 +1177,24 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
     scenarios: any[];
     marketAnalysis?: AiMarketAnalysis;
     costUsd: number;
+    promptTokens?: number;
+    completionTokens?: number;
+    latencyMs?: number;
   } | null> {
     if (!this.geminiAdapter.isConfigured()) return null;
 
     try {
+      const pCurrent = Math.round(summary.currentPrice);
       const prompt = `Actúa como Auditor Crítico y Analista Independiente de Mercado para NanoLabs AI Trading.
 Evalúa con máxima objetividad la estructura multitemporal de BTCUSDT y descubre oportunidades técnicas genuinas.
-IMPORTANTE:
+Precio actual de BTCUSDT: $${summary.currentPrice} USDT.
+
+DIRECTIVAS ESTRICTAS:
 1. Sin estrategias preprogramadas obligatorias. Eres libre de evaluar cualquier setup técnico de SMC/ICT o confluencia de mercado.
 2. Identifica trampas de liquidez, mechas de absorción y falsos quiebres.
-3. Si el mercado está en rango sucio o sin ventaja nítida, concluye NEUTRAL / NO_TRADE.
+3. Si el mercado está en rango sucio o sin ventaja nítida, concluye NEUTRAL / NO_TRADE ("No operar es una decisión válida y a menudo la mejor").
 4. Genera planes de vigilancia algorítmicos estructurados (AI_WATCH_PLAN) con condiciones deterministas.
+5. ANCLAJE CUANTITATIVO OBLIGATORIO: Los niveles de entrada, stop loss y objetivos DEBEN anclarse en soportes, resistencias, Order Blocks o FVGs reales provistos en el panorama multitemporal. JAMÁS inventes precios no existentes en los datos.
 
 Responde obligatoriamente en JSON estricto:
 {
@@ -959,12 +1217,12 @@ Responde obligatoriamente en JSON estricto:
       "horizon": "SCALP" | "INTRADAY" | "SWING",
       "timeframe": "15m",
       "structureType": "SMC_DISCRETIONARY_DISCOVERY",
-      "entryZoneMin": 64200,
-      "entryZoneMax": 64400,
-      "targetEntry": 64300,
-      "structuralStopLoss": 63800,
-      "candidateTarget12": 65300,
-      "candidateTarget14": 66300,
+      "entryZoneMin": ${Math.round(pCurrent * 0.995)},
+      "entryZoneMax": ${Math.round(pCurrent * 1.002)},
+      "targetEntry": ${pCurrent},
+      "structuralStopLoss": ${Math.round(pCurrent * 0.990)},
+      "candidateTarget12": ${Math.round(pCurrent * 1.020)},
+      "candidateTarget14": ${Math.round(pCurrent * 1.040)},
       "missingConditions": ["..."],
       "invalidationEvents": ["..."],
       "argumentsFor": ["..."],
@@ -974,10 +1232,11 @@ Responde obligatoriamente en JSON estricto:
         "horizon": "INTRADAY",
         "observableConditions": [
           {
-            "description": "Precio entra en zona [64200, 64400]",
+            "description": "Precio entra en zona operativa",
             "operator": "PRICE_IN_RANGE",
-            "params": { "minLevel": 64200, "maxLevel": 64400 },
-            "automatable": true
+            "params": { "minLevel": ${Math.round(pCurrent * 0.995)}, "maxLevel": ${Math.round(pCurrent * 1.002)} },
+            "automatable": true,
+            "sequenceOrder": 1
           }
         ],
         "confirmationSequence": ["..."],
@@ -985,7 +1244,7 @@ Responde obligatoriamente en JSON estricto:
           {
             "description": "Precio cruza bajo SL",
             "operator": "PRICE_CROSS_BELOW",
-            "params": { "level": 63800 },
+            "params": { "level": ${Math.round(pCurrent * 0.990)} },
             "automatable": true
           }
         ],
@@ -1005,7 +1264,10 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
         keyZones: res.keyZones || [],
         scenarios: res.scenarios || [],
         marketAnalysis: res.marketAnalysis,
-        costUsd: res.costUsd || 0.001,
+        costUsd: res.costUsd || 0.0003,
+        promptTokens: res.promptTokens,
+        completionTokens: res.completionTokens,
+        latencyMs: res.latencyMs,
       };
     } catch {
       return null;

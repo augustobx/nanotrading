@@ -301,7 +301,7 @@ Reglas imperativas:
       const promptTokens = usage.prompt_tokens || 0;
       const completionTokens = usage.completion_tokens || 0;
       const costUsd = calculateCallCost(activeModel, promptTokens, completionTokens);
-      return { ...parsed, costUsd, promptTokens, completionTokens };
+      return { ...parsed, model: activeModel, costUsd, promptTokens, completionTokens };
     } catch (err: any) {
       clearTimeout(timeoutId);
       console.error(`[OpenAI evaluateWithCustomPrompt] Exception:`, err.message || err);

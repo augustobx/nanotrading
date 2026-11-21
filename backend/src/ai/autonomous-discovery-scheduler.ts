@@ -154,8 +154,8 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     const now = Date.now();
     const cooldownMs = this.config.minCooldownMinutes * 60 * 1000;
 
-    // Cooldown check (unless forced)
-    if (this.lastTriggerTimestamp && now - this.lastTriggerTimestamp < cooldownMs && !reason.startsWith('MANUAL')) {
+    // Cooldown check (unless forced or triggered by range breakout)
+    if (this.lastTriggerTimestamp && now - this.lastTriggerTimestamp < cooldownMs && !reason.startsWith('MANUAL') && !reason.startsWith('RANGE_BREAKOUT')) {
       return false;
     }
 
@@ -175,7 +175,13 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
 
     try {
       this.db.logEvent('INFO', 'DiscoveryScheduler', `Running autonomous market discovery. Reason: ${reason}`);
-      const result = await this.discoveryEngine.runDiscovery();
+      const triggerSource = reason.startsWith('MANUAL')
+        ? 'MANUAL_TRIGGER'
+        : (reason.startsWith('RANGE_BREAKOUT') ? 'NEUTRAL_BREAKOUT' : 'AUTOMATIC_SCHEDULER');
+      const result = await this.discoveryEngine.runDiscovery({
+        triggerSource,
+        forceManual: reason.startsWith('MANUAL'),
+      });
       this.totalAutonomousRuns++;
       this.totalScenariosFound += result.scenarios.length;
 

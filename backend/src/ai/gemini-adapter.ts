@@ -249,52 +249,79 @@ Responde obligatoriamente en JSON estricto.`;
 
   public async evaluateWithCustomPrompt(prompt: string): Promise<any> {
     if (!this.apiKey) return null;
-    const activeModel = getValidatedModel(this.model, 'GEMINI');
-    const effectiveTimeoutMs = Math.max(this.timeoutMs, 25000);
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
-    try {
-      const apiKeyTrimmed = (this.apiKey || '').trim();
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(activeModel)}:generateContent?key=${encodeURIComponent(apiKeyTrimmed)}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKeyTrimmed,
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: 'application/json',
-          },
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (!response.ok) {
-        const errText = await response.text();
-        console.error(`[Gemini evaluateWithCustomPrompt] HTTP ${response.status}: ${errText}`);
-        return null;
+    const initialModel = getValidatedModel(this.model, 'GEMINI');
+    const apiKeyTrimmed = (this.apiKey || '').trim();
+    const candidateModels = [
+      initialModel,
+      ...(initialModel !== 'gemini-2.5-flash-lite' ? ['gemini-2.5-flash-lite'] : []),
+      ...(initialModel !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),
+    ];
+
+    for (const currentModel of candidateModels) {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const effectiveTimeoutMs = Math.max(this.timeoutMs, 25000);
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
+        try {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(currentModel)}:generateContent?key=${encodeURIComponent(apiKeyTrimmed)}`;
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKeyTrimmed,
+            },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: {
+                temperature: 0.1,
+                responseMimeType: 'application/json',
+              },
+            }),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+
+          if (response.status === 503 || response.status === 429) {
+            const errText = await response.text();
+            console.warn(`[Gemini evaluateWithCustomPrompt] ${currentModel} attempt ${attempt} returned HTTP ${response.status}: ${errText.slice(0, 100)}. Retrying/falling back...`);
+            if (attempt === 1) {
+              await new Promise((r) => setTimeout(r, 1500));
+              continue;
+            } else {
+              break;
+            }
+          }
+
+          if (!response.ok) {
+            const errText = await response.text();
+            console.error(`[Gemini evaluateWithCustomPrompt] HTTP ${response.status}: ${errText.slice(0, 150)}`);
+            break;
+          }
+
+          const data: any = await response.json();
+          let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (!text) {
+            console.warn(`[Gemini evaluateWithCustomPrompt] No candidates/text in response for ${currentModel}`);
+            break;
+          }
+          text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
+          const parsed = JSON.parse(text);
+          const usage = data.usageMetadata || {};
+          const promptTokens = usage.promptTokenCount || 0;
+          const completionTokens = usage.candidatesTokenCount || 0;
+          const costUsd = calculateCallCost(currentModel, promptTokens, completionTokens);
+          return { ...parsed, model: currentModel, costUsd, promptTokens, completionTokens };
+        } catch (err: any) {
+          clearTimeout(timeoutId);
+          console.error(`[Gemini evaluateWithCustomPrompt] Exception on ${currentModel} attempt ${attempt}:`, err.message || err);
+          if (attempt === 1) {
+            await new Promise((r) => setTimeout(r, 1000));
+            continue;
+          }
+        }
       }
-      const data: any = await response.json();
-      let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) {
-        console.warn(`[Gemini evaluateWithCustomPrompt] No candidates/text in response`);
-        return null;
-      }
-      text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
-      const parsed = JSON.parse(text);
-      const usage = data.usageMetadata || {};
-      const promptTokens = usage.promptTokenCount || 0;
-      const completionTokens = usage.candidatesTokenCount || 0;
-      const costUsd = calculateCallCost(activeModel, promptTokens, completionTokens);
-      return { ...parsed, costUsd, promptTokens, completionTokens };
-    } catch (err: any) {
-      clearTimeout(timeoutId);
-      console.error(`[Gemini evaluateWithCustomPrompt] Exception:`, err.message || err);
-      return null;
     }
+    return null;
   }
 
   public isConfigured(): boolean {
