@@ -58,3 +58,17 @@ jobs:
             echo "::endgroup::"
           done
           exit "$failed"
+
+  docker-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CONFIG_MASTER_KEY: audit-ci-only-ephemeral-key-never-use-in-production-2026
+      DB_PASSWORD: audit-ci-database-password-not-for-production
+      REDIS_PASSWORD: audit-ci-redis-password-not-for-production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose configuration
+        run: docker compose -f compose.yml config --quiet
+      - name: Build isolated NanoTrading container images
+        run: docker compose -f compose.yml build backend frontend
