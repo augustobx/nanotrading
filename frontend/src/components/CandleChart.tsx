@@ -393,10 +393,17 @@ export function CandleChart({
 
           // 1. Target 1:4 (if defined)
           if (activeScenario.target14Price && Number.isFinite(activeScenario.target14Price)) {
-            const reward14 = Math.abs(activeScenario.target14Price - activeScenario.targetEntry);
-            const rr14 = (Number.isFinite(activeScenario.netRR14) && activeScenario.netRR14 > 0)
-              ? activeScenario.netRR14.toFixed(1)
-              : (riskDist > 0 ? (reward14 / riskDist).toFixed(1) : '4.0');
+            let tpLabel: string;
+            if (Number.isFinite(activeScenario.netRR14) && activeScenario.netRR14! > 0) {
+              const net14 = activeScenario.netRR14!;
+              if (net14 >= 4.0) {
+                tpLabel = `${tpPrefix} 1:4 (R:R 1:${net14.toFixed(1)} neto)`;
+              } else {
+                tpLabel = `${tpPrefix} Ext (R:R 1:${net14.toFixed(1)} neto < 1:4)`;
+              }
+            } else {
+              tpLabel = `${tpPrefix} 1:4 (R:R neto no disponible)`;
+            }
 
             const tp14Line = candleSeriesRef.current.createPriceLine({
               price: activeScenario.target14Price,
@@ -404,17 +411,24 @@ export function CandleChart({
               lineWidth: 2,
               lineStyle,
               axisLabelVisible: true,
-              title: `${tpPrefix} 1:4 (R:R 1:${rr14}) ($${activeScenario.target14Price.toFixed(1)})`,
+              title: `${tpLabel} ($${activeScenario.target14Price.toFixed(1)})`,
             });
             priceLinesRef.current.push(tp14Line);
           }
 
           // 2. Target 1:2 (if defined and either standalone or secondary target)
           if (activeScenario.target12Price && Number.isFinite(activeScenario.target12Price)) {
-            const reward12 = Math.abs(activeScenario.target12Price - activeScenario.targetEntry);
-            const rr12 = (Number.isFinite(activeScenario.netRR12) && activeScenario.netRR12 > 0)
-              ? activeScenario.netRR12.toFixed(1)
-              : (riskDist > 0 ? (reward12 / riskDist).toFixed(1) : '2.0');
+            let tpLabel: string;
+            if (Number.isFinite(activeScenario.netRR12) && activeScenario.netRR12! > 0) {
+              const net12 = activeScenario.netRR12!;
+              if (net12 >= 2.0) {
+                tpLabel = `${tpPrefix} 1:2 (R:R 1:${net12.toFixed(1)} neto)`;
+              } else {
+                tpLabel = `${tpPrefix} (R:R 1:${net12.toFixed(1)} neto < 1:2)`;
+              }
+            } else {
+              tpLabel = `${tpPrefix} 1:2 (R:R neto no disponible)`;
+            }
 
             const tp12Line = candleSeriesRef.current.createPriceLine({
               price: activeScenario.target12Price,
@@ -422,7 +436,7 @@ export function CandleChart({
               lineWidth: 2,
               lineStyle,
               axisLabelVisible: true,
-              title: `${tpPrefix} 1:2 (R:R 1:${rr12}) ($${activeScenario.target12Price.toFixed(1)})`,
+              title: `${tpLabel} ($${activeScenario.target12Price.toFixed(1)})`,
             });
             priceLinesRef.current.push(tp12Line);
           }

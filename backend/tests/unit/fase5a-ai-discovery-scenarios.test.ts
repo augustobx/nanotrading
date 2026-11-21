@@ -35,9 +35,26 @@ function createTestHarness() {
   const db = new DatabaseService(TEST_DB_PATH);
   const restClient = new BybitRestClient();
   const wsClient = new BybitWsClient();
+  wsClient.isConnected = () => true;
+  wsClient.getLastMessageTime = () => Date.now();
   const candleManager = new CandleManager(db);
   const orderBookManager = new OrderBookManager();
   const coordinator = new MarketCoordinator(restClient, wsClient, candleManager, orderBookManager, db, 'BTCUSDT');
+  (coordinator as any).currentTicker = {
+    symbol: 'BTCUSDT',
+    lastPrice: 64100,
+    markPrice: 64100,
+    indexPrice: 64100,
+    bid1Price: 64099.9,
+    ask1Price: 64100.1,
+    bid1Size: 1.0,
+    ask1Size: 1.0,
+    spread: 0.2,
+    spreadPcnt: 0.0003,
+    highPrice24h: 65000,
+    lowPrice24h: 63000,
+    timestamp: Date.now(),
+  };
 
   const hardBudgetManager = new HardBudgetManager(
     {

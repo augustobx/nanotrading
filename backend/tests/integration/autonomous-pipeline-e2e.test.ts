@@ -347,6 +347,145 @@ test('PR 4.1 E2E Pipeline: AlgorithmicWatcher -> AiEntryRevalidation -> MarketCo
       assert.equal(authSignal.symbol, 'BTCUSDT');
       assert.ok(authSignal.rrNet >= 4.0);
     });
+
+    // ------------------------------------------------------------------------
+    // 6. RIESGO BLOQUEANTE: Kill Switch activo con IA en APPROVE no registra señal
+    // ------------------------------------------------------------------------
+    await t.test('6. Riesgo bloqueante: Kill Switch activo cancela entrada y no registra señal aunque IA emita APPROVE', async () => {
+      // Activar Kill Switch
+      coordinator.setKillSwitch(true, 'Emergencia administrativa de prueba');
+      const countAfterKs = stateMachine.getActiveSignals().length;
+
+      try {
+        const scenario = makeScenario('sc_pipe_risk_ks_06', 'SHORT', 59900, 60100, 60000, 60500, 58800, 57500);
+        const plan = makeWatchPlan('sc_pipe_risk_ks_06', 'SHORT', 59900, 60100, 60000, 60500, 58800, 57500);
+        scenario.watchPlan = plan;
+        registry.registerScenario(scenario);
+        db.saveWatchPlan(plan);
+
+        aiRevalidation.setMockEvaluator(() => ({
+          openaiVerdict: 'APPROVE',
+          geminiVerdict: 'APPROVE',
+          reasoning: 'IA emite aprobación pero Kill Switch debe bloquearla de forma determinista',
+        }));
+
+        (coordinator as any).currentTicker.lastPrice = 60000;
+        (coordinator as any).currentTicker.markPrice = 60000;
+        (coordinator as any).currentTicker.timestamp = Date.now();
+
+        coordinator.emit('state_updated', {
+          ticker: {
+            lastPrice: 60000,
+            markPrice: 60000,
+            spread: 0.1,
+            spreadPcnt: 0.0001,
+          },
+        });
+
+        await new Promise((r) => setTimeout(r, 60));
+
+        const sc = registry.getScenario('sc_pipe_risk_ks_06');
+        assert.ok(sc, 'Escenario debe persistir en base de datos');
+        assert.equal(sc.status, 'CANCELLED');
+        assert.match(sc.rejectionReason || '', /Kill Switch/i);
+        assert.equal(stateMachine.getActiveSignals().length, countAfterKs, 'Zero señales nuevas con Kill Switch activo');
+      } finally {
+        // Restaurar Kill Switch para subsiguientes pruebas
+        coordinator.setKillSwitch(false);
+      }
+    });
+
+    // ------------------------------------------------------------------------
+    // 7. RIESGO BLOQUEANTE: Datos obsoletos (stale feed) con IA en APPROVE no registra señal
+    // ------------------------------------------------------------------------
+    await t.test('7. Riesgo bloqueante: Datos de mercado obsoletos cancelan entrada y no registran señal aunque IA emita APPROVE', async () => {
+      const initialCount = stateMachine.getActiveSignals().length;
+
+      // Price zone 64000 (distinct from subtest 1 at 60000 to avoid deduplication)
+      const scenario = makeScenario('sc_pipe_risk_stale_07', 'LONG', 63900, 64100, 64000, 63500, 65200, 66500);
+      const plan = makeWatchPlan('sc_pipe_risk_stale_07', 'LONG', 63900, 64100, 64000, 63500, 65200, 66500);
+      scenario.watchPlan = plan;
+      registry.registerScenario(scenario);
+      db.saveWatchPlan(plan);
+
+      aiRevalidation.setMockEvaluator(() => ({
+        openaiVerdict: 'APPROVE',
+        geminiVerdict: 'APPROVE',
+        reasoning: 'IA aprueba pero feed desactualizado debe bloquearla',
+      }));
+
+      // Simular feed WebSocket desactualizado (> 10s maxDataStalenessMs)
+      const origGetLastMsg = (coordinator as any).wsClient.getLastMessageTime;
+      (coordinator as any).wsClient.getLastMessageTime = () => Date.now() - 30000;
+
+      try {
+        (coordinator as any).currentTicker.lastPrice = 64000;
+        (coordinator as any).currentTicker.markPrice = 64000;
+        (coordinator as any).currentTicker.timestamp = Date.now();
+
+        coordinator.emit('state_updated', {
+          ticker: {
+            lastPrice: 64000,
+            markPrice: 64000,
+            spread: 0.1,
+            spreadPcnt: 0.0001,
+          },
+        });
+
+        await new Promise((r) => setTimeout(r, 60));
+
+        const sc = registry.getScenario('sc_pipe_risk_stale_07');
+        assert.ok(sc, 'Escenario debe encontrarse en registro');
+        assert.equal(sc.status, 'CANCELLED');
+        assert.match(sc.rejectionReason || '', /obsoletos|desconectado|datos/i);
+        assert.equal(stateMachine.getActiveSignals().length, initialCount, 'Zero señales nuevas con datos obsoletos');
+      } finally {
+        // Restaurar reloj de feed
+        (coordinator as any).wsClient.getLastMessageTime = origGetLastMsg;
+      }
+    });
+
+    // ------------------------------------------------------------------------
+    // 8. RIESGO BLOQUEANTE: R:R neto insuficiente con IA en APPROVE no registra señal
+    // ------------------------------------------------------------------------
+    await t.test('8. Riesgo bloqueante: R:R neto insuficiente cancela entrada y no registra señal aunque IA emita APPROVE', async () => {
+      const initialCount = stateMachine.getActiveSignals().length;
+
+      // Escenario SHORT en 56000 con objetivos demasiado cercanos que no cubren comisiones (R:R neto < 1:2 / 1:4)
+      // SL distance = 200 (0.35% <= 1.5% max SL ceiling), TP12 reward = 50, TP14 reward = 100
+      const scenario = makeScenario('sc_pipe_risk_bad_rr_08', 'SHORT', 55900, 56100, 56000, 56200, 55950, 55900);
+      const plan = makeWatchPlan('sc_pipe_risk_bad_rr_08', 'SHORT', 55900, 56100, 56000, 56200, 55950, 55900);
+      scenario.watchPlan = plan;
+      registry.registerScenario(scenario);
+      db.saveWatchPlan(plan);
+
+      aiRevalidation.setMockEvaluator(() => ({
+        openaiVerdict: 'APPROVE',
+        geminiVerdict: 'APPROVE',
+        reasoning: 'IA aprueba pero matemática cuantitativa de R:R debe rechazarla',
+      }));
+
+      (coordinator as any).currentTicker.lastPrice = 56000;
+      (coordinator as any).currentTicker.markPrice = 56000;
+      (coordinator as any).currentTicker.timestamp = Date.now();
+
+      coordinator.emit('state_updated', {
+        ticker: {
+          lastPrice: 56000,
+          markPrice: 56000,
+          spread: 0.1,
+          spreadPcnt: 0.0001,
+        },
+      });
+
+      await new Promise((r) => setTimeout(r, 60));
+
+      const sc = registry.getScenario('sc_pipe_risk_bad_rr_08');
+      assert.ok(sc, 'Escenario debe encontrarse en registro');
+      assert.equal(sc.status, 'CANCELLED');
+      assert.match(sc.rejectionReason || '', /R:R|umbral|comisiones/i);
+      assert.equal(stateMachine.getActiveSignals().length, initialCount, 'Zero señales nuevas con R:R neto insuficiente');
+    });
   } finally {
     watcher.stop();
     coordinator.stop();

@@ -21,6 +21,9 @@ class MockMarketCoordinator extends EventEmitter {
   private marketState: any = {
     symbol: 'BTCUSDT',
     wsConnected: true,
+    lastWsMessageTimestamp: Date.now(),
+    status: 'OBSERVING',
+    killSwitchActive: false,
     ticker: {
       lastPrice: 65200,
       markPrice: 65200,
@@ -62,7 +65,7 @@ class MockMarketCoordinator extends EventEmitter {
       getAnalysis: (tf: string) => ({
         trend: 'BULLISH',
         rsi: 54.2,
-        atr: 120,
+        atr: 180,
         structure: {
           swings: [
             { type: 'LOW', price: 64100, label: 'HL', timestamp: Date.now() - 3600000 },
@@ -100,6 +103,7 @@ class MockMarketCoordinator extends EventEmitter {
   }
 
   public getMarketState() {
+    this.marketState.lastWsMessageTimestamp = Date.now();
     return this.marketState;
   }
 

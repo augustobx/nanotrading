@@ -13,15 +13,21 @@ import { EventEmitter } from 'events';
 class MockCoordinator extends EventEmitter {
   private marketState: any = {
     symbol: 'BTCUSDT',
-    ticker: { lastPrice: 65000, spreadPcnt: 0.001 },
+    wsConnected: true,
+    lastWsMessageTimestamp: Date.now(),
+    status: 'OBSERVING',
+    killSwitchActive: false,
+    ticker: { lastPrice: 65000, spreadPcnt: 0.0003, spread: 0.2 },
   };
 
   public getMarketState() {
+    this.marketState.lastWsMessageTimestamp = Date.now();
     return this.marketState;
   }
 
   public setPrice(price: number) {
     this.marketState.ticker.lastPrice = price;
+    this.marketState.lastWsMessageTimestamp = Date.now();
     this.emit('state_updated', this.marketState);
   }
 }
@@ -79,7 +85,7 @@ test('Fase 5A — Lifecycle Replay Completo: Registro -> Aproximación -> In-Zon
     targetEntry: 64500,
     stopLossPrice: 64000,
     target12Price: 65800,
-    target14Price: 66800,
+    target14Price: 67200,
     netRR12: 2.15,
     netRR14: 4.12,
     rrModeAvailable: 'RR_BOTH',
@@ -169,7 +175,7 @@ test('Fase 5A — Early Invalidation: Si el precio rompe el Stop Loss antes de e
     targetEntry: 64500,
     stopLossPrice: 64000,
     target12Price: 65800,
-    target14Price: 66800,
+    target14Price: 67200,
     netRR12: 2.15,
     netRR14: 4.12,
     rrModeAvailable: 'RR_BOTH',
