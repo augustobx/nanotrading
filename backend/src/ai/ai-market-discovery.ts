@@ -47,6 +47,14 @@ const ALLOWED_WATCH_OPERATORS: WatchOperator[] = [
   'SWEEP_CONFIRMED',
   'STRUCTURE_BREAK',
   'TIME_ELAPSED',
+  'CANDLE_PATTERN',
+  'LEVEL_REJECTION_WICK',
+  'STRUCTURE_CLOSE',
+  'BREAK_AND_RETEST',
+  'SWEEP_AND_RECLAIM',
+  'VOLUME_EXPANSION',
+  'BOS_CONFIRMED',
+  'CHOCH_CONFIRMED',
 ];
 
 export function verifyProposedLevels(
@@ -910,7 +918,19 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     if (rawObservable.length > 0) {
       for (let i = 0; i < rawObservable.length; i++) {
         const cond = rawObservable[i];
-        const isOpValid = ALLOWED_WATCH_OPERATORS.includes(cond.operator as any);
+        let op = (cond.operator || 'PRICE_IN_RANGE') as string;
+        const params = { ...(cond.params || {}) };
+
+        // Normalize candle pattern aliases (e.g. BEARISH_ENGULFING, SHOOTING_STAR, PIN_BAR, BULLISH_ENGULFING)
+        const candlePatterns = ['BEARISH_ENGULFING', 'BULLISH_ENGULFING', 'PIN_BAR', 'SHOOTING_STAR', 'HAMMER', 'INVERTED_HAMMER'];
+        if (candlePatterns.includes(op.toUpperCase())) {
+          params.pattern = op.toUpperCase() as any;
+          op = 'CANDLE_PATTERN';
+        } else if (op === 'REJECTION_WICK' || op === 'LEVEL_REJECTION') {
+          op = 'LEVEL_REJECTION_WICK';
+        }
+
+        const isOpValid = ALLOWED_WATCH_OPERATORS.includes(op as any);
         const automatable = isOpValid && cond.automatable !== false;
         if (!automatable) {
           allConditionsAutomatable = false;
@@ -918,9 +938,9 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         }
         validatedConditions.push({
           id: cond.id || `cond_${id}_${i}`,
-          description: cond.description || `Condición ${cond.operator}`,
-          operator: isOpValid ? cond.operator : 'PRICE_IN_RANGE',
-          params: cond.params || { minLevel: minZone, maxLevel: maxZone },
+          description: cond.description || `Condición ${op}`,
+          operator: isOpValid ? (op as WatchOperator) : 'PRICE_IN_RANGE',
+          params: Object.keys(params).length > 0 ? params : { minLevel: minZone, maxLevel: maxZone },
           isMet: false,
           automatable,
           sequenceOrder: cond.sequenceOrder !== undefined ? cond.sequenceOrder : i + 1,
@@ -1088,7 +1108,7 @@ DIRECTIVAS ESTRICTAS:
 1. No estás limitado por estrategias fijas ni patrones predefinidos (Estrategia A o B solo existen como referencias de comparación algorítmica).
 2. Tienes plena libertad para descubrir hipótesis operables LONG o SHORT con confluencia estructural estricta y R:R neto >= 1:2 o 1:4.
 3. Si el mercado no ofrece una ventaja estadística nítida, la conclusión imperativa es NEUTRAL / NO_TRADE ("No operar es una decisión válida y a menudo la mejor").
-4. Para cada oportunidad seleccionada, diseña un plan de vigilancia determinista (AI_WATCH_PLAN) con condiciones observables mediante operadores deterministas permitidos (PRICE_IN_RANGE, PRICE_TOUCH_LEVEL, RSI_THRESHOLD, SPREAD_TOLERANCE, PRICE_CROSS_ABOVE, PRICE_CROSS_BELOW, STRUCTURE_BREAK, SWEEP_CONFIRMED).
+4. Para cada oportunidad seleccionada, diseña un plan de vigilancia determinista (AI_WATCH_PLAN) con condiciones observables en secuencia mediante operadores algorítmicos nativos evaluados en velas cerradas: PRICE_IN_RANGE, CANDLE_PATTERN (BEARISH_ENGULFING, BULLISH_ENGULFING, PIN_BAR, SHOOTING_STAR, HAMMER), LEVEL_REJECTION_WICK (con minWickRatio), STRUCTURE_CLOSE, BREAK_AND_RETEST, SWEEP_AND_RECLAIM, VOLUME_EXPANSION, BOS_CONFIRMED, CHOCH_CONFIRMED, RSI_THRESHOLD, SPREAD_TOLERANCE. Marca automatable: true para estos operadores. Si requieres una confirmación cualitativa no automatizable, se mantendrá automatable: false y requerirá reevaluación.
 5. No inventes probabilidades matemáticas ni porcentajes de acierto calibrados; tu evaluación de confianza es cualitativa.
 6. ANCLAJE CUANTITATIVO OBLIGATORIO: Los niveles de entrada, stop loss y objetivos DEBEN anclarse en soportes, resistencias, Order Blocks o FVGs reales provistos en el panorama multitemporal. JAMÁS uses números arbitrarios ni niveles fuera del contexto actual de $${summary.currentPrice}.
 
@@ -1193,7 +1213,7 @@ DIRECTIVAS ESTRICTAS:
 1. Sin estrategias preprogramadas obligatorias. Eres libre de evaluar cualquier setup técnico de SMC/ICT o confluencia de mercado.
 2. Identifica trampas de liquidez, mechas de absorción y falsos quiebres.
 3. Si el mercado está en rango sucio o sin ventaja nítida, concluye NEUTRAL / NO_TRADE ("No operar es una decisión válida y a menudo la mejor").
-4. Genera planes de vigilancia algorítmicos estructurados (AI_WATCH_PLAN) con condiciones deterministas.
+4. Genera planes de vigilancia algorítmicos estructurados (AI_WATCH_PLAN) con condiciones observables evaluadas sobre velas cerradas: PRICE_IN_RANGE, CANDLE_PATTERN (BEARISH_ENGULFING, BULLISH_ENGULFING, PIN_BAR, SHOOTING_STAR, HAMMER), LEVEL_REJECTION_WICK, STRUCTURE_CLOSE, BREAK_AND_RETEST, SWEEP_AND_RECLAIM, VOLUME_EXPANSION, BOS_CONFIRMED, CHOCH_CONFIRMED. Marca automatable: true para estos operadores.
 5. ANCLAJE CUANTITATIVO OBLIGATORIO: Los niveles de entrada, stop loss y objetivos DEBEN anclarse en soportes, resistencias, Order Blocks o FVGs reales provistos en el panorama multitemporal. JAMÁS inventes precios no existentes en los datos.
 
 Responde obligatoriamente en JSON estricto:

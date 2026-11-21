@@ -168,9 +168,11 @@ export class AlgorithmicWatcher extends EventEmitter {
           (a, b) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
         );
         let sequenceBlocked = false;
+        let previousStepMetTimestamp: number | undefined = undefined;
 
         for (const cond of sortedConditions) {
           if (cond.isMet) {
+            previousStepMetTimestamp = cond.metTimestamp;
             continue;
           }
           if (sequenceBlocked) {
@@ -178,11 +180,21 @@ export class AlgorithmicWatcher extends EventEmitter {
             continue;
           }
 
+          // Check step timeout if previous step completed
+          if (previousStepMetTimestamp && cond.params.maxStepDurationMs) {
+            if (now - previousStepMetTimestamp > cond.params.maxStepDurationMs) {
+              isInvalidated = true;
+              invalidationReason = `Tiempo máximo entre pasos de confirmación excedido (${Math.round((now - previousStepMetTimestamp) / 60000)}m > ${Math.round(cond.params.maxStepDurationMs / 60000)}m)`;
+              break;
+            }
+          }
+
           if (cond.automatable) {
-            const conditionMet = this.evaluateCondition(cond, currentPrice, spreadPcnt, undefined, sc.discoveryTimestamp);
+            const conditionMet = this.evaluateCondition(cond, currentPrice, spreadPcnt, undefined, sc.discoveryTimestamp, previousStepMetTimestamp);
             if (conditionMet) {
               cond.isMet = true;
               cond.metTimestamp = now;
+              previousStepMetTimestamp = now;
             } else {
               allRequiredConditionsMet = false;
               sequenceBlocked = true; // Subsequent sequence steps cannot be fulfilled yet
@@ -282,22 +294,80 @@ export class AlgorithmicWatcher extends EventEmitter {
   }
 
   public evaluateCandleClose(candle: any): void {
-    const activeScenarios = this.scenarioRegistry.getAllActive();
+    const inactiveStatuses = ['EXPIRED', 'INVALIDATED', 'CANCELLED', 'COMPLETED', 'DISCARDED'];
+    const activeScenarios = this.scenarioRegistry.getAllActive().filter((s) => !inactiveStatuses.includes(s.status));
     if (activeScenarios.length === 0) return;
 
+    const now = Date.now();
+
     for (const sc of activeScenarios) {
-      if (sc.watchPlan?.observableConditions) {
-        for (const cond of sc.watchPlan.observableConditions) {
-          if (cond.operator === 'CANDLE_CLOSE_ABOVE' && cond.params.level !== undefined) {
-            if (candle.close >= cond.params.level) {
-              cond.isMet = true;
-              cond.metTimestamp = Date.now();
+      // 1. NEUTRAL_OBSERVATION check on candle close
+      if (sc.kind === 'NEUTRAL_OBSERVATION' || sc.direction === 'NEUTRAL') {
+        let breakoutOccurred = false;
+        let breakoutReason = '';
+
+        if (sc.entryZoneMax > 0 && candle.close > sc.entryZoneMax) {
+          breakoutOccurred = true;
+          breakoutReason = `Ruptura confirmada de rango neutral en vela cerrada: precio $${candle.close.toFixed(1)} superó techo $${sc.entryZoneMax.toFixed(1)}`;
+        } else if (sc.entryZoneMin > 0 && candle.close < sc.entryZoneMin) {
+          breakoutOccurred = true;
+          breakoutReason = `Ruptura confirmada de rango neutral en vela cerrada: precio $${candle.close.toFixed(1)} perforó piso $${sc.entryZoneMin.toFixed(1)}`;
+        }
+
+        if (breakoutOccurred) {
+          this.scenarioRegistry.transitionStatus(
+            sc.id,
+            'COMPLETED',
+            `${breakoutReason}. Ruptura confirmada: solicitando nuevo descubrimiento de IA.`,
+            { currentPrice: candle.close }
+          );
+          if (sc.watchPlan) {
+            sc.watchPlan.status = 'COMPLETED';
+          }
+          this.emit('neutral_range_breakout', { scenario: sc, breakoutPrice: candle.close, reason: breakoutReason });
+          this.coordinator.getDiscoveryScheduler?.()?.triggerDiscovery?.('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', candle.close);
+        }
+        continue;
+      }
+
+      // 2. Sequential conditions check on candle close
+      if (sc.watchPlan?.observableConditions && sc.watchPlan.observableConditions.length > 0) {
+        const sortedConditions = [...sc.watchPlan.observableConditions].sort(
+          (a, b) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
+        );
+        let sequenceBlocked = false;
+        let previousStepMetTimestamp: number | undefined = undefined;
+
+        for (const cond of sortedConditions) {
+          if (cond.isMet) {
+            previousStepMetTimestamp = cond.metTimestamp;
+            continue;
+          }
+          if (sequenceBlocked) break;
+
+          // Check step timeout if previous step completed
+          if (previousStepMetTimestamp && cond.params.maxStepDurationMs) {
+            if (now - previousStepMetTimestamp > cond.params.maxStepDurationMs) {
+              const reason = `Tiempo máximo entre pasos de confirmación excedido (${Math.round((now - previousStepMetTimestamp) / 60000)}m > ${Math.round(cond.params.maxStepDurationMs / 60000)}m)`;
+              this.scenarioRegistry.transitionStatus(sc.id, 'INVALIDATED', reason, { currentPrice: candle.close });
+              if (sc.watchPlan) sc.watchPlan.status = 'INVALIDATED';
+              this.notifyCancelled(sc, reason);
+              this.emit('scenario_invalidated', { scenarioId: sc.id, reason });
+              break;
             }
-          } else if (cond.operator === 'CANDLE_CLOSE_BELOW' && cond.params.level !== undefined) {
-            if (candle.close <= cond.params.level) {
+          }
+
+          if (cond.automatable) {
+            const isMet = this.evaluateCondition(cond, candle.close, 0.001, candle, sc.discoveryTimestamp, previousStepMetTimestamp);
+            if (isMet) {
               cond.isMet = true;
-              cond.metTimestamp = Date.now();
+              cond.metTimestamp = now;
+              previousStepMetTimestamp = now;
+            } else {
+              sequenceBlocked = true;
             }
+          } else {
+            sequenceBlocked = true;
           }
         }
       }
@@ -306,12 +376,99 @@ export class AlgorithmicWatcher extends EventEmitter {
     this.evaluateTick(candle.close);
   }
 
+  public evaluateCandlePattern(pattern: string, candle: any, prevCandle?: any): boolean {
+    if (!candle) return false;
+    const o1 = candle.open;
+    const h1 = candle.high;
+    const l1 = candle.low;
+    const c1 = candle.close;
+    const range1 = Math.max(0.1, h1 - l1);
+    const body1 = Math.abs(c1 - o1);
+    const isGreen1 = c1 > o1;
+    const isRed1 = c1 < o1;
+
+    switch (pattern.toUpperCase()) {
+      case 'BEARISH_ENGULFING': {
+        if (!prevCandle) return false;
+        const o0 = prevCandle.open;
+        const c0 = prevCandle.close;
+        if (!isRed1) return false;
+        // Engulfing: open at or above previous body top, close below previous body bottom
+        const engulfsBody = o1 >= Math.min(o0, c0) * 0.9995 && c1 < Math.min(o0, c0);
+        const significantBody = body1 >= range1 * 0.35;
+        return engulfsBody && significantBody;
+      }
+      case 'BULLISH_ENGULFING': {
+        if (!prevCandle) return false;
+        const o0 = prevCandle.open;
+        const c0 = prevCandle.close;
+        if (!isGreen1) return false;
+        const engulfsBody = o1 <= Math.max(o0, c0) * 1.0005 && c1 > Math.max(o0, c0);
+        const significantBody = body1 >= range1 * 0.35;
+        return engulfsBody && significantBody;
+      }
+      case 'SHOOTING_STAR': {
+        const upperWick = h1 - Math.max(o1, c1);
+        const lowerWick = Math.min(o1, c1) - l1;
+        const upperWickRatio = upperWick / range1;
+        const lowerWickRatio = lowerWick / range1;
+        const closePosition = (c1 - l1) / range1;
+        return upperWick >= 1.8 * Math.max(0.1, body1) && upperWickRatio >= 0.45 && lowerWickRatio <= 0.30 && closePosition <= 0.45;
+      }
+      case 'PIN_BAR':
+      case 'HAMMER': {
+        const lowerWick = Math.min(o1, c1) - l1;
+        const upperWick = h1 - Math.max(o1, c1);
+        const lowerWickRatio = lowerWick / range1;
+        const upperWickRatio = upperWick / range1;
+        const closePosition = (c1 - l1) / range1;
+        return lowerWick >= 1.8 * Math.max(0.1, body1) && lowerWickRatio >= 0.45 && upperWickRatio <= 0.30 && closePosition >= 0.55;
+      }
+      case 'INVERTED_HAMMER': {
+        const upperWick = h1 - Math.max(o1, c1);
+        const lowerWick = Math.min(o1, c1) - l1;
+        return upperWick >= 1.8 * Math.max(0.1, body1) && (upperWick / range1) >= 0.45 && (lowerWick / range1) <= 0.30;
+      }
+      default:
+        return false;
+    }
+  }
+
+  public evaluateLevelRejectionWick(direction: 'BULLISH' | 'BEARISH', level: number, candle: any, minWickRatio: number = 0.25): boolean {
+    if (!candle || level === undefined) return false;
+    const range = Math.max(0.1, candle.high - candle.low);
+    if (direction === 'BEARISH') {
+      const wickedAbove = candle.high >= level * 0.9998;
+      const closedBelow = candle.close < level;
+      const upperWick = candle.high - Math.max(candle.open, candle.close);
+      return wickedAbove && closedBelow && (upperWick / range) >= minWickRatio;
+    } else {
+      const wickedBelow = candle.low <= level * 1.0002;
+      const closedAbove = candle.close > level;
+      const lowerWick = Math.min(candle.open, candle.close) - candle.low;
+      return wickedBelow && closedAbove && (lowerWick / range) >= minWickRatio;
+    }
+  }
+
+  public evaluateVolumeExpansion(candle: any, timeframe: any = '15m', threshold: number = 1.5): boolean {
+    if (!candle) return false;
+    const candleManager = this.coordinator.getCandleManager?.();
+    if (!candleManager) return true;
+    const recent = candleManager.getCandles(timeframe, 20);
+    if (!recent || recent.length < 3) return true;
+    const past = recent.slice(0, -1);
+    const avgVol = past.reduce((acc: number, c: any) => acc + (c.volume || 0), 0) / Math.max(1, past.length);
+    if (avgVol === 0) return true;
+    return (candle.volume || 0) >= avgVol * threshold;
+  }
+
   public evaluateCondition(
     cond: WatchCondition,
     currentPrice: number,
     spreadPcnt: number,
     candle?: any,
-    discoveryTimestamp?: number
+    discoveryTimestamp?: number,
+    previousStepMetTimestamp?: number
   ): boolean {
     const p = cond.params || {};
     switch (cond.operator) {
@@ -354,13 +511,108 @@ export class AlgorithmicWatcher extends EventEmitter {
         if (p.level === undefined || !candle) return false;
         return candle.close <= p.level;
       }
-      case 'STRUCTURE_BREAK': {
+      case 'CANDLE_PATTERN': {
+        const pattern = p.pattern || 'BEARISH_ENGULFING';
+        const tf = p.timeframe || '15m';
+        let evalCandle = candle;
+        let prevCandle: any = undefined;
+
+        if (!evalCandle && this.coordinator.getCandleManager) {
+          const candleManager = this.coordinator.getCandleManager();
+          const candles = candleManager?.getCandles(tf, 3);
+          if (candles && candles.length >= 2) {
+            evalCandle = candles[candles.length - 1];
+            prevCandle = candles[candles.length - 2];
+          }
+        } else if (this.coordinator.getCandleManager) {
+          const candles = this.coordinator.getCandleManager()?.getCandles(candle?.timeframe || tf, 3);
+          if (candles && candles.length >= 2) {
+            prevCandle = candles[candles.length - 2];
+          }
+        }
+
+        if (!evalCandle) return false;
+        // Never reuse stale events before discovery
+        if (discoveryTimestamp && evalCandle.timestamp && evalCandle.timestamp < discoveryTimestamp) {
+          return false;
+        }
+        if (previousStepMetTimestamp && evalCandle.timestamp && evalCandle.timestamp < previousStepMetTimestamp) {
+          return false;
+        }
+        return this.evaluateCandlePattern(pattern, evalCandle, prevCandle);
+      }
+      case 'LEVEL_REJECTION_WICK': {
+        const lvl = p.level;
+        if (lvl === undefined) return false;
+        const dir = p.direction || 'BEARISH';
+        const tf = p.timeframe || '15m';
+        let evalCandle = candle;
+        if (!evalCandle && this.coordinator.getCandleManager) {
+          evalCandle = this.coordinator.getCandleManager()?.getLastClosedCandle(tf);
+        }
+        if (!evalCandle) return false;
+        if (discoveryTimestamp && evalCandle.timestamp && evalCandle.timestamp < discoveryTimestamp) return false;
+        if (previousStepMetTimestamp && evalCandle.timestamp && evalCandle.timestamp < previousStepMetTimestamp) return false;
+        return this.evaluateLevelRejectionWick(dir, lvl, evalCandle, p.minWickRatio || 0.25);
+      }
+      case 'STRUCTURE_CLOSE': {
+        const lvl = p.level;
+        if (lvl === undefined) return false;
+        const dir = p.direction || 'BEARISH';
+        const tf = p.timeframe || '15m';
+        let evalCandle = candle;
+        if (!evalCandle && this.coordinator.getCandleManager) {
+          evalCandle = this.coordinator.getCandleManager()?.getLastClosedCandle(tf);
+        }
+        if (!evalCandle) return false;
+        if (discoveryTimestamp && evalCandle.timestamp && evalCandle.timestamp < discoveryTimestamp) return false;
+        if (previousStepMetTimestamp && evalCandle.timestamp && evalCandle.timestamp < previousStepMetTimestamp) return false;
+        return dir === 'BEARISH' ? evalCandle.close <= lvl : evalCandle.close >= lvl;
+      }
+      case 'VOLUME_EXPANSION':
+      case 'VOLUME_SPIKE': {
+        const tf = p.timeframe || '15m';
+        const threshold = p.threshold || p.volumeThresholdRvol || 1.5;
+        let evalCandle = candle;
+        if (!evalCandle && this.coordinator.getCandleManager) {
+          evalCandle = this.coordinator.getCandleManager()?.getLastClosedCandle(tf);
+        }
+        if (!evalCandle) return false;
+        if (discoveryTimestamp && evalCandle.timestamp && evalCandle.timestamp < discoveryTimestamp) return false;
+        return this.evaluateVolumeExpansion(evalCandle, tf, threshold);
+      }
+      case 'BREAK_AND_RETEST': {
+        const lvl = p.level;
+        if (lvl === undefined) return false;
+        const tol = p.tolerancePct !== undefined ? p.tolerancePct : 0.002;
+        return Math.abs(currentPrice - lvl) / lvl <= tol;
+      }
+      case 'SWEEP_AND_RECLAIM': {
+        const lvl = p.level;
+        if (lvl === undefined) return false;
+        const dir = p.direction || 'BULLISH';
+        let evalCandle = candle;
+        if (!evalCandle && this.coordinator.getCandleManager) {
+          evalCandle = this.coordinator.getCandleManager()?.getLastClosedCandle(p.timeframe || '15m');
+        }
+        if (!evalCandle) return false;
+        if (discoveryTimestamp && evalCandle.timestamp && evalCandle.timestamp < discoveryTimestamp) return false;
+        if (dir === 'BULLISH') {
+          return evalCandle.low < lvl && evalCandle.close >= lvl;
+        } else {
+          return evalCandle.high > lvl && evalCandle.close <= lvl;
+        }
+      }
+      case 'STRUCTURE_BREAK':
+      case 'BOS_CONFIRMED':
+      case 'CHOCH_CONFIRMED': {
         const tf = p.timeframe || '5m';
         const analysis = this.coordinator.getSetupEngine()?.getAnalysis(tf);
         if (!analysis?.structure?.structureBreaks) return false;
         return analysis.structure.structureBreaks.some((b: any) =>
           (!p.direction || b.direction === p.direction) &&
-          (!discoveryTimestamp || !b.timestamp || b.timestamp >= discoveryTimestamp)
+          (!discoveryTimestamp || !b.timestamp || b.timestamp >= discoveryTimestamp) &&
+          (!previousStepMetTimestamp || !b.timestamp || b.timestamp >= previousStepMetTimestamp)
         );
       }
       case 'SWEEP_CONFIRMED': {
@@ -369,7 +621,8 @@ export class AlgorithmicWatcher extends EventEmitter {
         if (!analysis?.structure?.sweeps) return false;
         return analysis.structure.sweeps.some((s: any) =>
           (!p.direction || s.direction === p.direction) &&
-          (!discoveryTimestamp || !s.timestamp || s.timestamp >= discoveryTimestamp)
+          (!discoveryTimestamp || !s.timestamp || s.timestamp >= discoveryTimestamp) &&
+          (!previousStepMetTimestamp || !s.timestamp || s.timestamp >= previousStepMetTimestamp)
         );
       }
       case 'TIME_ELAPSED': {

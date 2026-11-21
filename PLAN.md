@@ -20,7 +20,7 @@
 | **Fase 4.5** | Centro de Configuración, Riesgo y Router de IA | Gestión de capital, techos de SL, credenciales Bybit/IA, router multimodelo, auditoría | **COMPLETADA** |
 | **Fase 5A** | Inteligencia Autónoma & Descubrimiento 1:2 / 1:4 | Descubrimiento autónomo IA, registro de escenarios, Algorithmic Watcher, reevaluación | **COMPLETADA** |
 | **Fase 5B** | Validación Histórica & Backtesting Real (90 Días) | Histórico Bybit sin look-ahead, comparación 1:2 vs 1:4, Scheduler autónomo, Trading Laboratory | **COMPLETADA** |
-| **Fase 5C** | Validación en Vivo & Paper Trading Acumulado | Seguimiento de decisiones IA, resultados netos acumulados, métricas de efectividad | PENDIENTE |
+| **Fase 5C** | Validación en Vivo & Paper Trading Acumulado | Seguimiento de decisiones IA, resultados netos acumulados, métricas de efectividad | **COMPLETADA** |
 | **Fase 6** | Preparación para Ejecución Asistida | Abstracción de ejecución privada, reconciliación, kill switch avanzado (modo deshabilitado por defecto) | PENDIENTE |
 
 ---
@@ -456,3 +456,59 @@
     3. Replay determinista de ciclo completo: descubrimiento -> registro de plan -> aproximación -> activación en zona -> reevaluación dual -> validación cuantitativa -> apertura de señales paper trading prospectivas 1:2 y 1:4.
     4. Garantía de invalidación determinista y control dinámico de desviación de precio (price drift).
     5. Conclusión formal neutral generando plan de espera sin forzar señales.
+
+---
+
+## FASE 5C.2 — AUTONOMÍA REAL DE LAS IA, ANCLAJE CUANTITATIVO Y RECONCILIACIÓN (COMPLETADA)
+
+- [x] **Descubrimiento Dual e Independiente de OpenAI y Gemini**:
+  - Ambas IAs analizan sobre el mismo snapshot inmutable multitemporal (6TF) sin conocer la respuesta del otro.
+  - Registro de llamadas, tokens (input/output), modelos utilizados (`gpt-4o`, `gemini-2.5-flash`), timestamps y costos exactos.
+- [x] **Anclaje Cuantitativo Estricto de Niveles Propuestos**:
+  - `verifyProposedLevels`: Auditoría determinista de cada nivel de entrada, stop loss y target contra swings, Order Blocks, FVGs, soportes, resistencias y VWAP del snapshot.
+  - Rechazo de niveles alucinados o fuera de contexto.
+- [x] **Ruptura de Rango Neutral y Redescubrimiento**:
+  - Las observaciones `NEUTRAL` monitorean el rango sin forzar operaciones. Al confirmarse la ruptura de piso o techo, transitan a `COMPLETED` y disparan un nuevo ciclo de análisis autónomo.
+- [x] **Vigilancia Secuencial Inicial**:
+  - Implementación del orden secuencial de pasos de confirmación ($1 \to 2 \to 3$).
+
+---
+
+## FASE 5C.3 — AUTONOMÍA COMPLETA DE CONFIRMACIONES Y VALIDACIÓN PROSPECTIVA (COMPLETADA)
+
+- [x] **Eliminación de Dependencias de Confirmación Manual**:
+  - Implementación de operadores algorítmicos nativos evaluados en velas cerradas en `AlgorithmicWatcher`:
+    - `CANDLE_PATTERN`: `BEARISH_ENGULFING`, `BULLISH_ENGULFING`, `SHOOTING_STAR`, `PIN_BAR` / `HAMMER`, `INVERTED_HAMMER`.
+    - `LEVEL_REJECTION_WICK`: Rechazo de nivel con mecha (resistencia y soporte) con ratio configurable `minWickRatio`.
+    - `STRUCTURE_CLOSE`: Cierre de vela confirmado por encima/debajo de estructura.
+    - `BREAK_AND_RETEST`: Ruptura seguida de retesteo de nivel dentro de tolerancia.
+    - `SWEEP_AND_RECLAIM`: Barrido de liquidez y recuperación del nivel.
+    - `VOLUME_EXPANSION`: Desplazamiento acompañado por volumen relativo ($rvol \ge threshold$).
+    - `BOS_CONFIRMED` / `CHOCH_CONFIRMED`: Quiebre estructural confirmado en microestructura con timestamp posterior a discovery.
+  - Todos estos operadores se marcan automáticamente como `automatable: true`.
+  - Normalización inteligente de alias propuestos por las IA (`BEARISH_ENGULFING`, `SHOOTING_STAR`, etc. mapeados a `CANDLE_PATTERN`).
+  - Salvaguarda: Si una condición cualitativa no puede expresarse mediante los operadores disponibles, se mantiene `automatable: false` y solicita reevaluación por IA, manteniendo `WAITING_CONFIRMATION` sin auto-aprobar condiciones desconocidas.
+- [x] **Vigilante Algorítmico Secuencial Cronológico**:
+  - Enlace cronológico estricto ($t_k \ge t_{k-1}$).
+  - Control de tiempo máximo entre pasos con `maxStepDurationMs`: si transcurre más tiempo del permitido entre el paso anterior y el actual, el escenario se invalida automáticamente.
+  - Protección estricta contra eventos obsoletos: velas cerradas con timestamp anterior a `discoveryTimestamp` son ignoradas tajantemente.
+- [x] **Reevaluación Pre-Entrada y Conexión Automática a Paper Trading**:
+  - Al cumplirse la secuencia de confirmaciones en zona, se consulta a las IA con el snapshot actualizado y se audita cuantitativamente el R:R neto ($\ge 1:2$ y $\ge 1:4$) en `RiskCalculator`.
+  - Al validarse la entrada (`ENTRY_VALIDATED`), se abre inmediatamente la posición virtual de paper trading en `SignalStateMachine` y `MarketMonitorWorker`, registrando precio de entrada, SL, TP 1:2, TP 1:4, comisiones, MFE, MAE y seguimiento tick a tick.
+  - Cero dinero real, cero claves privadas de trading: estricta garantía `SIGNALS_ONLY`.
+- [x] **Visualización Coherente de Observaciones NEUTRAL en Dashboard**:
+  - Ocultación total de Stop Loss, Take Profit y R:R para observaciones neutrales (`N/A (Observación)` / `---`).
+  - Renderizado de límites de consolidación (`Rango [Piso - Techo]`).
+  - Banner explicativo dedicado en el detalle de escenario sin métricas comerciales.
+  - Filtros y pestañas dedicadas: `TODOS`, `TRADES (ENTRADAS)`, `OBSERVACIONES NEUTRALES`, `COMPLETADOS (RUPTURA)`, `INVALIDADOS / EXPIRADOS`.
+  - Subtítulo formal: *"Los escenarios son hipótesis de análisis técnico bajo vigilancia algorítmica 24/7, no operaciones ejecutadas."*
+- [x] **Reconciliación Contable de IA Transparente**:
+  - Desglose contable en API y Dashboard:
+    - Gasto Bruto Hoy vs Gasto Neto Hoy.
+    - Descuento Promocional Estimado (OpenAI Data Sharing) con badge `ESTIMADO PROMO`.
+    - Descuento Facturado Confirmado.
+    - Gasto Bruto Histórico vs Gasto Neto Histórico.
+    - Reservas Pendientes y Saldo Disponible Diario ($0.50 USD limit).
+    - Prohibición estricta de inflar límites presupuestarios con descuentos estimados.
+- [x] **Cobertura Completa de Pruebas**:
+  - **140 pruebas unitarias aprobadas al 100% (0 fallos)** en la suite completa de backend.

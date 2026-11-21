@@ -1790,6 +1790,35 @@ export class ApiServer {
     const openai = this.db.getAiCredentials('openai');
     const gemini = this.db.getAiCredentials('gemini');
     const hardBudgetSummary = this.coordinator.getConsensusEngine().getHardBudgetManager().getSummary();
+    const consumptionStats = this.db.getAiConsumptionStats();
+
+    const lifetimeGrossSpendUsd = Number(consumptionStats.totalGrossSpendUsd || hardBudgetSummary.effectiveMonthSpendUsd || 0);
+    const lifetimeNetSpendUsd = Number(consumptionStats.totalNetSpendUsd || hardBudgetSummary.monthSpendUsd || 0);
+    const lifetimeDiscountUsd = Number(consumptionStats.totalDiscountUsd || 0);
+
+    const todayGrossSpendUsd = Number(hardBudgetSummary.openaiFreeTier?.financialsToday?.grossSpendUsd ?? consumptionStats.grossSpendTodayUsd ?? hardBudgetSummary.todaySpendUsd);
+    const todayNetSpendUsd = Number(hardBudgetSummary.openaiFreeTier?.financialsToday?.netSpendUsd ?? consumptionStats.netSpendTodayUsd ?? hardBudgetSummary.todaySpendUsd);
+    const todayDiscountUsd = Number(hardBudgetSummary.openaiFreeTier?.financialsToday?.discountUsd ?? consumptionStats.discountTodayUsd ?? 0);
+
+    const isConfirmedBilled = hardBudgetSummary.openaiFreeTier?.verificationStatus === 'CONFIRMED_BILLED';
+    const estimatedPromoDiscountUsd = isConfirmedBilled ? 0 : todayDiscountUsd;
+    const confirmedBilledDiscountUsd = isConfirmedBilled ? todayDiscountUsd : 0;
+
+    const aiAccounting = {
+      lifetimeGrossSpendUsd,
+      lifetimeNetSpendUsd,
+      lifetimeDiscountUsd,
+      todayGrossSpendUsd,
+      todayNetSpendUsd,
+      todayDiscountUsd,
+      estimatedPromoDiscountUsd,
+      confirmedBilledDiscountUsd,
+      pendingReservationsUsd: hardBudgetSummary.reservedPendingUsd || 0,
+      dailyBudgetLimitUsd: hardBudgetSummary.dailyBudgetLimitUsd,
+      dailyRemainingBalanceUsd: hardBudgetSummary.remainingDailyUsd,
+      dailyPercentUsed: hardBudgetSummary.dailyPercentUsed,
+      freeTierStatus: hardBudgetSummary.openaiFreeTier?.verificationStatus || 'DECLARED_BY_ADMIN',
+    };
 
     const summary = {
       routerMode: routerCfg.mode,
@@ -1804,6 +1833,7 @@ export class ApiServer {
       hardBudgetStatus: hardBudgetSummary.status,
       isBudgetBlocked: hardBudgetSummary.isBlocked,
       hardBudgetSummary,
+      aiAccounting,
       capitalUsdt: riskPolicy.capitalUsdt,
       maxRiskPerTradePercentage: riskPolicy.maxRiskPerTradePercent,
       maxRiskPerTradeUsdt: riskPolicy.maxRiskPerTradeUsdt,

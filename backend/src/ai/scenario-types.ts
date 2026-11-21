@@ -52,7 +52,15 @@ export type WatchOperator =
   | 'CANDLE_CLOSE_BELOW'
   | 'SWEEP_CONFIRMED'
   | 'STRUCTURE_BREAK'
-  | 'TIME_ELAPSED';
+  | 'TIME_ELAPSED'
+  | 'CANDLE_PATTERN'
+  | 'LEVEL_REJECTION_WICK'
+  | 'STRUCTURE_CLOSE'
+  | 'BREAK_AND_RETEST'
+  | 'SWEEP_AND_RECLAIM'
+  | 'VOLUME_EXPANSION'
+  | 'BOS_CONFIRMED'
+  | 'CHOCH_CONFIRMED';
 
 export type WatchPlanStatus =
   | 'PENDING'
@@ -74,6 +82,10 @@ export interface WatchConditionParams {
   direction?: 'BULLISH' | 'BEARISH';
   comparison?: 'GREATER_THAN' | 'LESS_THAN' | 'EQUALS';
   tolerancePct?: number;
+  pattern?: 'BEARISH_ENGULFING' | 'BULLISH_ENGULFING' | 'PIN_BAR' | 'SHOOTING_STAR' | 'HAMMER' | 'INVERTED_HAMMER';
+  minWickRatio?: number;
+  volumeThresholdRvol?: number;
+  maxStepDurationMs?: number;
 }
 
 export interface WatchCondition {

@@ -1554,7 +1554,10 @@ export class DatabaseService {
       const monthRow = this.db.prepare('SELECT COALESCE(SUM(cost_usd), 0) as spend FROM ai_consumption_logs WHERE timestamp >= ?').get(startOfMonth) as any;
       const totalRow = this.db.prepare(`
         SELECT 
-          COALESCE(SUM(cost_usd), 0) as spend, 
+          COALESCE(SUM(cost_usd), 0) as spend,
+          COALESCE(SUM(cost_gross_usd), SUM(cost_usd), 0) as grossSpend,
+          COALESCE(SUM(discount_usd), 0) as discount,
+          COALESCE(SUM(cost_net_usd), SUM(cost_usd), 0) as netSpend,
           COALESCE(SUM(tokens_prompt), 0) as prompt, 
           COALESCE(SUM(tokens_completion), 0) as comp, 
           COALESCE(SUM(tokens_cached), 0) as cached, 
@@ -1579,6 +1582,9 @@ export class DatabaseService {
         last7DaysSpendUsd: Number(weekRow?.spend || 0),
         monthSpendUsd: Number(monthRow?.spend || 0),
         totalSpendUsd: Number(totalRow?.spend || 0),
+        totalGrossSpendUsd: Number(totalRow?.grossSpend || totalRow?.spend || 0),
+        totalDiscountUsd: Number(totalRow?.discount || 0),
+        totalNetSpendUsd: Number(totalRow?.netSpend || totalRow?.spend || 0),
         totalPromptTokens: Number(totalRow?.prompt || 0),
         totalCompletionTokens: Number(totalRow?.comp || 0),
         totalCachedTokens: Number(totalRow?.cached || 0),
