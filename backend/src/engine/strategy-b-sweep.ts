@@ -29,7 +29,7 @@ export class StrategyBLiquiditySweep {
 
     if (recentBullSweep) {
       // 2. Micro confirmation on 5m: Bullish CHoCH
-      const bullChoch = struct5m.structureBreaks.find(
+      const bullChoch = [...struct5m.structureBreaks].reverse().find(
         (b) => b.type === 'CHoCH' && b.direction === 'BULLISH' && b.candleIndex >= candles5m.length - 6
       );
 
@@ -90,7 +90,7 @@ export class StrategyBLiquiditySweep {
 
     if (recentBearSweep) {
       // 2. Micro confirmation on 5m: Bearish CHoCH
-      const bearChoch = struct5m.structureBreaks.find(
+      const bearChoch = [...struct5m.structureBreaks].reverse().find(
         (b) => b.type === 'CHoCH' && b.direction === 'BEARISH' && b.candleIndex >= candles5m.length - 6
       );
 
