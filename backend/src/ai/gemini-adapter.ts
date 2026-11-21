@@ -20,7 +20,7 @@ export class GeminiAdapter {
   constructor(options: GeminiAdapterOptions = {}) {
     this.apiKey = options.apiKey !== undefined ? options.apiKey : (process.env.GEMINI_API_KEY || '');
     this.model = getValidatedModel(options.model || process.env.GEMINI_MODEL || 'gemini-2.0-flash', 'GEMINI');
-    this.timeoutMs = options.timeoutMs || 8000;
+    this.timeoutMs = options.timeoutMs || 25000;
     this.mockEvaluator = options.mockEvaluator;
     if (!this.apiKey && !this.mockEvaluator) {
       this.lastAvailabilityStatus = 'UNCONFIGURED';
@@ -249,11 +249,13 @@ Responde obligatoriamente en JSON estricto.`;
 
   public async evaluateWithCustomPrompt(prompt: string): Promise<any> {
     if (!this.apiKey) return null;
+    const activeModel = getValidatedModel(this.model, 'GEMINI');
+    const effectiveTimeoutMs = Math.max(this.timeoutMs, 25000);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
     try {
       const apiKeyTrimmed = (this.apiKey || '').trim();
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(apiKeyTrimmed)}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(activeModel)}:generateContent?key=${encodeURIComponent(apiKeyTrimmed)}`;
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -270,18 +272,27 @@ Responde obligatoriamente en JSON estricto.`;
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      if (!response.ok) return null;
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error(`[Gemini evaluateWithCustomPrompt] HTTP ${response.status}: ${errText}`);
+        return null;
+      }
       const data: any = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) return null;
+      let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) {
+        console.warn(`[Gemini evaluateWithCustomPrompt] No candidates/text in response`);
+        return null;
+      }
+      text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
       const parsed = JSON.parse(text);
       const usage = data.usageMetadata || {};
       const promptTokens = usage.promptTokenCount || 0;
       const completionTokens = usage.candidatesTokenCount || 0;
-      const costUsd = calculateCallCost(this.model, promptTokens, completionTokens);
+      const costUsd = calculateCallCost(activeModel, promptTokens, completionTokens);
       return { ...parsed, costUsd, promptTokens, completionTokens };
-    } catch {
+    } catch (err: any) {
       clearTimeout(timeoutId);
+      console.error(`[Gemini evaluateWithCustomPrompt] Exception:`, err.message || err);
       return null;
     }
   }

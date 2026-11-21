@@ -23,7 +23,7 @@ export class OpenAiAdapter {
     this.apiKey = options.apiKey !== undefined ? options.apiKey : (process.env.OPENAI_API_KEY || '');
     this.model = getValidatedModel(options.model || process.env.OPENAI_MODEL || 'gpt-4o', 'OPENAI');
     this.reasoningEffort = options.reasoningEffort || 'medium';
-    this.timeoutMs = options.timeoutMs || 8000;
+    this.timeoutMs = options.timeoutMs || 25000;
     this.mockEvaluator = options.mockEvaluator;
     if (!this.apiKey && !this.mockEvaluator) {
       this.lastAvailabilityStatus = 'UNCONFIGURED';
@@ -261,8 +261,10 @@ Reglas imperativas:
 
   public async evaluateWithCustomPrompt(prompt: string): Promise<any> {
     if (!this.apiKey) return null;
+    const activeModel = getValidatedModel(this.model, 'OPENAI');
+    const effectiveTimeoutMs = Math.max(this.timeoutMs, 25000);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
     try {
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -271,7 +273,7 @@ Reglas imperativas:
           Authorization: `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({
-          model: this.model,
+          model: activeModel,
           messages: [
             { role: 'system', content: 'Eres un analista de trading cuantitativo para NanoLabs. Responde estrictamente en JSON válido.' },
             { role: 'user', content: prompt },
@@ -282,18 +284,27 @@ Reglas imperativas:
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      if (!response.ok) return null;
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error(`[OpenAI evaluateWithCustomPrompt] HTTP ${response.status}: ${errText}`);
+        return null;
+      }
       const data: any = await response.json();
-      const content = data.choices?.[0]?.message?.content;
-      if (!content) return null;
+      let content = data.choices?.[0]?.message?.content;
+      if (!content) {
+        console.warn(`[OpenAI evaluateWithCustomPrompt] No choices/content in response`);
+        return null;
+      }
+      content = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
       const parsed = JSON.parse(content);
       const usage = data.usage || {};
       const promptTokens = usage.prompt_tokens || 0;
       const completionTokens = usage.completion_tokens || 0;
-      const costUsd = calculateCallCost(this.model, promptTokens, completionTokens);
+      const costUsd = calculateCallCost(activeModel, promptTokens, completionTokens);
       return { ...parsed, costUsd, promptTokens, completionTokens };
-    } catch {
+    } catch (err: any) {
       clearTimeout(timeoutId);
+      console.error(`[OpenAI evaluateWithCustomPrompt] Exception:`, err.message || err);
       return null;
     }
   }
