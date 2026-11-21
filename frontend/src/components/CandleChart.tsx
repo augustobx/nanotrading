@@ -29,6 +29,8 @@ export interface SwingData {
   price: number;
   type: 'HIGH' | 'LOW';
   label?: string;
+  confirmedAtTimestamp?: number;
+  operationalAvailableTimestamp?: number;
 }
 
 export interface BreakData {
@@ -96,8 +98,8 @@ export function CandleChart({
   const [hoverData, setHoverData] = useState<CandleData | null>(null);
 
   // Layer toggles
-  const [showSwings, setShowSwings] = useState(true);
-  const [showBreaks, setShowBreaks] = useState(true);
+  const [showSwings, setShowSwings] = useState(false);
+  const [showBreaks, setShowBreaks] = useState(false);
   const [showFvg, setShowFvg] = useState(true);
   const [showSetups, setShowSetups] = useState(true);
 
@@ -352,7 +354,10 @@ export function CandleChart({
 
     // Setups Lines (Entry, SL, TP 1:4)
     if (showSetups && setups && setups.length > 0) {
-      const activeSetup = setups[setups.length - 1];
+      const activeSetup = [...setups].reverse().find(s =>
+        (s.status === 'QUALIFIED' || s.status === 'PENDING_CONFIRMATION') &&
+        Number.isFinite(s.riskReward?.netRR) && s.riskReward!.netRR >= 4); 
+      if (activeSetup) {
       try {
         const entryLine = candleSeriesRef.current.createPriceLine({
           price: activeSetup.entryPrice,
@@ -378,11 +383,12 @@ export function CandleChart({
           lineWidth: 2,
           lineStyle: 0,
           axisLabelVisible: true,
-          title: `TP [1:4] ($${activeSetup.takeProfitPrice})`,
+          title: `TP (${activeSetup.riskReward!.netRR.toFixed(2)}R neto)`,
         });
 
         priceLinesRef.current.push(entryLine, slLine, tpLine);
       } catch {}
+      }
     }
   }, [fvgs, setups, showFvg, showSetups]);
 
