@@ -1534,6 +1534,28 @@ export class DatabaseService {
     }
   }
 
+  /**
+   * Durable gross spend for HARD budget limits (never subtract estimated
+   * promotion discounts). Filter names are fixed SQL, values parameterized.
+   */
+  public getAiGrossSpendSince(since: number, criteria: {
+    provider?: string; model?: string; task?: string;
+  } = {}): number {
+    if (this.isClosed) throw new Error('No se puede verificar presupuesto con base de datos cerrada');
+    const clauses = ['timestamp >= ?'];
+    const values: Array<string | number> = [since];
+    if (criteria.provider) { clauses.push('provider = ?'); values.push(criteria.provider); }
+    if (criteria.model) { clauses.push('model = ?'); values.push(criteria.model); }
+    if (criteria.task) { clauses.push('task = ?'); values.push(criteria.task); }
+    const row = this.db.prepare(`
+      SELECT COALESCE(SUM(CASE
+        WHEN cost_gross_usd > 0 THEN cost_gross_usd
+        ELSE cost_usd END), 0) AS gross
+      FROM ai_consumption_logs WHERE ${clauses.join(' AND ')}
+    `).get(...values) as { gross: number };
+    return Number(row?.gross || 0);
+  }
+
   public getAiConsumptionStats(): any {
     if (this.isClosed) return {};
     try {

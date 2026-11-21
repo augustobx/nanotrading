@@ -525,6 +525,31 @@ export class HardBudgetManager {
     return parseFloat(sum.toFixed(6));
   }
 
+  /** Conservative gross spend, including previously discounted records. */
+  private grossSpentSince(since: number, criteria: {
+    provider?: string; model?: string; task?: string;
+  } = {}): number {
+    if (this.db) return this.db.getAiGrossSpendSince(since, criteria);
+    return this.usageRecords.filter((r) => r.timestamp >= since &&
+      (!criteria.provider || r.provider === criteria.provider) &&
+      (!criteria.model || r.model === criteria.model) &&
+      (!criteria.task || r.task === criteria.task))
+      .reduce((sum, r) => sum + r.costUsd, 0);
+  }
+
+  /** Pending reservations for a single provider/model/task. */
+  private pendingFor(criteria: { provider?: string; model?: string; task?: string }): number {
+    let pending = 0;
+    for (const res of this.reservations.values()) {
+      if (res.status !== 'PENDING') continue;
+      if (criteria.provider && res.provider !== criteria.provider) continue;
+      if (criteria.model && res.model !== criteria.model) continue;
+      if (criteria.task && res.task !== criteria.task) continue;
+      pending += res.amountUsd;
+    }
+    return pending;
+  }
+
   /**
    * Pre-call Atomic Budget Reservation.
    * Calculates worst-case cost and checks all limits (daily, monthly, provider, model, task).
@@ -558,25 +583,18 @@ export class HardBudgetManager {
     const estimatedGrossCost = params.maxEstimatedCostUsd ?? this.estimateWorstCaseCost(params.model);
     const estimatedTokens = params.estimatedTokens ?? 4000;
 
-    // Check if eligible for verified OpenAI free tier
-    let isEstimatedFree = false;
-    const group = this.getFreeTierGroup(params.model);
-    if (
-      params.provider === 'OPENAI' &&
-      group !== 'NONE' &&
-      this.config.openaiFreeTier?.enabled &&
-      this.config.openaiFreeTier?.verified &&
-      this.config.openaiFreeTier?.verificationStatus === 'CONFIRMED_BILLED'
-    ) {
-      const remainingFree = this.getRemainingFreeTokens(group, true);
-      if (estimatedTokens <= remainingFree) {
-        isEstimatedFree = true;
-      }
+    // Hard limits always reserve FULL GROSS exposure, even when the provider
+    // may later apply a promotion. Administrative claims are not invoices.
+    const reservationAmount = estimatedGrossCost;
+    const isEstimatedFree = false;
+    if (!Number.isFinite(reservationAmount) || reservationAmount <= 0 ||
+        !Number.isFinite(estimatedTokens) || estimatedTokens <= 0) {
+      return {
+        allowed: false, status: 'AI_BUDGET_EXCEEDED',
+        reason: 'No se puede reservar una llamada con costo/tokens estimados inválidos',
+        violatedLimit: 'UNKNOWN_COST',
+      };
     }
-
-    // Regla Inviolable: Si NO es gratuito (o no está verificado, o excede el cupo),
-    // se debe reservar el 100% del costo bruto contra los límites monetarios.
-    const reservationAmount = isEstimatedFree ? 0 : estimatedGrossCost;
 
     // 1. Max cost per request limit (checked against gross cost if paid)
     if (!isEstimatedFree && estimatedGrossCost > this.config.maxCostPerRequestUsd) {
@@ -588,8 +606,13 @@ export class HardBudgetManager {
       };
     }
 
-    const currentToday = this.getTodaySpendUsd();
-    const currentMonth = this.getMonthSpendUsd();
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const monthStart = new Date();
+    monthStart.setUTCDate(1);
+    monthStart.setUTCHours(0, 0, 0, 0);
+    const currentToday = this.grossSpentSince(todayStart.getTime());
+    const currentMonth = this.grossSpentSince(monthStart.getTime());
     const currentPending = this.getReservedPendingUsd();
 
     // 2. Global daily limit
@@ -621,10 +644,10 @@ export class HardBudgetManager {
       if (provLimit !== undefined) {
         const startOfDay = new Date();
         startOfDay.setUTCHours(0, 0, 0, 0);
-        const provTodaySpend = this.usageRecords
-          .filter((r) => r.timestamp >= startOfDay.getTime() && r.provider === params.provider)
-          .reduce((acc, r) => acc + r.costUsd, 0);
-        if (provTodaySpend + reservationAmount > provLimit) {
+        const provTodaySpend = this.grossSpentSince(startOfDay.getTime(),
+          { provider: params.provider });
+        if (provTodaySpend + this.pendingFor({ provider: params.provider }) +
+            reservationAmount > provLimit) {
           return {
             allowed: false,
             status: 'AI_BUDGET_EXCEEDED',
@@ -640,10 +663,10 @@ export class HardBudgetManager {
       const modelLimit = this.config.modelLimitsUsd[params.model];
       const startOfDay = new Date();
       startOfDay.setUTCHours(0, 0, 0, 0);
-      const modelTodaySpend = this.usageRecords
-        .filter((r) => r.timestamp >= startOfDay.getTime() && r.model === params.model)
-        .reduce((acc, r) => acc + r.costUsd, 0);
-      if (modelTodaySpend + reservationAmount > modelLimit) {
+      const modelTodaySpend = this.grossSpentSince(startOfDay.getTime(),
+        { model: params.model });
+      if (modelTodaySpend + this.pendingFor({ model: params.model }) +
+          reservationAmount > modelLimit) {
         return {
           allowed: false,
           status: 'AI_BUDGET_EXCEEDED',
@@ -658,10 +681,10 @@ export class HardBudgetManager {
       const taskLimit = this.config.taskLimitsUsd[params.task];
       const startOfDay = new Date();
       startOfDay.setUTCHours(0, 0, 0, 0);
-      const taskTodaySpend = this.usageRecords
-        .filter((r) => r.timestamp >= startOfDay.getTime() && r.task === params.task)
-        .reduce((acc, r) => acc + r.costUsd, 0);
-      if (taskTodaySpend + reservationAmount > taskLimit) {
+      const taskTodaySpend = this.grossSpentSince(startOfDay.getTime(),
+        { task: params.task });
+      if (taskTodaySpend + this.pendingFor({ task: params.task }) +
+          reservationAmount > taskLimit) {
         return {
           allowed: false,
           status: 'AI_BUDGET_EXCEEDED',
