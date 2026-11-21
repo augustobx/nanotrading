@@ -119,7 +119,10 @@ export const config: AppConfig = {
     maxDailyLossPercent: parseFloat(process.env.MAX_DAILY_LOSS_PERCENT || '1.5'),
     minRrRatio: parseFloat(process.env.MIN_RR_RATIO || '4.0'),
     adminApiKey: process.env.ADMIN_API_KEY || (isTestEnv ? 'test_admin_secure_key_123' : ''),
-    corsAllowedOrigins: (process.env.CORS_ALLOWED_ORIGINS || '*').split(',').map((s) => s.trim()),
+    corsAllowedOrigins: (process.env.CORS_ALLOWED_ORIGINS ||
+      (isTestEnv ? 'http://localhost:3000,http://127.0.0.1:3000' :
+       'https://nanotrading.nanoapps.ar,http://localhost:3000,http://127.0.0.1:3000'))
+      .split(',').map((s) => s.trim()).filter((s) => s !== '*'),
     rateLimitPerMinute: parseInt(process.env.RATE_LIMIT_PER_MINUTE || '10', 10),
   },
   ai: {
