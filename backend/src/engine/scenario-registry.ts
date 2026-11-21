@@ -27,9 +27,11 @@ export class ScenarioRegistry extends EventEmitter {
         'IN_ZONE',
         'REVALIDATION_REQUESTED',
         'AI_REVALIDATING',
+        'WAITING_CONFIRMATION',
+        'NO_TRADE_OBSERVATION',
         'ENTRY_VALIDATED',
       ],
-      limit: 100,
+      // Read all nonterminal scenarios, not only the newest 100.
     });
     for (const sc of active) {
       this.scenarios.set(sc.id, sc);
@@ -122,7 +124,7 @@ export class ScenarioRegistry extends EventEmitter {
     }
 
     // If final status, remove from active map
-    if (['INVALIDATED', 'EXPIRED', 'CANCELLED', 'SIGNAL_GENERATED'].includes(toStatus)) {
+    if (['INVALIDATED', 'EXPIRED', 'CANCELLED', 'COMPLETED', 'DISCARDED', 'SIGNAL_GENERATED'].includes(toStatus)) {
       this.scenarios.delete(id);
     } else {
       this.scenarios.set(id, updated);

@@ -147,22 +147,9 @@ export function verifyProposedLevels(
     }
   }
 
-  // If no anchors exist (e.g. mock test environment), allow with default level
+  // No observed market anchor => no verified structural trade level.
   if (anchors.length === 0) {
-    return {
-      isValid: true,
-      verifiedLevels: [
-        {
-          price: targetEntry,
-          timeframe: candidate.timeframe || '15m',
-          levelType: 'DYNAMIC_INDICATOR',
-          evidence: 'Nivel preliminar derivado cuantitativo',
-          distancePct: Number(distPct.toFixed(2)),
-          isVerified: true,
-          relevanceToHorizon: 'HIGH',
-        },
-      ],
-    };
+    return { isValid: false, rejectionReason: 'No hay niveles de mercado verificables', verifiedLevels: [] };
   }
 
   // Verify proposed candidate levels
@@ -172,12 +159,10 @@ export function verifyProposedLevels(
   if (candidate.stopLossPrice || candidate.structuralStopLoss) {
     levelsToTest.push({ price: Number(candidate.stopLossPrice || candidate.structuralStopLoss), role: 'stopLoss' });
   }
-  if (candidate.candidateTarget12) {
-    levelsToTest.push({ price: Number(candidate.candidateTarget12), role: 'target12' });
-  }
-  if (candidate.candidateTarget14) {
-    levelsToTest.push({ price: Number(candidate.candidateTarget14), role: 'target14' });
-  }
+  const candidateTp12 = candidate.target12Price || candidate.candidateTarget12;
+  const candidateTp14 = candidate.target14Price || candidate.candidateTarget14;
+  if (candidateTp12) levelsToTest.push({ price: Number(candidateTp12), role: 'target12' });
+  if (candidateTp14) levelsToTest.push({ price: Number(candidateTp14), role: 'target14' });
 
   const verifiedLevels: ObservableLevel[] = [];
 
@@ -219,8 +204,10 @@ export function verifyProposedLevels(
     }
   }
 
+  const allLevelsVerified = verifiedLevels.length > 0 && verifiedLevels.every((level) => level.isVerified);
   return {
-    isValid: true,
+    isValid: allLevelsVerified,
+    rejectionReason: allLevelsVerified ? undefined : 'Uno o más niveles no coinciden con estructura de mercado confirmada',
     verifiedLevels,
   };
 }
@@ -867,19 +854,16 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     const riskDistance = Math.abs(targetEntry - stopLoss);
     if (riskDistance <= 0) return null;
 
-    if (!target12) {
-      target12 = direction === 'LONG' ? targetEntry + riskDistance * 2.05 : targetEntry - riskDistance * 2.05;
-    }
-    if (!target14) {
-      target14 = direction === 'LONG' ? targetEntry + riskDistance * 4.10 : targetEntry - riskDistance * 4.10;
-    }
+    // A qualifying mathematical R:R is not itself a structural target.
+    // Never fabricate 2.05R / 4.10R price levels when neither analyst supplied one.
+    if (!target12 && !target14) return null;
 
     // Run strict quantitative net R:R calculation
     const dualCalc = RiskCalculator.calculateDualTargets({
       direction,
       entryPrice: targetEntry,
       stopLossPrice: stopLoss,
-      candidateTargets: [target12, target14],
+      candidateTargets: [target12, target14].filter((n): n is number => typeof n === 'number'),
       explicit12Price: target12,
       explicit14Price: target14,
       accountBalance: 10000,
