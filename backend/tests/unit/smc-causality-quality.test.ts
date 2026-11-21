@@ -163,3 +163,23 @@ test('SMC PR4: unordered candles replay deterministically, without duplicates', 
   const expected = SmcDetector.analyzeStructure(seq, '15m');
   assert.deepEqual(SmcDetector.analyzeStructure(duplicates, '15m'), expected);
 });
+
+test('SMC PR4: missing 15m interval cannot create an FVG across data gap', () => {
+  const candles = [
+    bar(0, 60000, 60020, 59980, 60000),
+    bar(1, 60000, 60240, 59995, 60200),
+    bar(3, 60210, 60300, 60090, 60290),
+  ];
+  assert.equal(SmcDetector.detectFVGs(candles, '15m').length, 0);
+});
+
+test('SMC PR4: a gap invalidates an old FVG until REST backfill repairs the history', () => {
+  const base = [
+    bar(0, 60000, 60020, 59980, 60000),
+    bar(1, 60000, 60240, 59995, 60200),
+    bar(2, 60210, 60300, 60090, 60290),
+  ];
+  assert.equal(SmcDetector.detectFVGs(base, '15m')[0].status, 'ACTIVE');
+  const missing = [...base, bar(4, 60290, 60310, 60270, 60300)];
+  assert.equal(SmcDetector.detectFVGs(missing, '15m')[0].status, 'INVALIDATED');
+});
