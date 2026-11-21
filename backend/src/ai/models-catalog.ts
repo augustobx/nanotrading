@@ -195,7 +195,7 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
   },
 
   // ---------------------------------------------------------------------------
-  // Google Gemini Models (Official Google GenAI API - Verified as of 2025)
+  // Google Gemini Models (Official Google GenAI API - Verified as of 2025/2026)
   // ---------------------------------------------------------------------------
   'gemini-2.0-flash': {
     id: 'gemini-2.0-flash',
@@ -205,11 +205,25 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
     pricingEffectiveDate: '2025-02-01',
     estimatedInputCostPerMillion: 0.10,
     estimatedOutputCostPerMillion: 0.40,
-    costNote: 'Tarifa oficial Google AI Studio / Vertex AI. Optimizado para latencia ultrabaja y JSON estructurado.',
+    costNote: 'Tarifa oficial Google AI Studio. Optimizado para latencia ultrabaja, visión y JSON estructurado. Modelo recomendado por defecto.',
     maxTokens: 4096,
     temperature: 0.1,
     supportsStructuredJson: true,
     isDefault: true,
+  },
+  'gemini-2.0-flash-lite': {
+    id: 'gemini-2.0-flash-lite',
+    provider: 'GEMINI',
+    displayName: 'Google Gemini 2.0 Flash Lite',
+    status: 'ACTIVE',
+    pricingEffectiveDate: '2025-02-01',
+    estimatedInputCostPerMillion: 0.075,
+    estimatedOutputCostPerMillion: 0.30,
+    costNote: 'Tarifa oficial Google AI Studio. Modelo ultra-rápido y económico para auditorías continuas y monitoreo de alta frecuencia.',
+    maxTokens: 4096,
+    temperature: 0.1,
+    supportsStructuredJson: true,
+    isDefault: false,
   },
   'gemini-1.5-flash': {
     id: 'gemini-1.5-flash',
@@ -219,7 +233,21 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
     pricingEffectiveDate: '2024-09-24',
     estimatedInputCostPerMillion: 0.075,
     estimatedOutputCostPerMillion: 0.30,
-    costNote: 'Tarifa oficial Google AI Studio para contextos <= 128k tokens.',
+    costNote: 'Tarifa oficial Google AI Studio para contextos <= 128k tokens. Gran estabilidad operativa y ventana de contexto de 1M tokens.',
+    maxTokens: 4096,
+    temperature: 0.1,
+    supportsStructuredJson: true,
+    isDefault: false,
+  },
+  'gemini-1.5-flash-8b': {
+    id: 'gemini-1.5-flash-8b',
+    provider: 'GEMINI',
+    displayName: 'Google Gemini 1.5 Flash 8B',
+    status: 'ACTIVE',
+    pricingEffectiveDate: '2024-10-01',
+    estimatedInputCostPerMillion: 0.0375,
+    estimatedOutputCostPerMillion: 0.15,
+    costNote: 'Tarifa oficial Google AI Studio para modelo ligero de 8 mil millones de parámetros. Máxima economía para filtrado preliminar.',
     maxTokens: 4096,
     temperature: 0.1,
     supportsStructuredJson: true,
@@ -233,7 +261,21 @@ export const AI_MODELS_CATALOG: Record<string, ModelMetadata> = {
     pricingEffectiveDate: '2024-09-24',
     estimatedInputCostPerMillion: 1.25,
     estimatedOutputCostPerMillion: 5.00,
-    costNote: 'Tarifa oficial Google AI Studio para análisis de razonamiento profundo.',
+    costNote: 'Tarifa oficial Google AI Studio para análisis de razonamiento profundo y correlación multitemporal compleja (hasta 2M tokens).',
+    maxTokens: 8192,
+    temperature: 0.1,
+    supportsStructuredJson: true,
+    isDefault: false,
+  },
+  'gemini-2.0-pro-exp-02-05': {
+    id: 'gemini-2.0-pro-exp-02-05',
+    provider: 'GEMINI',
+    displayName: 'Google Gemini 2.0 Pro Experimental',
+    status: 'ACTIVE',
+    pricingEffectiveDate: '2025-02-05',
+    estimatedInputCostPerMillion: 1.25,
+    estimatedOutputCostPerMillion: 5.00,
+    costNote: 'Modelo de razonamiento experimental avanzado de Google DeepMind. Máxima capacidad de análisis cuantitativo.',
     maxTokens: 8192,
     temperature: 0.1,
     supportsStructuredJson: true,
@@ -285,6 +327,10 @@ export function isModelCompatible(modelId: string): { compatible: boolean; reaso
  * Validates requested model and falls back safely to default active model if incompatible
  */
 export function getValidatedModel(requestedModel: string, provider: AiProvider): string {
+  // Handle alias redirects for nonexistent/preview models to stable equivalents
+  if (requestedModel === 'gemini-2.5-flash') return 'gemini-2.0-flash';
+  if (requestedModel === 'gemini-2.5-pro') return 'gemini-1.5-pro';
+
   const check = isModelCompatible(requestedModel);
   if (check.compatible) {
     return requestedModel;

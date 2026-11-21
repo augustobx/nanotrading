@@ -83,15 +83,15 @@ export const DEFAULT_ROUTER_CONFIG: RouterConfig = {
   },
   manualByTask: {
     SETUP_EVALUATION: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.0-flash' },
-    RISK_AUDIT: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.5-flash' },
+    RISK_AUDIT: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.0-flash' },
     CONSENSUS_REVIEW: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.0-flash' },
     ALERT_EXPLANATION: { openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.0-flash' },
     MARKET_SUMMARY: { openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.0-flash' },
     TECHNICAL_CONTEXT: { openaiModel: 'gpt-4o-mini', geminiModel: 'gemini-2.0-flash' },
-    POST_TRADE_ANALYSIS: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.5-pro' },
+    POST_TRADE_ANALYSIS: { openaiModel: 'gpt-4o', geminiModel: 'gemini-1.5-pro' },
     MARKET_DISCOVERY: { openaiModel: 'gpt-6-luna', geminiModel: 'gemini-2.0-flash' },
     SCENARIO_GENERATION: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.0-flash' },
-    SCENARIO_REVALIDATION: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.5-flash' },
+    SCENARIO_REVALIDATION: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.0-flash' },
     ENTRY_CONFIRMATION: { openaiModel: 'gpt-4o', geminiModel: 'gemini-2.0-flash' },
     POST_SIGNAL_REVIEW: { openaiModel: 'gpt-5.4-mini', geminiModel: 'gemini-2.0-flash' },
   },
@@ -293,8 +293,8 @@ export class AiModelRouter {
         };
       } else {
         return {
-          model: isCriticalEvaluation ? 'gemini-2.5-pro' : 'gemini-2.5-flash',
-          reason: `Perfil de máxima calidad: asignando ${isCriticalEvaluation ? 'gemini-2.5-pro' : 'gemini-2.5-flash'} para auditoría crítica de alta profundidad.`,
+          model: isCriticalEvaluation ? 'gemini-1.5-pro' : 'gemini-2.0-flash',
+          reason: `Perfil de máxima calidad: asignando ${isCriticalEvaluation ? 'gemini-1.5-pro' : 'gemini-2.0-flash'} para auditoría crítica de alta profundidad.`,
         };
       }
     }

@@ -134,10 +134,14 @@ Responde obligatoriamente en JSON estricto.`;
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
+      const apiKeyTrimmed = (this.apiKey || '').trim();
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(apiKeyTrimmed)}`;
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKeyTrimmed,
+        },
         body: JSON.stringify({
           contents: [
             {
@@ -204,10 +208,12 @@ Responde obligatoriamente en JSON estricto.`;
       const errMsg = String(err?.message || err);
       if (err.name === 'AbortError' || /abort|timeout/i.test(errMsg)) {
         availabilityStatus = 'TIMEOUT';
-      } else if (/401|403|API_KEY_INVALID|invalid_api_key|unauthorized/i.test(errMsg)) {
+      } else if (/401|403|API_KEY_INVALID|invalid_api_key|api key not valid|key not valid|unauthorized/i.test(errMsg)) {
         availabilityStatus = 'AUTH_ERROR';
       } else if (/429|RESOURCE_EXHAUSTED|quota|rate_limit/i.test(errMsg)) {
         availabilityStatus = 'RATE_LIMIT_EXCEEDED';
+      } else if (/404|not found|models\//i.test(errMsg)) {
+        availabilityStatus = 'MODEL_NOT_FOUND';
       } else if (/json|syntaxerror|unexpected token/i.test(errMsg)) {
         availabilityStatus = 'INVALID_RESPONSE';
       }
@@ -246,10 +252,14 @@ Responde obligatoriamente en JSON estricto.`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
+      const apiKeyTrimmed = (this.apiKey || '').trim();
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(apiKeyTrimmed)}`;
       const response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKeyTrimmed,
+        },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {

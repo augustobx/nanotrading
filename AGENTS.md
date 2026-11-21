@@ -83,7 +83,7 @@ Este documento define la arquitectura, normas operativas, estándares de código
 ---
 
 ## 5. Arquitectura de IAs y Consenso
-- **Proveedores**: OpenAI API (`gpt-4o` / compatible estructurado) y Google Gemini API (`gemini-2.5-flash` / `gemini-1.5-pro`).
+- **Proveedores**: OpenAI API (`gpt-4o` / compatible estructurado) y Google Gemini API (`gemini-2.0-flash` / `gemini-1.5-pro` / `gemini-2.0-flash-lite`).
 - **Evaluación Independiente**: Ambas IAs reciben exactamente el mismo payload JSON con el snapshot del mercado (indicadores, klines resumidas, contexto multitemporal, setup detectado, niveles de SL/TP calculados).
 - **Consenso Determinista**:
   - Si ambas IAs emiten `APPROVE` y el motor técnico confirma que el precio no se ha desplazado más allá de la tolerancia $\to$ estado `ENTRY_VALIDATED`.

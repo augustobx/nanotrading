@@ -16,7 +16,8 @@ export type AiAvailabilityStatus =
   | 'AUTH_ERROR'
   | 'RATE_LIMIT_EXCEEDED'
   | 'PROVIDER_ERROR'
-  | 'INVALID_RESPONSE';
+  | 'INVALID_RESPONSE'
+  | 'MODEL_NOT_FOUND';
 
 export type AiEvaluationMode =
   | 'DUAL_AI'

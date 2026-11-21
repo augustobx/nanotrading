@@ -57,7 +57,7 @@
 ## FASE 3: Integración de IA & Motor de Consenso
 - [x] **Catálogo de Modelos (`models-catalog.ts`)**:
   - OpenAI: `gpt-4o`, `gpt-4o-mini`, `o3-mini`.
-  - Google Gemini: `gemini-2.5-flash`, `gemini-1.5-pro`, `gemini-2.0-flash`.
+  - Google Gemini: `gemini-2.0-flash`, `gemini-2.0-flash-lite`, `gemini-1.5-flash`, `gemini-1.5-pro`.
   - Costos por 1M de tokens (input/output) y parámetros de inferencia determinista (`temperature: 0.1`).
 - [x] **Snapshot Inmutable (`snapshot-builder.ts`)**:
   - Hash criptográfico SHA-256 (`snapshotId`), timestamp UTC, ticker Bybit, libro L2 top 5, contexto multitemporal (6 temporalidades), setup candidato y estado de integridad de datos.

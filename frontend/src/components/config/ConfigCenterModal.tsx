@@ -175,6 +175,8 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
   const [geminiKey, setGeminiKey] = useState<string>('');
   const [geminiModel, setGeminiModel] = useState<string>('gemini-2.0-flash');
   const [showGeminiKey, setShowGeminiKey] = useState<boolean>(false);
+  const [geminiAvailableModels, setGeminiAvailableModels] = useState<any[]>([]);
+  const [loadingGeminiModels, setLoadingGeminiModels] = useState<boolean>(false);
   const [savingAiCreds, setSavingAiCreds] = useState<boolean>(false);
   const [aiCredsMsg, setAiCredsMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
@@ -401,9 +403,32 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
       const res = await fetch(`${getApiBaseUrl()}/api/v1/config/ai/credentials`, { credentials: 'include' });
       if (res.ok) {
         const json = await res.json();
-        if (json.success) setAiCreds(json.data);
+        if (json.success) {
+          setAiCreds(json.data);
+          if (json.data?.gemini?.model) {
+            setGeminiModel(json.data.gemini.model);
+          }
+          if (json.data?.openai?.model) {
+            setOpenaiModel(json.data.openai.model);
+          }
+        }
       }
     } catch {}
+    fetchGeminiModels();
+  };
+
+  const fetchGeminiModels = async () => {
+    setLoadingGeminiModels(true);
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/ai/gemini/models`, { credentials: 'include' });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.models && Array.isArray(json.models)) {
+          setGeminiAvailableModels(json.models);
+        }
+      }
+    } catch {}
+    setLoadingGeminiModels(false);
   };
 
   const fetchRouterConfig = async () => {
@@ -2052,7 +2077,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                         <input
                           type={showGeminiKey ? 'text' : 'password'}
                           disabled={!isAdminAuthenticated}
-                          placeholder={aiCreds?.gemini?.configured ? '••••••••••••••••' : 'Ingrese clave Google GenAI'}
+                          placeholder={aiCreds?.gemini?.configured ? '••••••••••••••••' : 'AIzaSy... (Google AI Studio)'}
                           value={geminiKey}
                           onChange={(e) => setGeminiKey(e.target.value)}
                           className="w-full bg-[#0a0d14] border border-[#21283b] rounded px-3 py-1.5 text-xs text-white font-mono pr-10 focus:border-orange-500 focus:outline-none"
@@ -2065,19 +2090,61 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                           {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                         </button>
                       </div>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Las claves oficiales provienen de Google AI Studio y comienzan con <code className="text-amber-400 font-mono">AIzaSy...</code>. Obtenga su clave gratuita en{' '}
+                        <a
+                          href="https://aistudio.google.com/app/apikey"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-orange-400 hover:underline"
+                        >
+                          aistudio.google.com/app/apikey
+                        </a>.
+                      </p>
+                      {geminiKey && !geminiKey.startsWith('AIzaSy') && (
+                        <div className="mt-1 text-[11px] text-amber-300 bg-amber-950/40 border border-amber-800/50 rounded px-2.5 py-1 flex items-center gap-1.5">
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-400" />
+                          <span>Atención: La clave ingresada no parece comenzar con 'AIzaSy...'. Verifique que sea de Google AI Studio.</span>
+                        </div>
+                      )}
                     </div>
 
                     <div>
-                      <label className="block text-xs text-slate-400 mb-1">Modelo Seleccionado para Auditoría Crítica</label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs text-slate-400">Modelo Seleccionado para Auditoría Crítica</label>
+                        <button
+                          type="button"
+                          onClick={fetchGeminiModels}
+                          disabled={loadingGeminiModels}
+                          className="text-[11px] text-orange-400 hover:text-orange-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                          title="Consultar en vivo los modelos habilitados para su API Key en Google AI Studio"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${loadingGeminiModels ? 'animate-spin' : ''}`} />
+                          <span>{loadingGeminiModels ? 'Sincronizando...' : 'Sincronizar Modelos'}</span>
+                        </button>
+                      </div>
                       <select
                         disabled={!isAdminAuthenticated}
                         value={geminiModel}
                         onChange={(e) => setGeminiModel(e.target.value)}
                         className="w-full bg-[#0a0d14] border border-[#21283b] rounded px-3 py-1.5 text-xs text-white font-mono focus:border-orange-500 focus:outline-none"
                       >
-                        <option value="gemini-2.0-flash">Google Gemini 2.0 Flash (Recomendado - Baja latencia)</option>
-                        <option value="gemini-1.5-flash">Google Gemini 1.5 Flash</option>
-                        <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (Razonamiento profundo)</option>
+                        {geminiAvailableModels.length > 0 ? (
+                          geminiAvailableModels.map((m: any) => (
+                            <option key={m.id} value={m.id}>
+                              {m.displayName || m.id} {m.isDefault ? '⭐ (Recomendado)' : m.isRecommended ? '✓' : ''}
+                            </option>
+                          ))
+                        ) : (
+                          <>
+                            <option value="gemini-2.0-flash">Google Gemini 2.0 Flash (Recomendado - Baja latencia)</option>
+                            <option value="gemini-2.0-flash-lite">Google Gemini 2.0 Flash Lite (Alta frecuencia / Económico)</option>
+                            <option value="gemini-1.5-flash">Google Gemini 1.5 Flash (Multimodal 1M tokens)</option>
+                            <option value="gemini-1.5-flash-8b">Google Gemini 1.5 Flash 8B (Ultra Ligero)</option>
+                            <option value="gemini-1.5-pro">Google Gemini 1.5 Pro (Razonamiento profundo 2M tokens)</option>
+                            <option value="gemini-2.0-pro-exp-02-05">Google Gemini 2.0 Pro Experimental</option>
+                          </>
+                        )}
                       </select>
                     </div>
 
@@ -2114,10 +2181,24 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                             <div>Respuesta: <strong className="text-white">{aiTestResults.gemini.parsedResponse?.status || 'OK'}</strong></div>
                           </div>
                         ) : (
-                          <div className="text-xs text-red-300 space-y-1 pt-1">
-                            <div><strong>Error de la API:</strong> {aiTestResults.gemini.error}</div>
+                          <div className="text-xs text-red-300 space-y-1.5 pt-1">
+                            <div><strong>Diagnóstico:</strong> {aiTestResults.gemini.error}</div>
                             {aiTestResults.gemini.errorCode && (
-                              <div className="font-mono text-[10px] text-red-400">Código: {aiTestResults.gemini.errorCode}</div>
+                              <div className="font-mono text-[10px] text-red-400">Código de API: {aiTestResults.gemini.errorCode}</div>
+                            )}
+                            {aiTestResults.gemini.status === 'AUTH_ERROR' && (
+                              <div className="p-2 rounded bg-red-900/40 border border-red-700/50 text-[11px] text-red-200">
+                                💡 <strong>Instrucción para resolver:</strong> Genere una nueva clave en{' '}
+                                <a
+                                  href="https://aistudio.google.com/app/apikey"
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="underline text-orange-400 font-semibold"
+                                >
+                                  Google AI Studio
+                                </a>{' '}
+                                (formato <code className="text-amber-300">AIzaSy...</code> de 39 caracteres), péguela en el campo de arriba y haga clic en <strong>Guardar Credenciales Gemini</strong>.
+                              </div>
                             )}
                           </div>
                         )}

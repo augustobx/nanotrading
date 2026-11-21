@@ -7,7 +7,7 @@ import { Timeframe, SUPPORTED_TIMEFRAMES } from '../types/market.js';
 import { authManager } from '../security/auth-manager.js';
 import { maskSecret, encryptSecret, decryptSecret } from '../security/encryption.js';
 import { RiskCalculator } from '../engine/risk-calculator.js';
-import { AI_MODELS_CATALOG, calculateCallCost } from '../ai/models-catalog.js';
+import { AI_MODELS_CATALOG, calculateCallCost, getValidatedModel } from '../ai/models-catalog.js';
 import { BybitRestClient } from '../bybit/bybit-rest-client.js';
 import { HistoricalDataManager } from '../backtest/historical-data-manager.js';
 import { BacktestEngine } from '../backtest/backtest-engine.js';
@@ -184,6 +184,8 @@ export class ApiServer {
         this.sendAiCredentials(res);
       } else if (pathname === '/api/v1/config/ai/credentials' && req.method === 'POST') {
         this.handleSaveAiCredentials(req, res);
+      } else if (pathname === '/api/v1/config/ai/gemini/models' && req.method === 'GET') {
+        this.handleGetGeminiModels(req, res);
       } else if (pathname.startsWith('/api/v1/config/ai/credentials/') && req.method === 'DELETE') {
         const provider = pathname.split('/')[5];
         this.handleDeleteAiCredentials(req, res, provider);
@@ -997,20 +999,25 @@ export class ApiServer {
         res.end(JSON.stringify({ error: 'Provider debe ser "openai" o "gemini"' }));
         return;
       }
-      const encryptedSecret = encryptSecret(apiKey);
-      const apiKeyMasked = maskSecret(apiKey);
+      const trimmedApiKey = apiKey.trim();
+      const encryptedSecret = encryptSecret(trimmedApiKey);
+      const apiKeyMasked = maskSecret(trimmedApiKey);
+      const validatedModel = getValidatedModel(
+        model || (providerNorm === 'openai' ? 'gpt-4o' : 'gemini-2.0-flash'),
+        providerNorm.toUpperCase() as any
+      );
       this.db.saveAiCredentials({
         provider: providerNorm,
         apiKeyMasked,
         encryptedSecret,
-        model: model || (providerNorm === 'openai' ? 'gpt-4o' : 'gemini-2.5-flash'),
+        model: validatedModel,
         status: 'CONFIGURED',
       });
       // Dynamically update adapter credentials in memory immediately
       this.coordinator.getConsensusEngine().updateAiCredentials(
         providerNorm as 'openai' | 'gemini',
-        apiKey.trim(),
-        model,
+        trimmedApiKey,
+        validatedModel,
         payload.reasoningEffort
       );
       this.db.logConfigAudit({
@@ -1049,6 +1056,121 @@ export class ApiServer {
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, message: `Credenciales de ${providerNorm} eliminadas correctamente` }));
+  }
+
+  private async handleGetGeminiModels(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
+    let apiKey = (url.searchParams.get('apiKey') || '').trim();
+
+    if (!apiKey) {
+      const saved = this.db.getAiCredentials('gemini');
+      if (saved?.encryptedSecret) {
+        try {
+          apiKey = decryptSecret(saved.encryptedSecret) || '';
+        } catch { }
+      }
+      if (!apiKey) {
+        apiKey = config.ai.geminiApiKey || '';
+      }
+    }
+    apiKey = apiKey.trim();
+
+    const staticModels = Object.values(AI_MODELS_CATALOG)
+      .filter((m) => m.provider === 'GEMINI' && m.status === 'ACTIVE')
+      .map((m) => ({
+        id: m.id,
+        name: `models/${m.id}`,
+        displayName: m.displayName,
+        description: m.costNote,
+        isDefault: m.isDefault,
+        isRecommended: m.id === 'gemini-2.0-flash' || m.id === 'gemini-1.5-flash' || m.id === 'gemini-1.5-pro',
+      }));
+
+    if (!apiKey) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, live: false, models: staticModels }));
+      return;
+    }
+
+    try {
+      const googleRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+        {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+
+      if (!googleRes.ok) {
+        const errText = await googleRes.text();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            success: false,
+            live: false,
+            error: `Google API (${googleRes.status}): ${errText.slice(0, 150)}`,
+            models: staticModels,
+          })
+        );
+        return;
+      }
+
+      const data: any = await googleRes.json();
+      const rawModels: any[] = data.models || [];
+      const contentModels = rawModels
+        .filter((m) => {
+          const methods: string[] = m.supportedGenerationMethods || [];
+          return methods.includes('generateContent');
+        })
+        .map((m) => {
+          const id = m.name.replace(/^models\//, '');
+          const catalogEntry = AI_MODELS_CATALOG[id];
+          return {
+            id,
+            name: m.name,
+            displayName: m.displayName || catalogEntry?.displayName || id,
+            description: m.description || catalogEntry?.costNote || '',
+            inputTokenLimit: m.inputTokenLimit,
+            outputTokenLimit: m.outputTokenLimit,
+            isDefault: id === 'gemini-2.0-flash',
+            isRecommended:
+              id === 'gemini-2.0-flash' ||
+              id === 'gemini-2.0-flash-lite' ||
+              id === 'gemini-1.5-flash' ||
+              id === 'gemini-1.5-pro',
+          };
+        })
+        .sort((a, b) => {
+          if (a.isDefault) return -1;
+          if (b.isDefault) return 1;
+          if (a.isRecommended && !b.isRecommended) return -1;
+          if (!a.isRecommended && b.isRecommended) return 1;
+          return a.displayName.localeCompare(b.displayName);
+        });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          success: true,
+          live: true,
+          models: contentModels.length > 0 ? contentModels : staticModels,
+        })
+      );
+    } catch (err: any) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          success: false,
+          live: false,
+          error: err.message || 'Error consultando modelos a Google',
+          models: staticModels,
+        })
+      );
+    }
   }
 
   private async handleTestAiConnection(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -1210,7 +1332,8 @@ export class ApiServer {
           }
         } else {
           // Gemini
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelToTest}:generateContent?key=${apiKeyToUse}`;
+          const trimmedKey = apiKeyToUse.trim();
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelToTest)}:generateContent?key=${encodeURIComponent(trimmedKey)}`;
           const geminiReqBody = {
             contents: [
               {
@@ -1226,7 +1349,10 @@ export class ApiServer {
 
           const apiRes = await fetch(url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': trimmedKey,
+            },
             body: JSON.stringify(geminiReqBody),
             signal: AbortSignal.timeout(15000),
           });
@@ -1240,13 +1366,30 @@ export class ApiServer {
 
           if (!apiRes.ok) {
             errorCode = jsonRes.error?.status || `HTTP_${apiRes.status}`;
-            testError = jsonRes.error?.message || `Error HTTP ${apiRes.status}: ${rawText.slice(0, 150)}`;
-            providerStatus =
-              (apiRes.status === 400 && testError?.includes('API_KEY_INVALID')) || apiRes.status === 401 || apiRes.status === 403
-                ? 'AUTH_ERROR'
-                : apiRes.status === 429
-                  ? 'RATE_LIMITED'
-                  : 'UNAVAILABLE';
+            const rawMsg = jsonRes.error?.message || `Error HTTP ${apiRes.status}: ${rawText.slice(0, 150)}`;
+            const errorReason = jsonRes.error?.details?.[0]?.reason;
+            const isAuthError =
+              apiRes.status === 401 ||
+              apiRes.status === 403 ||
+              (apiRes.status === 400 && (
+                errorReason === 'API_KEY_INVALID' ||
+                /api key not valid|key not valid|api_key_invalid/i.test(rawMsg) ||
+                /api key not valid|key not valid/i.test(rawText)
+              ));
+
+            if (isAuthError) {
+              providerStatus = 'AUTH_ERROR';
+              testError = `Clave de API inválida (${rawMsg}). Verifique que la clave de Gemini provenga de Google AI Studio (https://aistudio.google.com/app/apikey) y comience con 'AIzaSy...'.`;
+            } else if (apiRes.status === 404 || /not found|models\//i.test(rawMsg)) {
+              providerStatus = 'MODEL_NOT_FOUND';
+              testError = `El modelo '${modelToTest}' no está disponible o no existe en la API de Gemini (${rawMsg}). Modelos recomendados: gemini-2.0-flash, gemini-1.5-flash, gemini-1.5-pro.`;
+            } else if (apiRes.status === 429 || /quota|resource_exhausted/i.test(rawMsg)) {
+              providerStatus = 'RATE_LIMITED';
+              testError = `Límite de cuota alcanzado en Google Gemini (${rawMsg}).`;
+            } else {
+              providerStatus = 'UNAVAILABLE';
+              testError = rawMsg;
+            }
           } else {
             tokensPrompt = jsonRes.usageMetadata?.promptTokenCount || 0;
             tokensCompletion = jsonRes.usageMetadata?.candidatesTokenCount || 0;
