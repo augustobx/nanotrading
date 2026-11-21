@@ -277,6 +277,7 @@ Responde estrictamente en JSON:
         this.hardBudgetManager.reconcileReservation(reservation.id, {
           provider: reservation.provider, model: result?.model || reservation.model,
           task: 'SCENARIO_REVALIDATION',
+          analysisId: revalId,
           promptTokens: result?.promptTokens || 0,
           completionTokens: result?.completionTokens || 0,
           ...(result ? { costUsd: result.costUsd } : {}),

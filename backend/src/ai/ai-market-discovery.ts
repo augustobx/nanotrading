@@ -632,6 +632,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
             provider: reservation.provider,
             model: result?.model || reservation.model,
             task: 'MARKET_DISCOVERY',
+            analysisId: snapshotId,
             promptTokens: result?.promptTokens || 0,
             completionTokens: result?.completionTokens || 0,
             ...(result ? { costUsd: result.costUsd } : {}),

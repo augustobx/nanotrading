@@ -786,6 +786,7 @@ export class HardBudgetManager {
       costUsd?: number;
       status?: 'SUCCESS' | 'UNCERTAIN_TIMEOUT' | 'ERROR';
       latencyMs?: number;
+      analysisId?: string;
     }
   ): {
     grossCostUsd: number;
@@ -862,7 +863,8 @@ export class HardBudgetManager {
         freeTierGroup: benefit.group,
         isFreeTier: isFree,
         discountStatus: benefit.discountStatus,
-      }
+      },
+      usage.analysisId
     );
 
     return {
@@ -934,7 +936,8 @@ export class HardBudgetManager {
       freeTierGroup?: FreeTierGroup;
       isFreeTier?: boolean;
       discountStatus?: FreeTierDiscountStatus;
-    }
+    },
+    analysisId?: string
   ): void {
     const roundedCost = parseFloat(costUsd.toFixed(6));
     const grossCost = freeTierMeta?.grossCostUsd !== undefined ? freeTierMeta.grossCostUsd : roundedCost;
@@ -983,8 +986,12 @@ export class HardBudgetManager {
           discountStatus,
           latencyMs,
           status,
+          analysisId,
         });
-      } catch {}
+      } catch (err: any) {
+        this.triggerBlock('ERROR_CRITICO: No se pudo registrar consumo IA en la base de datos');
+        throw new Error('Hard Budget: no se pudo persistir el consumo de IA (fail closed)');
+      }
     }
 
     this.evaluateAlerts();

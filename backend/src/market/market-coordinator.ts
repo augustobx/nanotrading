@@ -243,6 +243,15 @@ export class MarketCoordinator extends EventEmitter {
     // Forward setup engine events and trigger dual AI consensus evaluation
     this.setupEngine.on('setup_detected', async (setup) => {
       this.emit('setup_detected', setup);
+      // Never run the old dual-AI setup evaluator in parallel with autonomous
+      // AI discovery. The strategies remain zero-cost technical signals; only
+      // one autonomous discovery/revalidation pipeline may incur AI expenses.
+      if (this.discoveryScheduler?.getConfig().enabled) {
+        this.db.logEvent('INFO', 'Coordinator',
+          'Technical setup observed; paid legacy AI evaluator disabled while autonomous discovery is enabled',
+          { setupId: setup.id });
+        return;
+      }
       try {
         const signal = await this.consensusEngine.evaluateSetup(setup);
         this.emit('signal_evaluated', signal);

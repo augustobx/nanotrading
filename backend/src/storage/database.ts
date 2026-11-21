@@ -1461,7 +1461,7 @@ export class DatabaseService {
     status: string;
     analysisId?: string;
   }): void {
-    if (this.isClosed) return;
+    if (this.isClosed) throw new Error('AI_LEDGER_CLOSED');
     try {
       const id = log.id || `cons_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const costGross = log.costGrossUsd !== undefined ? log.costGrossUsd : log.costUsd;
@@ -1498,7 +1498,9 @@ export class DatabaseService {
         log.status || 'SUCCESS',
         log.analysisId || null
       );
-    } catch {}
+    } catch (err: any) {
+      throw new Error(`AI_LEDGER_WRITE_FAILED: ${err?.message || 'unknown'}`);
+    }
   }
 
   public getAiConsumptionLogs(limit: number = 100, provider?: string): any[] {
