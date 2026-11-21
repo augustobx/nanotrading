@@ -844,7 +844,9 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     let targetEntry = Number(candidate.targetEntry || (entryMin + entryMax) / 2);
     const stopLoss = Number(candidate.stopLossPrice || candidate.structuralStopLoss);
 
-    if (isNaN(entryMin) || isNaN(entryMax) || isNaN(targetEntry) || isNaN(stopLoss)) return null;
+    if (![currentPrice, entryMin, entryMax, targetEntry, stopLoss].every(
+      (n) => Number.isFinite(n) && n > 0
+    ) || entryMin > entryMax || targetEntry < entryMin || targetEntry > entryMax) return null;
 
     // Validate sanity of prices (no fake values, no inverted order)
     if (direction === 'LONG') {
@@ -865,6 +867,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     // A qualifying mathematical R:R is not itself a structural target.
     // Never fabricate 2.05R / 4.10R price levels when neither analyst supplied one.
     if (!target12 && !target14) return null;
+    if ((target12 !== undefined && (!Number.isFinite(target12) || target12 <= 0)) ||
+        (target14 !== undefined && (!Number.isFinite(target14) || target14 <= 0))) return null;
 
     // Run strict quantitative net R:R calculation
     const dualCalc = RiskCalculator.calculateDualTargets({

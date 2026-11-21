@@ -1560,10 +1560,10 @@ export class DatabaseService {
     if (this.isClosed) return {};
     try {
       const now = Date.now();
-      const startOfToday = new Date().setHours(0, 0, 0, 0);
+      const startOfToday = new Date().setUTCHours(0, 0, 0, 0);
       const startOfYesterday = startOfToday - 86400000;
       const startOfLast7Days = now - 7 * 86400000;
-      const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+      const startOfMonth = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1);
 
       const todayRow = this.db.prepare(`
         SELECT 
