@@ -1,0 +1,34 @@
+name: Audit guardrails
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches:
+      - 'fix/audit-hardening-*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: test
+      CONFIG_MASTER_KEY: audit-ci-only-ephemeral-key-never-use-in-production-2026
+      ADMIN_API_KEY: test_admin_secure_key_123
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install pinned dependencies
+        run: npm ci
+      - name: Build backend
+        run: npm run build:backend
+      - name: Build frontend
+        run: npm run build:frontend
+      - name: Unit and regression tests
+        run: npm run test:backend
