@@ -67,7 +67,10 @@ export class AiEntryRevalidation extends EventEmitter {
     revalidationRecord: ScenarioRevalidationRecord;
     reason?: string;
   }> {
-    const revalId = `reval_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    const now = Date.now();
+    const revalId = `reval_${now}_${crypto.randomBytes(3).toString('hex')}`;
+    // Durable cross-restart cooldown: even denied/uncertain checks are attempts.
+    this.scenarioRegistry.updateMetrics(scenario.id, { lastRevalidationTimestamp: now });
     this.scenarioRegistry.transitionStatus(scenario.id, 'AI_REVALIDATING', 'Ejecutando reevaluación inteligente con IA en zona', { currentPrice });
 
     const activePlan = watchPlan || scenario.watchPlan;
@@ -115,14 +118,16 @@ export class AiEntryRevalidation extends EventEmitter {
         id: revalId,
         scenarioId: scenario.id,
         timestamp: Date.now(),
-        consensusVerdict: 'DISCARDED',
+        consensusVerdict: 'WAITING_CONDITIONS',
         priceAtRevalidation: currentPrice,
         details: { invalidationTrigger: reason, costUsd: 0, watchPlanId: activePlan?.id },
       };
       this.db.saveScenarioRevalidation(record);
-      const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'CANCELLED', reason, { currentPrice });
-      if (activePlan) activePlan.status = 'CANCELLED';
-      return { consensus: 'DISCARDED', scenario: updated || scenario, revalidationRecord: record, reason };
+      // A budget stop is not evidence that market structure is invalid.
+      // Retain the live watch for a later safe, budget-authorized confirmation.
+      const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'WAITING_CONFIRMATION', reason, { currentPrice });
+      if (activePlan) activePlan.status = 'ACTIVE';
+      return { consensus: 'WAITING_CONDITIONS', scenario: updated || scenario, revalidationRecord: record, reason };
     }
 
     // 3. Fallback Mode determination
@@ -259,12 +264,12 @@ Responde estrictamente en JSON:
       if (openaiRes) {
         openaiVerdict = ['APPROVE', 'WAIT', 'REJECT'].includes(openaiRes.verdict) ? openaiRes.verdict : 'WAIT';
         openaiReason = openaiRes.reasoning || '';
-        totalCostUsd += openaiRes.costUsd || 0.0005;
+        totalCostUsd += openaiRes.costUsd ?? 0;
       }
       if (geminiRes) {
         geminiVerdict = ['APPROVE', 'WAIT', 'REJECT'].includes(geminiRes.verdict) ? geminiRes.verdict : 'WAIT';
         geminiReason = geminiRes.reasoning || '';
-        totalCostUsd += geminiRes.costUsd || 0.0005;
+        totalCostUsd += geminiRes.costUsd ?? 0;
       }
     } finally {
       for (const reservation of reservations) {
@@ -272,6 +277,7 @@ Responde estrictamente en JSON:
         this.hardBudgetManager.reconcileReservation(reservation.id, {
           provider: reservation.provider, model: result?.model || reservation.model,
           task: 'SCENARIO_REVALIDATION',
+          analysisId: revalId,
           promptTokens: result?.promptTokens || 0,
           completionTokens: result?.completionTokens || 0,
           ...(result ? { costUsd: result.costUsd } : {}),

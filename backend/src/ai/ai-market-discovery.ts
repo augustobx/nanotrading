@@ -515,8 +515,10 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         // If no candidate scenarios were passed and bias is NEUTRAL
         if (registered.length === 0 && candidateScenarios.length === 0) {
           const neutralScenario = this.buildNeutralObservationScenario(summary, snapshotId, 0.001, mockResult.openai, mockResult.gemini, triggerSource);
-          this.scenarioRegistry.registerScenario(neutralScenario);
-          registered.push(neutralScenario);
+          if (neutralScenario) {
+            this.scenarioRegistry.registerScenario(neutralScenario);
+            registered.push(neutralScenario);
+          }
         }
 
         summary.lastDiscoveryTimestamp = Date.now();
@@ -630,6 +632,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
             provider: reservation.provider,
             model: result?.model || reservation.model,
             task: 'MARKET_DISCOVERY',
+            analysisId: snapshotId,
             promptTokens: result?.promptTokens || 0,
             completionTokens: result?.completionTokens || 0,
             ...(result ? { costUsd: result.costUsd } : {}),
@@ -639,11 +642,20 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         }
       }
 
+      if (!openaiDiscovery && !geminiDiscovery) {
+        // Do NOT manufacture a neutral "AI consensus" when both API calls
+        // failed or timed out. Budget reservations were already reconciled.
+        return {
+          scenarios: [], summary, aiCostUsd: totalCostUsd,
+          skippedReason: 'AI_PROVIDERS_FAILED_NO_VALID_ANALYSIS',
+        };
+      }
+
       // If no directional scenarios were proposed or if AI concluded NEUTRAL,
       // register a formal NEUTRAL observation scenario (preserving "no operar es una decisión válida")
       if (discoveredScenarios.length === 0) {
         const neutralScenario = this.buildNeutralObservationScenario(summary, snapshotId, totalCostUsd, openaiDiscovery, geminiDiscovery, triggerSource);
-        discoveredScenarios.push(neutralScenario);
+        if (neutralScenario) discoveredScenarios.push(neutralScenario);
       }
 
       // Register all valid scenarios in registry
@@ -669,13 +681,34 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     openaiDiscovery?: any,
     geminiDiscovery?: any,
     triggerSource: TriggerSource = 'AUTOMATIC_SCHEDULER'
-  ): Scenario {
+  ): Scenario | null {
     const openaiConfigured = this.openaiAdapter.isConfigured();
     const geminiConfigured = this.geminiAdapter.isConfigured();
 
     const tf15 = (summary.timeframes as any)?.['15m'];
-    const rangeHigh = tf15?.activeSwings?.high?.price || Number((summary.currentPrice * 1.006).toFixed(1));
-    const rangeLow = tf15?.activeSwings?.low?.price || Number((summary.currentPrice * 0.994).toFixed(1));
+    const structuralHigh = tf15?.activeSwings?.high?.price;
+    const structuralLow = tf15?.activeSwings?.low?.price;
+    let rangeHigh = structuralHigh;
+    let rangeLow = structuralLow;
+
+    if (!Number.isFinite(rangeHigh) || !Number.isFinite(rangeLow) || rangeHigh <= rangeLow) {
+      // Fallback is OBSERVED OHLC, never a synthetic +/-0.6% price estimate.
+      const closed = (this.coordinator.getCandleManager?.()?.getCandles('15m', 30) || [])
+        .filter((c: any) => c.confirmed === true && Number.isFinite(c.high) &&
+          Number.isFinite(c.low) && c.high >= c.low && c.low > 0)
+        .slice(-20);
+      if (closed.length < 10) return null;
+      rangeHigh = Math.max(...closed.map((c: any) => c.high));
+      rangeLow = Math.min(...closed.map((c: any) => c.low));
+    }
+
+    // Degenerate ranges are not actionable observations and must not be
+    // persisted as "2 verified levels" or trigger further paid discovery.
+    if (!Number.isFinite(rangeHigh) || !Number.isFinite(rangeLow) ||
+        rangeLow <= 0 || rangeHigh <= rangeLow ||
+        (rangeHigh - rangeLow) / summary.currentPrice < 0.0005) {
+      return null;
+    }
 
     const rawJustification =
       openaiDiscovery?.marketAnalysis?.noTradeJustification ||
@@ -749,10 +782,11 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       triggerSource,
       timeframe: '15m',
       structureType: 'RANGING_NO_CONFLUENCE',
-      proposedBy: 'CONSENSUS',
+      proposedBy: openaiDiscovery && geminiDiscovery ? 'CONSENSUS' :
+        openaiDiscovery ? 'OPENAI' : 'GEMINI',
       modelsUsed: [
-        ...(openaiConfigured ? [this.openaiAdapter.getModel()] : []),
-        ...(geminiConfigured ? [this.geminiAdapter.getModel()] : []),
+        ...(openaiDiscovery ? [openaiDiscovery.model || this.openaiAdapter.getModel()] : []),
+        ...(geminiDiscovery ? [geminiDiscovery.model || this.geminiAdapter.getModel()] : []),
       ],
       snapshotId,
       discoveryTimestamp: Date.now(),
@@ -870,7 +904,10 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     if ((target12 !== undefined && (!Number.isFinite(target12) || target12 <= 0)) ||
         (target14 !== undefined && (!Number.isFinite(target14) || target14 <= 0))) return null;
 
-    // Run strict quantitative net R:R calculation
+    // Use the actual administrative account policy and the live spread for
+    // discovery previews. Hard-coded 10k/1% creates misleading RR/position sizing.
+    const policy = this.coordinator.getRiskPolicyManager?.()?.getPolicy?.();
+    const ticker = this.coordinator.getMarketState?.()?.ticker;
     const dualCalc = RiskCalculator.calculateDualTargets({
       direction,
       entryPrice: targetEntry,
@@ -878,8 +915,11 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       candidateTargets: [target12, target14].filter((n): n is number => typeof n === 'number'),
       explicit12Price: target12,
       explicit14Price: target14,
-      accountBalance: 10000,
-      riskPercent: 1.0,
+      accountBalance: policy?.capitalUsdt ?? 10000,
+      riskPercent: policy?.maxRiskPerTradePercent ?? 0.5,
+      spread: ticker && Number.isFinite(ticker.spread) && ticker.spread >= 0 ? ticker.spread : 0.1,
+      minRRShort: policy?.minRRShort ?? 2.0,
+      minRRExtended: policy?.minRRExtended ?? 4.0,
       feeStructure: {
         makerFeeRate: 0.00020,
         takerFeeRate: 0.00055,
@@ -889,6 +929,14 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     if (dualCalc.qualifiedMode === 'NONE') {
       // Rejects scenarios that don't reach net 1:2
       return null;
+    }
+
+    if (policy) {
+      const valid12 = policy.rrTargetMode !== 'RR_1_4' && dualCalc.calculation12?.isValid &&
+        dualCalc.calculation12.netRR >= Math.max(policy.minNetRR, policy.minRRShort);
+      const valid14 = policy.rrTargetMode !== 'RR_1_2' && dualCalc.calculation14?.isValid &&
+        dualCalc.calculation14.netRR >= Math.max(policy.minNetRR, policy.minRRExtended);
+      if (!valid12 && !valid14) return null;
     }
 
     const id = candidate.id || `scen_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;

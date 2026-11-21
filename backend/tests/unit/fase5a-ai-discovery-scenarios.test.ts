@@ -562,9 +562,11 @@ test('Fase 5A - Hard Budget Limit: blocks Discovery and Revalidation when limit 
     h.scenarioRegistry.registerScenario(sc);
 
     const revalResult = await h.revalidation.revalidate(sc, 64100);
-    assert.strictEqual(revalResult.consensus, 'DISCARDED');
-    assert.strictEqual(revalResult.scenario.status, 'CANCELLED');
+    assert.strictEqual(revalResult.consensus, 'WAITING_CONDITIONS');
+    assert.strictEqual(revalResult.scenario.status, 'WAITING_CONFIRMATION');
     assert.ok(revalResult.reason?.includes('Límite de presupuesto'));
+    assert.ok(h.scenarioRegistry.getScenario(sc.id)?.lastRevalidationTimestamp,
+      'Last review must survive a restart to avoid repeated IA costs');
   } finally {
     h.close();
   }

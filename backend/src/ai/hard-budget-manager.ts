@@ -786,6 +786,7 @@ export class HardBudgetManager {
       costUsd?: number;
       status?: 'SUCCESS' | 'UNCERTAIN_TIMEOUT' | 'ERROR';
       latencyMs?: number;
+      analysisId?: string;
     }
   ): {
     grossCostUsd: number;
@@ -803,7 +804,8 @@ export class HardBudgetManager {
     const completionTokens = usage.completionTokens || 0;
     const cachedTokens = usage.cachedTokens || 0;
     const reasoningTokens = usage.reasoningTokens || 0;
-    const totalTokens = promptTokens + completionTokens + reasoningTokens;
+    // Completion count already includes OpenAI reasoning usage.
+    const totalTokens = promptTokens + Math.max(completionTokens, reasoningTokens);
 
     let grossCost: number;
     if (usage.status === 'UNCERTAIN_TIMEOUT') {
@@ -861,7 +863,8 @@ export class HardBudgetManager {
         freeTierGroup: benefit.group,
         isFreeTier: isFree,
         discountStatus: benefit.discountStatus,
-      }
+      },
+      usage.analysisId
     );
 
     return {
@@ -933,7 +936,8 @@ export class HardBudgetManager {
       freeTierGroup?: FreeTierGroup;
       isFreeTier?: boolean;
       discountStatus?: FreeTierDiscountStatus;
-    }
+    },
+    analysisId?: string
   ): void {
     const roundedCost = parseFloat(costUsd.toFixed(6));
     const grossCost = freeTierMeta?.grossCostUsd !== undefined ? freeTierMeta.grossCostUsd : roundedCost;
@@ -982,8 +986,12 @@ export class HardBudgetManager {
           discountStatus,
           latencyMs,
           status,
+          analysisId,
         });
-      } catch {}
+      } catch (err: any) {
+        this.triggerBlock('ERROR_CRITICO: No se pudo registrar consumo IA en la base de datos');
+        throw new Error('Hard Budget: no se pudo persistir el consumo de IA (fail closed)');
+      }
     }
 
     this.evaluateAlerts();
@@ -1006,7 +1014,8 @@ export class HardBudgetManager {
    * "Las notificaciones de presupuesto no deben consumir tokens de IA."
    */
   private evaluateAlerts(): void {
-    const todaySpend = this.getTodaySpendUsd();
+    const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+    const todaySpend = this.grossSpentSince(dayStart.getTime()) + this.getReservedPendingUsd();
     const percent = (todaySpend / this.config.dailyBudgetLimitUsd) * 100;
 
     // Check 100% suspension
@@ -1043,6 +1052,15 @@ export class HardBudgetManager {
     this.config.blockedReason = reason;
     this.config.updatedAt = Date.now();
     this.triggeredThresholds.add(100);
+    try {
+      this.db?.saveHardBudgetConfig(this.config);
+    } catch {
+      // Keep in-memory hard stop active; a persistent ledger outage is fatal
+      // to safe AI budgeting and must never be silently interpreted as $0.
+      this.notifiers.logAudit?.('AI_BUDGET', 'HARD_STOP_PERSISTENCE_FAILED', {
+        reasonCode: 'AI_LEDGER_WRITE_FAILED',
+      });
+    }
 
     const title = '🛑 SUSPENSIÓN DE LLAMADAS PAGAS DE IA (Límite 100%)';
     const msg = `Se ha alcanzado el límite presupuestario de IA: ${reason}. Las llamadas pagadas quedan suspendidas (AI_BUDGET_EXCEEDED). El monitoreo de mercado Bybit y las estrategias cuantitativas SMC continúan al 100% sin interrupciones.`;
@@ -1058,7 +1076,8 @@ export class HardBudgetManager {
   }
 
   public reactivateBudget(updatedBy: string = 'admin', newDailyLimit?: number): void {
-    const currentToday = this.getTodaySpendUsd() + this.getReservedPendingUsd();
+    const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+    const currentToday = this.grossSpentSince(dayStart.getTime()) + this.getReservedPendingUsd();
     if (currentToday >= this.config.dailyBudgetLimitUsd) {
       if (newDailyLimit === undefined || newDailyLimit <= currentToday) {
         throw new Error(
@@ -1112,12 +1131,8 @@ export class HardBudgetManager {
       updatedAt: Date.now(),
     };
 
-    // If new limit is higher than current spend and isBlocked was not explicitly set, unblock
-    const today = this.getTodaySpendUsd();
-    if (updates.isBlocked === undefined && this.config.isBlocked && today < this.config.dailyBudgetLimitUsd) {
-      this.config.isBlocked = false;
-      this.config.blockedReason = null;
-    }
+    // Editing limits is not permission to clear an administrative hard stop.
+    // Use the explicit, authenticated reactivateBudget operation instead.
 
     this.notifiers.logAudit?.('AI_BUDGET', 'UPDATE_CONFIG', {
       updates,
@@ -1228,7 +1243,7 @@ export class HardBudgetManager {
         completionTokens,
         cachedTokens,
         reasoningTokens,
-        totalTokens: promptTokens + completionTokens + reasoningTokens,
+        totalTokens: promptTokens + Math.max(completionTokens, reasoningTokens),
       },
       openaiFreeTier: {
         enabled: !!cfg?.enabled,
@@ -1259,7 +1274,7 @@ export class HardBudgetManager {
           discountUsd: parseFloat(discountToday.toFixed(4)),
           netSpendUsd: parseFloat(netSpendToday.toFixed(4)),
           freeTokensConsumed: freeTokensToday,
-          paidTokensConsumed: Math.max(0, (promptTokens + completionTokens + reasoningTokens) - freeTokensToday),
+          paidTokensConsumed: Math.max(0, (promptTokens + Math.max(completionTokens, reasoningTokens)) - freeTokensToday),
           verifiedBilledSpendUsd: cfg?.verificationStatus === 'CONFIRMED_BILLED' ? parseFloat(netSpendToday.toFixed(4)) : null,
           discountStatus: cfg?.verificationStatus === 'CONFIRMED_BILLED' ? 'CONFIRMED_BILLED' : cfg?.verificationStatus === 'DECLARED_BY_ADMIN' ? 'ESTIMATED' : 'NONE',
         },

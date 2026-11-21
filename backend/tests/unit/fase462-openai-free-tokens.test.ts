@@ -457,14 +457,14 @@ describe('Fase 4.6.2 — Corrección Oficial de Tokens Gratuitos de OpenAI (Data
     });
     assert.strictEqual(budget.getRemainingFreeTokens('SMALL'), 1_700_000);
 
-    // 3. o4-mini consume 700k tokens (incluyendo reasoning tokens)
+    // 3. o4-mini consume 700k tokens; completionTokens includes reasoning tokens
     const res3 = budget.reserveBudget({ provider: 'OPENAI', model: 'o4-mini', task: 'RISK_AUDIT', estimatedTokens: 700_000 });
     budget.reconcileReservation(res3.reservationId!, {
       provider: 'OPENAI',
       model: 'o4-mini',
       task: 'RISK_AUDIT',
       promptTokens: 400_000,
-      completionTokens: 100_000,
+      completionTokens: 300_000, // 100k visibles + 200k razonamiento, total reportado por la API
       reasoningTokens: 200_000,
     });
     // 2.5M - 500k - 300k - 700k = 1.0M restantes

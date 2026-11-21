@@ -24,6 +24,10 @@ export interface SchedulerStatus {
   nextScheduledRun: number | null;
   totalAutonomousRuns: number;
   totalScenariosFound: number;
+  activeWatchedScenarios: number;
+  discoveryInFlight: boolean;
+  providerFailureBackoffUntil: number | null;
+  consecutiveProviderFailures: number;
 }
 
 export class AutonomousDiscoveryScheduler extends EventEmitter {
@@ -40,6 +44,46 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
   private lastTriggerPrice: number | null = null;
   private totalAutonomousRuns: number = 0;
   private totalScenariosFound: number = 0;
+  private discoveryInFlight = false;
+  private lastStructuralFingerprint: string | null = null;
+  private consecutiveProviderFailures = 0;
+  private providerFailureBackoffUntil: number | null = null;
+  private readonly candleHandler = (candle: Candle): void => this.handleCandleClosed(candle);
+  private readonly stateHandler = (state: any): void => {
+    const price = state.ticker?.lastPrice;
+    if (Number.isFinite(price) && price > 0) this.handlePriceUpdate(price);
+  };
+
+  /**
+   * Existing durable scenarios are the source of truth: a scheduled clock
+   * must not spend tokens to rediscover zones already watched by the local
+   * watcher. Manual discovery remains available, under the hard budget.
+   */
+  private structuralFingerprint(): string | null {
+    const setup = this.coordinator.getSetupEngine?.();
+    if (!setup) return null;
+    const tf15 = setup.getAnalysis?.('15m');
+    const tf1h = setup.getAnalysis?.('1h');
+    if (!tf15 || !tf1h) return null;
+    const recentBreak = (tf: any) => {
+      const breaks = tf?.structure?.structureBreaks || [];
+      const last = breaks[breaks.length - 1];
+      return last ? `${last.type || ''}:${last.direction || ''}:${last.timestamp || last.candleIndex || ''}` : 'none';
+    };
+    // Exclude current price, candle timestamp and tick noise.
+    return [tf15.trend, tf1h.trend, recentBreak(tf15), recentBreak(tf1h)].join('|');
+  }
+
+  private hasWatchableScenario(): boolean {
+    const registry = this.coordinator.getScenarioRegistry?.();
+    if (!registry) return false;
+    const now = Date.now();
+    const terminal = new Set(['EXPIRED', 'INVALIDATED', 'CANCELLED', 'COMPLETED', 'DISCARDED', 'SIGNAL_GENERATED']);
+    return registry.getAllActive().some((sc) => {
+      const expiry = sc.watchPlan?.expirationTimestamp || sc.validUntilTimestamp;
+      return !terminal.has(sc.status) && Number.isFinite(expiry) && expiry > now;
+    });
+  }
 
   constructor(options: {
     coordinator: MarketCoordinator;
@@ -59,18 +103,8 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     if (this.isRunning) return;
     this.isRunning = true;
 
-    // Listen to candle closes from coordinator
-    this.coordinator.on('candle_closed', (candle: Candle) => {
-      this.handleCandleClosed(candle);
-    });
-
-    // Listen to market state to monitor significant price moves
-    this.coordinator.on('state_updated', (state) => {
-      const price = state.ticker?.lastPrice;
-      if (price) {
-        this.handlePriceUpdate(price);
-      }
-    });
+    this.coordinator.on('candle_closed', this.candleHandler);
+    this.coordinator.on('state_updated', this.stateHandler);
 
     // Start periodic interval timer
     this.startTimer();
@@ -82,6 +116,8 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
 
   public stop(): void {
     this.isRunning = false;
+    this.coordinator.off('candle_closed', this.candleHandler);
+    this.coordinator.off('state_updated', this.stateHandler);
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -152,10 +188,28 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
 
   public async triggerDiscovery(reason: string, currentPrice?: number): Promise<boolean> {
     const now = Date.now();
-    const cooldownMs = this.config.minCooldownMinutes * 60 * 1000;
+    const isManual = reason.startsWith('MANUAL');
+    const cooldownMs = Math.max(15, this.config.minCooldownMinutes) * 60 * 1000;
 
-    // Cooldown check (unless forced or triggered by range breakout)
-    if (this.lastTriggerTimestamp && now - this.lastTriggerTimestamp < cooldownMs && !reason.startsWith('MANUAL') && !reason.startsWith('RANGE_BREAKOUT')) {
+    if (this.discoveryInFlight) return false;
+    if (!isManual && (!this.isRunning || !this.config.enabled)) return false;
+    if (!isManual && this.providerFailureBackoffUntil && now < this.providerFailureBackoffUntil) {
+      return false;
+    }
+    if (!isManual && this.hasWatchableScenario()) {
+      // The watcher is already monitoring a valid hypothesis at zero token cost.
+      return false;
+    }
+    // Even confirmed NEUTRAL breakouts must obey global autonomous cooldown.
+    if (!isManual && this.lastTriggerTimestamp && now - this.lastTriggerTimestamp < cooldownMs) return false;
+
+    const fingerprint = this.structuralFingerprint();
+    // The 60-minute timer is a health check, not a mandate to buy an analysis.
+    // Only a newly confirmed structural regime, actual neutral breakout, a
+    // manual request, or an infrequent 4h watchdog may justify another call.
+    if (!isManual && !reason.startsWith('RANGE_BREAKOUT') &&
+        fingerprint && fingerprint === this.lastStructuralFingerprint &&
+        this.lastTriggerTimestamp && now - this.lastTriggerTimestamp < 4 * 3600000) {
       return false;
     }
 
@@ -173,6 +227,7 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       this.lastTriggerPrice = currentPrice;
     }
 
+    this.discoveryInFlight = true;
     try {
       this.db.logEvent('INFO', 'DiscoveryScheduler', `Running autonomous market discovery. Reason: ${reason}`);
       const triggerSource = reason.startsWith('MANUAL')
@@ -182,8 +237,24 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
         triggerSource,
         forceManual: reason.startsWith('MANUAL'),
       });
+      if (result.skippedReason) {
+        if (result.skippedReason === 'AI_PROVIDERS_FAILED_NO_VALID_ANALYSIS') {
+          this.consecutiveProviderFailures++;
+          const cooldown = Math.min(4 * 3600000,
+            30 * 60000 * Math.pow(2, Math.min(3, this.consecutiveProviderFailures - 1)));
+          this.providerFailureBackoffUntil = Date.now() + cooldown;
+        }
+        this.db.logEvent('INFO', 'DiscoveryScheduler', 'Discovery skipped without new scenarios', {
+          reason: result.skippedReason, trigger: reason,
+          retryNotBefore: this.providerFailureBackoffUntil,
+        });
+        return false;
+      }
+      this.consecutiveProviderFailures = 0;
+      this.providerFailureBackoffUntil = null;
       this.totalAutonomousRuns++;
       this.totalScenariosFound += result.scenarios.length;
+      if (fingerprint) this.lastStructuralFingerprint = fingerprint;
 
       this.emit('discovery_executed', {
         reason,
@@ -195,6 +266,8 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     } catch (err: any) {
       this.db.logEvent('ERROR', 'DiscoveryScheduler', `Autonomous discovery failed: ${err.message}`);
       return false;
+    } finally {
+      this.discoveryInFlight = false;
     }
   }
 
@@ -229,6 +302,14 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       nextScheduledRun: this.config.enabled ? nextRun : null,
       totalAutonomousRuns: this.totalAutonomousRuns,
       totalScenariosFound: this.totalScenariosFound,
+      activeWatchedScenarios: this.coordinator.getScenarioRegistry?.()?.getAllActive?.()
+        .filter((sc) => Number.isFinite(sc.validUntilTimestamp) &&
+          sc.validUntilTimestamp > now &&
+          !['COMPLETED', 'CANCELLED', 'EXPIRED', 'INVALIDATED', 'DISCARDED'].includes(sc.status))
+        .length || 0,
+      discoveryInFlight: this.discoveryInFlight,
+      providerFailureBackoffUntil: this.providerFailureBackoffUntil,
+      consecutiveProviderFailures: this.consecutiveProviderFailures,
     };
   }
 }

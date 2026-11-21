@@ -1461,7 +1461,7 @@ export class DatabaseService {
     status: string;
     analysisId?: string;
   }): void {
-    if (this.isClosed) return;
+    if (this.isClosed) throw new Error('AI_LEDGER_CLOSED');
     try {
       const id = log.id || `cons_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const costGross = log.costGrossUsd !== undefined ? log.costGrossUsd : log.costUsd;
@@ -1498,7 +1498,9 @@ export class DatabaseService {
         log.status || 'SUCCESS',
         log.analysisId || null
       );
-    } catch {}
+    } catch (err: any) {
+      throw new Error(`AI_LEDGER_WRITE_FAILED: ${err?.message || 'unknown'}`);
+    }
   }
 
   public getAiConsumptionLogs(limit: number = 100, provider?: string): any[] {
@@ -1571,7 +1573,7 @@ export class DatabaseService {
           COALESCE(SUM(cost_gross_usd), 0) as grossSpend,
           COALESCE(SUM(discount_usd), 0) as discount,
           COALESCE(SUM(cost_net_usd), 0) as netSpend,
-          COALESCE(SUM(CASE WHEN is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as freeTokens,
+          COALESCE(SUM(CASE WHEN is_free_tier = 1 THEN (tokens_prompt + MAX(tokens_completion, tokens_reasoning)) ELSE 0 END), 0) as freeTokens,
           COUNT(*) as calls 
         FROM ai_consumption_logs 
         WHERE timestamp >= ?
@@ -1640,12 +1642,12 @@ export class DatabaseService {
     try {
       const row = this.db.prepare(`
         SELECT 
-          COALESCE(SUM(CASE WHEN free_tier_group = 'MAIN' AND is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as mainTokens,
-          COALESCE(SUM(CASE WHEN free_tier_group = 'SMALL' AND is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as smallTokens,
+          COALESCE(SUM(CASE WHEN free_tier_group = 'MAIN' AND is_free_tier = 1 THEN (tokens_prompt + MAX(tokens_completion, tokens_reasoning)) ELSE 0 END), 0) as mainTokens,
+          COALESCE(SUM(CASE WHEN free_tier_group = 'SMALL' AND is_free_tier = 1 THEN (tokens_prompt + MAX(tokens_completion, tokens_reasoning)) ELSE 0 END), 0) as smallTokens,
           COALESCE(SUM(cost_gross_usd), 0) as grossSpend,
           COALESCE(SUM(discount_usd), 0) as discount,
           COALESCE(SUM(cost_net_usd), 0) as netSpend,
-          COALESCE(SUM(CASE WHEN is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as freeTokens
+          COALESCE(SUM(CASE WHEN is_free_tier = 1 THEN (tokens_prompt + MAX(tokens_completion, tokens_reasoning)) ELSE 0 END), 0) as freeTokens
         FROM ai_consumption_logs
         WHERE timestamp >= ?
       `).get(startOfUtcDay) as any;
@@ -1810,6 +1812,7 @@ export class DatabaseService {
       distanceToZonePct: scenario.distanceToZonePct,
       currentPrice: scenario.currentPrice,
       lastCheckedTimestamp: scenario.lastCheckedTimestamp,
+      lastRevalidationTimestamp: scenario.lastRevalidationTimestamp,
       isSimulated: scenario.isSimulated,
       kind: scenario.kind,
       triggerSource: scenario.triggerSource,
@@ -2045,6 +2048,7 @@ export class DatabaseService {
       distanceToZonePct: payload.distanceToZonePct,
       currentPrice: payload.currentPrice,
       lastCheckedTimestamp: payload.lastCheckedTimestamp,
+      lastRevalidationTimestamp: payload.lastRevalidationTimestamp,
       isSimulated: payload.isSimulated,
       kind: payload.kind,
       triggerSource: payload.triggerSource,
