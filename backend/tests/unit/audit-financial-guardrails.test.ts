@@ -131,3 +131,75 @@ test('Audit backtest: a winning trade compounds capital and resizes subsequent p
     db.close();
   }
 });
+
+test('Budget clarity: declined estimated call does not spend, hard-stop or exhaust global funds', () => {
+  const db = new DatabaseService(':memory:');
+  try {
+    const manager = new HardBudgetManager({
+      dailyBudgetLimitUsd: 0.03,
+      monthlyBudgetLimitUsd: 1,
+      maxCostPerRequestUsd: 0.10,
+    }, undefined, db);
+    const denied = manager.reserveBudget({
+      provider: 'OPENAI', model: 'gpt-4o',
+      task: 'MARKET_DISCOVERY', maxEstimatedCostUsd: 0.04, estimatedTokens: 3000,
+    });
+    assert.equal(denied.allowed, false);
+    assert.equal(denied.violatedLimit, 'DAILY_GLOBAL');
+    assert.equal(manager.isBlocked(), false, 'Un cálculo preventivo no puede detener todas las IAs');
+    const summary = manager.getSummary();
+    assert.equal(summary.todayGrossSpendUsd, 0);
+    assert.equal(summary.todaySpendUsd, 0);
+    assert.equal(summary.reservedPendingUsd, 0);
+    assert.equal(summary.remainingDailyUsd, 0.03);
+    assert.equal(summary.lastBudgetDenial?.code, 'DAILY_GLOBAL');
+
+    const cheaper = manager.reserveBudget({
+      provider: 'GEMINI', model: 'gemini-2.5-flash',
+      task: 'MARKET_DISCOVERY', maxEstimatedCostUsd: 0.005, estimatedTokens: 700,
+    });
+    assert.equal(cheaper.allowed, true, 'Una llamada más barata todavía puede realizarse');
+    manager.releaseReservation(cheaper.reservationId!);
+  } finally { db.close(); }
+});
+
+test('Budget clarity: only automatically-generated projected legacy blocks can be cleared', () => {
+  const db = new DatabaseService(':memory:');
+  try {
+    const legacy = new HardBudgetManager({
+      dailyBudgetLimitUsd: 0.5,
+      isBlocked: true,
+      blockedReason: 'Límite de presupuesto diario alcanzado ($0.0000 + $0.8000 > $0.5000)',
+    }, undefined, db);
+    assert.equal(legacy.isBlocked(), false);
+    assert.equal(legacy.getSummary().todayGrossSpendUsd, 0);
+    assert.equal(legacy.getSummary().lastBudgetDenial?.code, 'DAILY_GLOBAL');
+
+    const manual = new HardBudgetManager({
+      dailyBudgetLimitUsd: 0.5, isBlocked: true,
+      blockedReason: 'Detención administrativa de emergencia',
+    }, undefined, db);
+    assert.equal(manual.isBlocked(), true);
+    assert.equal(manual.getSummary().blockedReason, 'Detención administrativa de emergencia');
+  } finally { db.close(); }
+});
+
+test('Budget clarity: gross spend plus pending reservations sets the remaining amount', () => {
+  const db = new DatabaseService(':memory:');
+  try {
+    const manager = new HardBudgetManager({
+      dailyBudgetLimitUsd: 0.05, monthlyBudgetLimitUsd: 1,
+      maxCostPerRequestUsd: 0.1,
+    }, undefined, db);
+    manager.recordDirectUsage('OPENAI', 'gpt-4o', 'MARKET_DISCOVERY', 0.02);
+    const reservation = manager.reserveBudget({
+      provider: 'GEMINI', model: 'gemini-2.5-flash',
+      task: 'MARKET_DISCOVERY', maxEstimatedCostUsd: 0.01, estimatedTokens: 1200,
+    });
+    assert.equal(reservation.allowed, true);
+    const summary = manager.getSummary();
+    assert.ok(Math.abs(summary.todayGrossSpendUsd - 0.02) < 1e-9);
+    assert.ok(Math.abs(summary.reservedPendingUsd - 0.01) < 1e-9);
+    assert.ok(Math.abs(summary.remainingDailyUsd - 0.02) < 1e-9);
+  } finally { db.close(); }
+});
