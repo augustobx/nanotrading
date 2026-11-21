@@ -135,7 +135,7 @@ Responde obligatoriamente en JSON estricto.`;
 
     try {
       const apiKeyTrimmed = (this.apiKey || '').trim();
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent?key=${encodeURIComponent(apiKeyTrimmed)}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent`;
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -263,7 +263,7 @@ Responde obligatoriamente en JSON estricto.`;
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
         try {
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(currentModel)}:generateContent?key=${encodeURIComponent(apiKeyTrimmed)}`;
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(currentModel)}:generateContent`;
           const response = await fetch(url, {
             method: 'POST',
             headers: {

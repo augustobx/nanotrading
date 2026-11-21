@@ -1068,8 +1068,8 @@ export class ApiServer {
   }
 
   private async handleGetGeminiModels(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
-    let apiKey = (url.searchParams.get('apiKey') || '').trim();
+    // Never accept API keys in GET query parameters (they leak to access logs).
+    let apiKey = '';
 
     if (!apiKey) {
       const saved = this.db.getAiCredentials('gemini');
@@ -1103,7 +1103,7 @@ export class ApiServer {
 
     try {
       const googleRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+        'https://generativelanguage.googleapis.com/v1beta/models',
         {
           method: 'GET',
           headers: {
