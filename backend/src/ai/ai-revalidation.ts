@@ -78,7 +78,26 @@ export class AiEntryRevalidation extends EventEmitter {
       activePlan.status = 'REVALIDATING';
     }
 
-    // 1. Mock Evaluator (for unit testing deterministic scenarios)
+    // 1. Budget Check
+    if (this.hardBudgetManager.isBlocked()) {
+      const reason = this.hardBudgetManager.getBlockedReason() || 'AI_BUDGET_EXCEEDED';
+      const record: ScenarioRevalidationRecord = {
+        id: revalId,
+        scenarioId: scenario.id,
+        timestamp: Date.now(),
+        consensusVerdict: 'WAITING_CONDITIONS',
+        priceAtRevalidation: currentPrice,
+        details: { invalidationTrigger: reason, costUsd: 0, watchPlanId: activePlan?.id },
+      };
+      this.db.saveScenarioRevalidation(record);
+      // A budget stop is not evidence that market structure is invalid.
+      // Retain the live watch for a later safe, budget-authorized confirmation.
+      const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'WAITING_CONFIRMATION', reason, { currentPrice });
+      if (activePlan) activePlan.status = 'ACTIVE';
+      return { consensus: 'WAITING_CONDITIONS', scenario: updated || scenario, revalidationRecord: record, reason };
+    }
+
+    // 2. Mock Evaluator (for unit and integration testing deterministic scenarios)
     if (this.mockEvaluator) {
       const mock = this.mockEvaluator(scenario, currentPrice);
       const consensus = this.determineConsensus(mock.openaiVerdict || 'APPROVE', mock.geminiVerdict || 'APPROVE');
@@ -109,25 +128,6 @@ export class AiEntryRevalidation extends EventEmitter {
         revalidationRecord,
         reason: outcome.reason,
       };
-    }
-
-    // 2. Budget Check
-    if (this.hardBudgetManager.isBlocked()) {
-      const reason = this.hardBudgetManager.getBlockedReason() || 'AI_BUDGET_EXCEEDED';
-      const record: ScenarioRevalidationRecord = {
-        id: revalId,
-        scenarioId: scenario.id,
-        timestamp: Date.now(),
-        consensusVerdict: 'WAITING_CONDITIONS',
-        priceAtRevalidation: currentPrice,
-        details: { invalidationTrigger: reason, costUsd: 0, watchPlanId: activePlan?.id },
-      };
-      this.db.saveScenarioRevalidation(record);
-      // A budget stop is not evidence that market structure is invalid.
-      // Retain the live watch for a later safe, budget-authorized confirmation.
-      const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'WAITING_CONFIRMATION', reason, { currentPrice });
-      if (activePlan) activePlan.status = 'ACTIVE';
-      return { consensus: 'WAITING_CONDITIONS', scenario: updated || scenario, revalidationRecord: record, reason };
     }
 
     // 3. Fallback Mode determination

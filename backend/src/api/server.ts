@@ -2148,22 +2148,19 @@ export class ApiServer {
   public async stop(): Promise<void> {
     return new Promise((resolve) => {
       try {
-        if (typeof (this.server as any).closeAllConnections === 'function') {
-          (this.server as any).closeAllConnections();
-        }
         for (const client of this.wss.clients) {
           try {
             client.terminate();
           } catch {}
         }
       } catch {}
-      this.wss.close((err) => {
-        this.server.close((sErr) => {
+      this.wss.close(() => {
+        if (typeof (this.server as any).closeAllConnections === 'function') {
           try {
-            this.server.unref();
+            (this.server as any).closeAllConnections();
           } catch {}
-          resolve();
-        });
+        }
+        this.server.close(() => resolve());
       });
     });
   }

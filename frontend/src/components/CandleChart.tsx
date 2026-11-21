@@ -363,38 +363,69 @@ export function CandleChart({
       );
       if (activeScenario) {
         try {
+          const isValidated = activeScenario.status === 'ENTRY_VALIDATED' || activeScenario.status === 'SIGNAL_GENERATED';
+          const lineStyle = isValidated ? 0 : 2; // Solid for validated signals, dashed for proposed monitoring scenarios
+          const entryPrefix = isValidated ? 'ENTRADA VALIDADA' : 'ZONA PROPUESTA';
+          const slPrefix = isValidated ? 'SL VALIDADO' : 'SL PROPUESTO';
+          const tpPrefix = isValidated ? 'TP VALIDADO' : 'TP PROPUESTO';
+
           const entryLine = candleSeriesRef.current.createPriceLine({
             price: activeScenario.targetEntry,
             color: '#3b82f6', // Blue
             lineWidth: 2,
-            lineStyle: 0, // Solid
+            lineStyle,
             axisLabelVisible: true,
-            title: `ENTRADA IA ($${activeScenario.targetEntry.toFixed(1)})`,
+            title: `${entryPrefix} ($${activeScenario.targetEntry.toFixed(1)})`,
           });
 
           const slLine = candleSeriesRef.current.createPriceLine({
             price: activeScenario.stopLossPrice,
             color: '#ef4444', // Red
             lineWidth: 2,
-            lineStyle: 0,
+            lineStyle,
             axisLabelVisible: true,
-            title: `SL ESTRUCTURAL ($${activeScenario.stopLossPrice.toFixed(1)})`,
+            title: `${slPrefix} ($${activeScenario.stopLossPrice.toFixed(1)})`,
           });
 
-          const tpPrice = activeScenario.target14Price || activeScenario.target12Price;
-          if (tpPrice && Number.isFinite(tpPrice)) {
-            const tpLine = candleSeriesRef.current.createPriceLine({
-              price: tpPrice,
+          priceLinesRef.current.push(entryLine, slLine);
+
+          const riskDist = Math.abs(activeScenario.targetEntry - activeScenario.stopLossPrice);
+
+          // 1. Target 1:4 (if defined)
+          if (activeScenario.target14Price && Number.isFinite(activeScenario.target14Price)) {
+            const reward14 = Math.abs(activeScenario.target14Price - activeScenario.targetEntry);
+            const rr14 = (Number.isFinite(activeScenario.netRR14) && activeScenario.netRR14 > 0)
+              ? activeScenario.netRR14.toFixed(1)
+              : (riskDist > 0 ? (reward14 / riskDist).toFixed(1) : '4.0');
+
+            const tp14Line = candleSeriesRef.current.createPriceLine({
+              price: activeScenario.target14Price,
               color: '#10b981', // Green
               lineWidth: 2,
-              lineStyle: 0,
+              lineStyle,
               axisLabelVisible: true,
-              title: `TP 1:4 IA ($${tpPrice.toFixed(1)})`,
+              title: `${tpPrefix} 1:4 (R:R 1:${rr14}) ($${activeScenario.target14Price.toFixed(1)})`,
             });
-            priceLinesRef.current.push(tpLine);
+            priceLinesRef.current.push(tp14Line);
           }
 
-          priceLinesRef.current.push(entryLine, slLine);
+          // 2. Target 1:2 (if defined and either standalone or secondary target)
+          if (activeScenario.target12Price && Number.isFinite(activeScenario.target12Price)) {
+            const reward12 = Math.abs(activeScenario.target12Price - activeScenario.targetEntry);
+            const rr12 = (Number.isFinite(activeScenario.netRR12) && activeScenario.netRR12 > 0)
+              ? activeScenario.netRR12.toFixed(1)
+              : (riskDist > 0 ? (reward12 / riskDist).toFixed(1) : '2.0');
+
+            const tp12Line = candleSeriesRef.current.createPriceLine({
+              price: activeScenario.target12Price,
+              color: '#06b6d4', // Cyan
+              lineWidth: 2,
+              lineStyle,
+              axisLabelVisible: true,
+              title: `${tpPrefix} 1:2 (R:R 1:${rr12}) ($${activeScenario.target12Price.toFixed(1)})`,
+            });
+            priceLinesRef.current.push(tp12Line);
+          }
         } catch {}
       }
     }

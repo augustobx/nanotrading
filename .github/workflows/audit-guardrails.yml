@@ -72,13 +72,21 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - name: Run autonomous architecture consolidation integration tests
+      - name: Run all integration tests with timeout and per-file diagnostics
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::autonomous-architecture-consolidation.test.ts"
-          cd backend && npx --no-install tsx --test tests/integration/autonomous-architecture-consolidation.test.ts
-          echo "::endgroup::"
+          mapfile -t files < <(find backend/tests/integration -maxdepth 1 -name '*.test.ts' | sort)
+          failed=0
+          for i in "${!files[@]}"; do
+            echo "::group::${files[i]}"
+            if ! (cd backend && timeout 75s npx --no-install tsx --test "../${files[i]}"); then
+              echo "::error file=${files[i]}::Integration test failed, errored, or timed out"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
 
   docker-images:
     runs-on: ubuntu-latest

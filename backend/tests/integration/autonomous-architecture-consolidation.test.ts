@@ -244,7 +244,7 @@ test('PR 4.1 Integration 2: Real coordinator blocks legacy consensus when schedu
   // 1. Unauthorized request gets 401
   const unauthRes = await fetch(`http://127.0.0.1:${port}/api/v1/ai/evaluate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Connection: 'close' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ setupId: 'any_setup' }),
   });
   assert.equal(unauthRes.status, 401, 'Unauthenticated request must get 401');
@@ -254,7 +254,6 @@ test('PR 4.1 Integration 2: Real coordinator blocks legacy consensus when schedu
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Connection: 'close',
       'x-admin-key': config.security.adminApiKey,
     },
     body: JSON.stringify({ setupId: 'any_setup' }),
@@ -264,7 +263,6 @@ test('PR 4.1 Integration 2: Real coordinator blocks legacy consensus when schedu
   assert.equal(authBody.error, 'LEGACY_EVALUATOR_DISABLED');
 
   await server.stop();
-  coordinator.stop();
   db.close();
 });
 
@@ -291,7 +289,6 @@ test('PR 4.1 Integration 3: Active opportunities originate exclusively from auto
   assert.ok(row, 'Scenario must be persisted in SQLite');
   assert.equal(row.structureType, 'SMC_DISCRETIONARY_DISCOVERY');
 
-  coordinator.stop();
   db.close();
 });
 
@@ -333,7 +330,6 @@ test('PR 4.1 Integration 4: AlgorithmicWatcher consumes exactly zero AI tokens/c
   assert.equal(aiCallsTriggered, 0, 'No revalidation requested without full confirmation sequence');
 
   watcher.stop();
-  coordinator.stop();
   db.close();
 });
 
@@ -387,7 +383,6 @@ test('PR 4.1 Integration 5: Cooldown and in-flight guard strictly prevent duplic
   assert.equal(registry.getAllActive().length, 1, 'Registry must not duplicate active scenario');
 
   watcher.stop();
-  coordinator.stop();
   db.close();
 });
 
@@ -452,7 +447,6 @@ test('PR 4.1 Integration 6: Real coordinator pipeline registers signal only when
   assert.equal(dbSignals[0].status, 'ENTRY_VALIDATED');
   assert.equal(dbSignals[0].rrNet, 4.2);
 
-  coordinator.stop();
   db.close();
 });
 
@@ -558,6 +552,5 @@ test('PR 4.1 Integration 8: Real Kill Switch and Hard Budget Guards enforce stri
   assert.equal(reservation.allowed, false, 'Further reservations must be denied by budget manager');
   assert.equal(reservation.status, 'AI_BUDGET_EXCEEDED');
 
-  coordinator.stop();
   db.close();
 });

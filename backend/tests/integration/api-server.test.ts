@@ -92,16 +92,26 @@ test('ApiServer - full end-to-end bootstrap and HTTP endpoints verification', as
 
     // Test live WS connection to internal API server
     const clientWs = new (globalThis as any).WebSocket(`ws://127.0.0.1:${testPort}/ws/live`);
+    let wsTimer: NodeJS.Timeout | null = null;
     const wsReceived = await new Promise<boolean>((resolve) => {
+      wsTimer = setTimeout(() => resolve(false), 5000);
       clientWs.onmessage = (e: any) => {
-        const msg = JSON.parse(e.data);
-        if (msg.type === 'initial_state') {
-          resolve(true);
-        }
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'initial_state') {
+            if (wsTimer) clearTimeout(wsTimer);
+            resolve(true);
+          }
+        } catch {}
       };
-      setTimeout(() => resolve(false), 5000);
+      clientWs.onerror = () => {
+        if (wsTimer) clearTimeout(wsTimer);
+        resolve(false);
+      };
     });
-    clientWs.close();
+    try {
+      clientWs.close();
+    } catch {}
     assert.equal(wsReceived, true, 'Frontend client should receive initial_state from internal WS');
     console.log('[E2E TEST] Internal WebSocket /ws/live verified!');
   } finally {
