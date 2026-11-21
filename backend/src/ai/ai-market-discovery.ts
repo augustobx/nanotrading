@@ -538,8 +538,16 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         provider: 'OPENAI' | 'GEMINI'; model: string; reservationId: string;
       }> = [];
       const providersToQuery: Array<{ provider: 'OPENAI' | 'GEMINI'; model: string }> = [];
-      if (openaiConfigured) providersToQuery.push({ provider: 'OPENAI', model: this.openaiAdapter.getModel() });
-      if (geminiConfigured) providersToQuery.push({ provider: 'GEMINI', model: this.geminiAdapter.getModel() });
+      const router = this.coordinator.getAiRouter?.();
+      const remainingUsd = Math.max(0,
+        this.hardBudgetManager.getConfig().dailyBudgetLimitUsd -
+        this.hardBudgetManager.getTodaySpendUsd() - this.hardBudgetManager.getReservedPendingUsd());
+      const openaiModel = router?.routeModel('MARKET_DISCOVERY', 'OPENAI', remainingUsd).selectedModel ||
+        this.openaiAdapter.getModel();
+      const geminiModel = router?.routeModel('MARKET_DISCOVERY', 'GEMINI', remainingUsd).selectedModel ||
+        this.geminiAdapter.getModel();
+      if (openaiConfigured) providersToQuery.push({ provider: 'OPENAI', model: openaiModel });
+      if (geminiConfigured) providersToQuery.push({ provider: 'GEMINI', model: geminiModel });
       if (!summary.dataAvailability.allCriticalDataPresent) {
         return { scenarios: [], summary, aiCostUsd: 0, skippedReason: 'MARKET_DATA_NOT_READY' };
       }
@@ -563,8 +571,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       try {
         // Query OpenAI and Gemini for autonomous discovery
         const [resOpenai, resGemini] = await Promise.all([
-          this.queryOpenAiDiscovery(summary),
-          this.queryGeminiDiscovery(summary),
+          openaiConfigured ? this.queryOpenAiDiscovery(summary, openaiModel) : Promise.resolve(null),
+          geminiConfigured ? this.queryGeminiDiscovery(summary, geminiModel) : Promise.resolve(null),
         ]);
         openaiDiscovery = resOpenai;
         geminiDiscovery = resGemini;
@@ -578,7 +586,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
             if (sc) {
               sc.openaiInterpretation = {
                 provider: 'OPENAI',
-                model: this.openaiAdapter.getModel(),
+                model: openaiDiscovery.model || openaiModel,
                 bias: openaiDiscovery.bias,
                 reasoning: openaiDiscovery.reasoning,
                 keyZones: openaiDiscovery.keyZones || [],
@@ -600,7 +608,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
             if (sc) {
               sc.geminiInterpretation = {
                 provider: 'GEMINI',
-                model: this.geminiAdapter.getModel(),
+                model: geminiDiscovery.model || geminiModel,
                 bias: geminiDiscovery.bias,
                 reasoning: geminiDiscovery.reasoning,
                 keyZones: geminiDiscovery.keyZones || [],
@@ -1067,13 +1075,14 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     return scenario;
   }
 
-  private async queryOpenAiDiscovery(summary: MarketIntelligenceSummary): Promise<{
+  private async queryOpenAiDiscovery(summary: MarketIntelligenceSummary, selectedModel?: string): Promise<{
     bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
     reasoning: string;
     keyZones: string[];
     scenarios: any[];
     marketAnalysis?: AiMarketAnalysis;
     costUsd: number;
+    model?: string;
     promptTokens?: number;
     completionTokens?: number;
     latencyMs?: number;
@@ -1154,7 +1163,7 @@ Responde obligatoriamente en JSON estricto:
 
 Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
 
-      const res = await this.openaiAdapter.evaluateWithCustomPrompt?.(prompt) || null;
+      const res = await this.openaiAdapter.evaluateWithCustomPrompt?.(prompt, selectedModel) || null;
       if (!res) return null;
       return {
         bias: res.bias || res.marketAnalysis?.bias || 'NEUTRAL',
@@ -1162,7 +1171,8 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
         keyZones: res.keyZones || [],
         scenarios: res.scenarios || [],
         marketAnalysis: res.marketAnalysis,
-        costUsd: res.costUsd || 0.001,
+        costUsd: res.costUsd || 0,
+        model: res.model || selectedModel,
         promptTokens: res.promptTokens,
         completionTokens: res.completionTokens,
         latencyMs: res.latencyMs,
@@ -1172,13 +1182,14 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
     }
   }
 
-  private async queryGeminiDiscovery(summary: MarketIntelligenceSummary): Promise<{
+  private async queryGeminiDiscovery(summary: MarketIntelligenceSummary, selectedModel?: string): Promise<{
     bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
     reasoning: string;
     keyZones: string[];
     scenarios: any[];
     marketAnalysis?: AiMarketAnalysis;
     costUsd: number;
+    model?: string;
     promptTokens?: number;
     completionTokens?: number;
     latencyMs?: number;
@@ -1258,7 +1269,7 @@ Responde obligatoriamente en JSON estricto:
 
 Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
 
-      const res = await this.geminiAdapter.evaluateWithCustomPrompt?.(prompt) || null;
+      const res = await this.geminiAdapter.evaluateWithCustomPrompt?.(prompt, selectedModel) || null;
       if (!res) return null;
       return {
         bias: res.bias || res.marketAnalysis?.bias || 'NEUTRAL',
@@ -1266,7 +1277,8 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
         keyZones: res.keyZones || [],
         scenarios: res.scenarios || [],
         marketAnalysis: res.marketAnalysis,
-        costUsd: res.costUsd || 0.0003,
+        costUsd: res.costUsd || 0,
+        model: res.model || selectedModel,
         promptTokens: res.promptTokens,
         completionTokens: res.completionTokens,
         latencyMs: res.latencyMs,

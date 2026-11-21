@@ -247,11 +247,12 @@ Responde obligatoriamente en JSON estricto.`;
     }
   }
 
-  public async evaluateWithCustomPrompt(prompt: string): Promise<any> {
+  public async evaluateWithCustomPrompt(prompt: string, modelOverride?: string): Promise<any> {
     if (!this.apiKey) return null;
-    const initialModel = getValidatedModel(this.model, 'GEMINI');
+    const initialModel = getValidatedModel(modelOverride || this.model, 'GEMINI');
     const apiKeyTrimmed = (this.apiKey || '').trim();
-    const candidateModels = [
+    // Routed calls have a preauthorized model/cost reservation: no unbudgeted fallback.
+    const candidateModels = modelOverride ? [initialModel] : [
       initialModel,
       ...(initialModel !== 'gemini-2.5-flash-lite' ? ['gemini-2.5-flash-lite'] : []),
       ...(initialModel !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),

@@ -152,8 +152,16 @@ export class AiEntryRevalidation extends EventEmitter {
     // Reserve both providers separately; no AI request may borrow the other's reservation.
     const reservations: Array<{ provider: 'OPENAI' | 'GEMINI'; model: string; id: string }> = [];
     const requested: Array<{ provider: 'OPENAI' | 'GEMINI'; model: string }> = [];
-    if (openaiConfigured) requested.push({ provider: 'OPENAI', model: this.openaiAdapter.getModel() });
-    if (geminiConfigured) requested.push({ provider: 'GEMINI', model: this.geminiAdapter.getModel() });
+    const router = this.coordinator.getAiRouter?.();
+    const budgetRemaining = Math.max(0,
+      this.hardBudgetManager.getConfig().dailyBudgetLimitUsd -
+      this.hardBudgetManager.getTodaySpendUsd() - this.hardBudgetManager.getReservedPendingUsd());
+    const openaiModel = router?.routeModel('SCENARIO_REVALIDATION', 'OPENAI', budgetRemaining).selectedModel ||
+      this.openaiAdapter.getModel();
+    const geminiModel = router?.routeModel('SCENARIO_REVALIDATION', 'GEMINI', budgetRemaining).selectedModel ||
+      this.geminiAdapter.getModel();
+    if (openaiConfigured) requested.push({ provider: 'OPENAI', model: openaiModel });
+    if (geminiConfigured) requested.push({ provider: 'GEMINI', model: geminiModel });
     const marketStateBefore = this.coordinator.getMarketState();
     if (!marketStateBefore.wsConnected || !marketStateBefore.ticker ||
         marketStateBefore.status === 'DATA_UNAVAILABLE') {
@@ -244,8 +252,8 @@ Responde estrictamente en JSON:
 }`;
 
       [openaiRes, geminiRes] = await Promise.all([
-        openaiConfigured ? this.openaiAdapter.evaluateWithCustomPrompt?.(prompt) : Promise.resolve(null),
-        geminiConfigured ? this.geminiAdapter.evaluateWithCustomPrompt?.(prompt) : Promise.resolve(null),
+        openaiConfigured ? this.openaiAdapter.evaluateWithCustomPrompt?.(prompt, openaiModel) : Promise.resolve(null),
+        geminiConfigured ? this.geminiAdapter.evaluateWithCustomPrompt?.(prompt, geminiModel) : Promise.resolve(null),
       ]);
 
       if (openaiRes) {

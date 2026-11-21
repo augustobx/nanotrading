@@ -259,9 +259,9 @@ Reglas imperativas:
     }
   }
 
-  public async evaluateWithCustomPrompt(prompt: string): Promise<any> {
+  public async evaluateWithCustomPrompt(prompt: string, modelOverride?: string): Promise<any> {
     if (!this.apiKey) return null;
-    const activeModel = getValidatedModel(this.model, 'OPENAI');
+    const activeModel = getValidatedModel(modelOverride || this.model, 'OPENAI');
     const effectiveTimeoutMs = Math.max(this.timeoutMs, 25000);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
