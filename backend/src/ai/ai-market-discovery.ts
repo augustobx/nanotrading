@@ -641,6 +641,15 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         }
       }
 
+      if (!openaiDiscovery && !geminiDiscovery) {
+        // Do NOT manufacture a neutral "AI consensus" when both API calls
+        // failed or timed out. Budget reservations were already reconciled.
+        return {
+          scenarios: [], summary, aiCostUsd: totalCostUsd,
+          skippedReason: 'AI_PROVIDERS_FAILED_NO_VALID_ANALYSIS',
+        };
+      }
+
       // If no directional scenarios were proposed or if AI concluded NEUTRAL,
       // register a formal NEUTRAL observation scenario (preserving "no operar es una decisión válida")
       if (discoveredScenarios.length === 0) {

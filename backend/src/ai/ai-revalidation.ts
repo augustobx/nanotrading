@@ -118,14 +118,16 @@ export class AiEntryRevalidation extends EventEmitter {
         id: revalId,
         scenarioId: scenario.id,
         timestamp: Date.now(),
-        consensusVerdict: 'DISCARDED',
+        consensusVerdict: 'WAITING_CONDITIONS',
         priceAtRevalidation: currentPrice,
         details: { invalidationTrigger: reason, costUsd: 0, watchPlanId: activePlan?.id },
       };
       this.db.saveScenarioRevalidation(record);
-      const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'CANCELLED', reason, { currentPrice });
-      if (activePlan) activePlan.status = 'CANCELLED';
-      return { consensus: 'DISCARDED', scenario: updated || scenario, revalidationRecord: record, reason };
+      // A budget stop is not evidence that market structure is invalid.
+      // Retain the live watch for a later safe, budget-authorized confirmation.
+      const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'WAITING_CONFIRMATION', reason, { currentPrice });
+      if (activePlan) activePlan.status = 'ACTIVE';
+      return { consensus: 'WAITING_CONDITIONS', scenario: updated || scenario, revalidationRecord: record, reason };
     }
 
     // 3. Fallback Mode determination

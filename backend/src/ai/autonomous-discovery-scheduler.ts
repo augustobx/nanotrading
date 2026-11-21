@@ -41,6 +41,7 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
   private totalAutonomousRuns: number = 0;
   private totalScenariosFound: number = 0;
   private discoveryInFlight = false;
+  private lastStructuralFingerprint: string | null = null;
   private readonly candleHandler = (candle: Candle): void => this.handleCandleClosed(candle);
   private readonly stateHandler = (state: any): void => {
     const price = state.ticker?.lastPrice;
@@ -52,6 +53,21 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
    * must not spend tokens to rediscover zones already watched by the local
    * watcher. Manual discovery remains available, under the hard budget.
    */
+  private structuralFingerprint(): string | null {
+    const setup = this.coordinator.getSetupEngine?.();
+    if (!setup) return null;
+    const tf15 = setup.getAnalysis?.('15m');
+    const tf1h = setup.getAnalysis?.('1h');
+    if (!tf15 || !tf1h) return null;
+    const recentBreak = (tf: any) => {
+      const breaks = tf?.structure?.structureBreaks || [];
+      const last = breaks[breaks.length - 1];
+      return last ? `${last.type || ''}:${last.direction || ''}:${last.timestamp || last.candleIndex || ''}` : 'none';
+    };
+    // Exclude current price, candle timestamp and tick noise.
+    return [tf15.trend, tf1h.trend, recentBreak(tf15), recentBreak(tf1h)].join('|');
+  }
+
   private hasWatchableScenario(): boolean {
     const registry = this.coordinator.getScenarioRegistry?.();
     if (!registry) return false;
@@ -178,6 +194,16 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     // Even confirmed NEUTRAL breakouts must obey global autonomous cooldown.
     if (!isManual && this.lastTriggerTimestamp && now - this.lastTriggerTimestamp < cooldownMs) return false;
 
+    const fingerprint = this.structuralFingerprint();
+    // The 60-minute timer is a health check, not a mandate to buy an analysis.
+    // Only a newly confirmed structural regime, actual neutral breakout, a
+    // manual request, or an infrequent 4h watchdog may justify another call.
+    if (!isManual && !reason.startsWith('RANGE_BREAKOUT') &&
+        fingerprint && fingerprint === this.lastStructuralFingerprint &&
+        this.lastTriggerTimestamp && now - this.lastTriggerTimestamp < 4 * 3600000) {
+      return false;
+    }
+
     // Budget check
     if (this.hardBudgetManager.isBlocked()) {
       this.db.logEvent('WARN', 'DiscoveryScheduler', 'Autonomous discovery skipped: Budget limit blocked', {
@@ -210,6 +236,7 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       }
       this.totalAutonomousRuns++;
       this.totalScenariosFound += result.scenarios.length;
+      if (fingerprint) this.lastStructuralFingerprint = fingerprint;
 
       this.emit('discovery_executed', {
         reason,
