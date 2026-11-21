@@ -234,3 +234,44 @@ test('UTC midnight is 21:00 ART on 21 November 2026', () => {
   }).format(new Date(iso));
   assert.equal(rendered, '21:00');
 });
+
+test('Watcher: WAIT with unconfirmed plan condition must not spend on new candle', () => {
+  const db = new DatabaseService(':memory:');
+  const registry = new ScenarioRegistry(db);
+  const coordinator = new EventEmitter() as EventEmitter & Record<string, any>;
+  coordinator.getCandleManager = () => ({ getCandles: () => [] });
+  coordinator.getMarketState = () => ({ ticker: { spreadPcnt: 0.001 } });
+  coordinator.getSetupEngine = () => ({ getAnalysis: () => undefined });
+  const watcher = new AlgorithmicWatcher(coordinator as any, registry);
+  let evaluations = 0;
+  watcher.on('revalidation_requested', () => evaluations++);
+  const older = Date.now() - 45 * 60000;
+  const scenario = testScenario({
+    id: 'wait_unconfirmed_condition', status: 'WAITING_CONFIRMATION',
+    lastRevalidationTimestamp: older,
+    watchPlan: {
+      id: 'pending_plan', scenarioId: 'wait_unconfirmed_condition',
+      symbol: 'BTCUSDT', direction: 'LONG', horizon: 'INTRADAY',
+      primaryTimeframe: '15m', marketThesis: 'Esperar RSI confirmado',
+      watchZone: { minPrice: 59800, maxPrice: 60200, targetEntry: 60000 },
+      candidateStopLoss: 59000, candidateTakeProfits: {}, rrEligibility: 'RR_BOTH',
+      observableConditions: [{
+        id: 'rsi_cond', description: 'RSI sin dato', operator: 'RSI_THRESHOLD',
+        params: { threshold: 20, direction: 'BELOW', timeframe: '15m' },
+        automatable: true, sequenceOrder: 1, isMet: false,
+      }],
+      confirmationSequence: [], invalidationConditions: [], reevaluationTriggers: [],
+      expirationTimestamp: Date.now() + 3600000,
+      status: 'ACTIVE', automatable: true, createdAt: Date.now(), updatedAt: Date.now(),
+    },
+  });
+  try {
+    registry.registerScenario(scenario);
+    watcher.evaluateCandleClose({
+      timeframe: '15m', timestamp: Date.now(), confirmed: true,
+      open: 59990, high: 60030, low: 59900, close: 60000, volume: 100,
+    });
+    assert.equal(evaluations, 0);
+    assert.equal(registry.getScenario(scenario.id)?.status, 'WAITING_CONFIRMATION');
+  } finally { db.close(); }
+});
