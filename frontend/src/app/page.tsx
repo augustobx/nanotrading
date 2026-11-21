@@ -519,11 +519,12 @@ export default function DashboardPage() {
           <span className="text-slate-600 hidden lg:inline">|</span>
           <div className="hidden xl:flex items-center gap-1.5 text-slate-300">
             <span className="text-slate-500">Presupuesto IA:</span>
-            <span className="text-white font-mono">${(configSummary?.spentTodayUsd || 0).toFixed(3)}</span>
-            <span className="text-slate-500">/ ${configSummary?.dailyBudgetUsd || 0.50}</span>
+            <span className="text-white font-mono">Bruto ${(configSummary?.grossSpentTodayUsd ?? 0).toFixed(4)}</span>
+            <span className="text-amber-400 font-mono">+ reservado ${(configSummary?.reservedPendingUsd ?? 0).toFixed(4)}</span>
+            <span className="text-slate-500">/ ${configSummary?.dailyBudgetUsd ?? 0.50}</span>
             {(configSummary?.isBudgetBlocked || aiStatus?.isBudgetBlocked) && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-950 text-red-300 border border-red-700 font-bold animate-pulse">
-                AGOTADO
+              <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-950 text-red-300 border border-red-700 font-bold">
+                PAUSADO
               </span>
             )}
           </div>
@@ -539,12 +540,17 @@ export default function DashboardPage() {
       {/* Main Content Area */}
       <main className="flex-1 p-4 sm:p-6 space-y-5 max-w-[1700px] w-full mx-auto">
         {/* Hard Budget Limit Suspension Banner (Fase 4.6) */}
-        {(configSummary?.isBudgetBlocked || aiStatus?.isBudgetBlocked || aiStatus?.currentMode === 'AI_BUDGET_EXCEEDED') && (
+        {(configSummary?.isBudgetBlocked || aiStatus?.isBudgetBlocked) && (
           <div className="p-3.5 rounded-2xl bg-red-950/40 border border-red-700/60 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs text-red-200 shadow-md">
             <div className="flex items-center gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 animate-pulse" />
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
               <span>
-                <strong>Límite Presupuestario de IA Alcanzado:</strong> Las llamadas a OpenAI/Gemini están detenidas preventivamente (Fase 4.6). El motor de Bybit, gráficos, detección técnica de setups y gestión de riesgo permanecen 100% operativos.
+                <strong>IA pausada por protección presupuestaria.</strong> {' '}
+                {configSummary?.budgetBlockedReason || aiStatus?.blockedReason || 'Revisá el motivo del bloqueo en Configuración.'} {' '}
+                Gasto bruto hoy: ${(configSummary?.grossSpentTodayUsd ?? 0).toFixed(4)};
+                reservas: ${(configSummary?.reservedPendingUsd ?? 0).toFixed(4)};
+                límite: ${(configSummary?.dailyBudgetUsd ?? 0.50).toFixed(2)} USD.
+                Bybit y el monitoreo técnico continúan operativos.
               </span>
             </div>
             <button
@@ -555,6 +561,18 @@ export default function DashboardPage() {
             </button>
           </div>
         )}
+        {!configSummary?.isBudgetBlocked && configSummary?.lastBudgetDenial &&
+          Date.now() - configSummary.lastBudgetDenial.timestamp < 2 * 60 * 60 * 1000 && (
+            <div className="rounded-xl border border-amber-700/60 bg-amber-950/25 p-3 text-xs text-amber-200 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>
+                <strong>Solicitud IA no realizada por un límite presupuestario; no es dinero gastado.</strong> {' '}
+                {configSummary.lastBudgetDenial.reason}. Gasto bruto hoy:
+                ${(configSummary?.grossSpentTodayUsd ?? 0).toFixed(4)} USD;
+                reservado: ${(configSummary?.reservedPendingUsd ?? 0).toFixed(4)} USD.
+              </span>
+            </div>
+          )}
         {/* Ticker Ribbon */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-3.5 shadow-md">
