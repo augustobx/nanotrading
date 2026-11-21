@@ -325,23 +325,6 @@ export class AlgorithmicWatcher extends EventEmitter {
 
       // 2. Sequential conditions check on candle close
       if (candle.timestamp < sc.discoveryTimestamp) continue;
-      // WAIT means "wait for new evidence", never "call AI again next tick".
-      // A later CLOSED candle and a 30-minute cooldown are required to retry.
-      if (sc.status === 'WAITING_CONFIRMATION') {
-        const lastReview = sc.lastRevalidationTimestamp ?? sc.discoveryTimestamp;
-        if (sc.watchPlan?.automatable !== false && candle.timeframe === sc.timeframe &&
-            candle.timestamp >= lastReview && now - lastReview >= 30 * 60000 &&
-            this.calculateDistance(sc, candle.close).inZone) {
-          this.scenarioRegistry.transitionStatus(sc.id, 'REVALIDATION_REQUESTED',
-            'Nueva vela cerrada tras espera y cooldown; reevaluación justificada',
-            { currentPrice: candle.close });
-          this.emit('revalidation_requested', {
-            scenario: sc, watchPlan: sc.watchPlan, currentPrice: candle.close,
-            triggerReason: 'NEW_CONFIRMED_CANDLE_AFTER_WAIT',
-          });
-        }
-        continue;
-      }
       if (sc.watchPlan?.observableConditions && sc.watchPlan.observableConditions.length > 0) {
         const sortedConditions = [...sc.watchPlan.observableConditions].sort(
           (a, b) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
@@ -387,6 +370,26 @@ export class AlgorithmicWatcher extends EventEmitter {
           } else {
             sequenceBlocked = true;
           }
+        }
+      }
+
+      if (sc.status === 'WAITING_CONFIRMATION') {
+        const lastReview = sc.lastRevalidationTimestamp ?? sc.discoveryTimestamp;
+        const planConditions = sc.watchPlan?.observableConditions || [];
+        const allMet = planConditions.every((cond) => cond.automatable && cond.isMet);
+        // A new candle is necessary, but not sufficient: ALL plan
+        // confirmations must be met before spending another AI request.
+        if (sc.watchPlan?.automatable !== false && allMet &&
+            candle.timeframe === sc.timeframe &&
+            candle.timestamp >= lastReview && now - lastReview >= 30 * 60000 &&
+            this.calculateDistance(sc, candle.close).inZone) {
+          this.scenarioRegistry.transitionStatus(sc.id, 'REVALIDATION_REQUESTED',
+            'Nueva vela y todas las condiciones confirmadas tras cooldown',
+            { currentPrice: candle.close });
+          this.emit('revalidation_requested', {
+            scenario: sc, watchPlan: sc.watchPlan, currentPrice: candle.close,
+            triggerReason: 'NEW_CONFIRMED_CANDLE_AFTER_WAIT',
+          });
         }
       }
     }
