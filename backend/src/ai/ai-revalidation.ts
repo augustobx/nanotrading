@@ -383,8 +383,10 @@ Responde estrictamente en JSON:
       const liveState = this.coordinator.getMarketState();
       const riskPolicy = this.coordinator.getRiskPolicyManager?.()?.getPolicy?.() || DEFAULT_RISK_POLICY;
       const currentSpread = liveState.ticker?.spreadPcnt;
+      const spreadUsdt = liveState.ticker?.spread;
       const livePrice = liveState.ticker?.lastPrice;
       const spreadTooHigh = !Number.isFinite(currentSpread) ||
+        !Number.isFinite(spreadUsdt) || (spreadUsdt as number) < 0 ||
         (currentSpread as number) > riskPolicy.marketRestrictions.maxSpreadPercent;
       const stale = !liveState.wsConnected ||
         liveState.status === 'DATA_UNAVAILABLE' || !Number.isFinite(livePrice) ||
@@ -413,7 +415,8 @@ Responde estrictamente en JSON:
         accountBalance: riskPolicy.capitalUsdt,
         riskPercent: Math.min(riskPolicy.maxRiskPerTradePercent,
           riskPolicy.maxRiskPerTradeUsdt / riskPolicy.capitalUsdt * 100),
-        spread: currentSpread,
+        // RiskCalculator expects price units (USDT), not percentage spread.
+        spread: spreadUsdt,
       });
 
       if (riskCalc.qualifiedMode === 'NONE' ||
