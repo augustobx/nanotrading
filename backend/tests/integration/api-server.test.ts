@@ -24,11 +24,72 @@ test('ApiServer - full end-to-end bootstrap and HTTP endpoints verification', as
     'BTCUSDT'
   );
 
-  const testPort = 3299;
-  const apiServer = new ApiServer(coordinator, db, testPort, '127.0.0.1');
+  // In CI environments, stub external Bybit network I/O so ApiServer's endpoints
+  // and WebSocket communication are verified deterministically without third-party flakiness.
+  if (process.env.CI) {
+    restClient.getInstrumentsInfo = async () => ({
+      symbol: 'BTCUSDT',
+      tickSize: 0.1,
+      qtyStep: 0.001,
+      minOrderQty: 0.001,
+      baseCoin: 'BTC',
+      quoteCoin: 'USDT',
+    });
+    restClient.getTicker = async () => ({
+      symbol: 'BTCUSDT',
+      lastPrice: 60000,
+      markPrice: 60000,
+      indexPrice: 60000,
+      bid1Price: 59999.9,
+      ask1Price: 60000.1,
+      bid1Size: 1.0,
+      ask1Size: 1.0,
+      spread: 0.2,
+      spreadPcnt: 0.0003,
+      highPrice24h: 61000,
+      lowPrice24h: 59000,
+      prevPrice24h: 59500,
+      price24hPcnt: 0.008,
+      volume24h: 100,
+      turnover24h: 6000000,
+      fundingRate: 0.0001,
+      nextFundingTime: Date.now() + 14400000,
+      openInterest: 50000,
+      openInterestValue: 3000000000,
+      timestamp: Date.now(),
+    });
+    restClient.getOrderBook = async () => ({
+      bids: [[60000, 1]],
+      asks: [[60000.1, 1]],
+      seq: 100,
+      timestamp: Date.now(),
+    });
+    restClient.getKlines = async (_sym, tf) => {
+      const now = Date.now();
+      return Array.from({ length: 20 }, (_, i) => ({
+        timestamp: now - (20 - i) * 60000,
+        open: 60000,
+        high: 60050,
+        low: 59950,
+        close: 60000,
+        volume: 10,
+        turnover: 600000,
+        confirm: true,
+        timeframe: tf,
+      }));
+    };
+    wsClient.isConnected = () => true;
+    wsClient.getLastMessageTime = () => Date.now();
+    wsClient.connect = () => {
+      wsClient.emit('connected');
+    };
+  }
+
+  const apiServer = new ApiServer(coordinator, db, 0, '127.0.0.1');
 
   try {
     await apiServer.start();
+    const testPort = apiServer.getPort();
     await coordinator.bootstrap();
 
     // Wait for Bybit WS connection to establish (up to 6000ms)
