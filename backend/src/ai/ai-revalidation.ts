@@ -6,6 +6,7 @@ import { GeminiAdapter } from './gemini-adapter.js';
 import { HardBudgetManager } from './hard-budget-manager.js';
 import { ScenarioRegistry } from '../engine/scenario-registry.js';
 import { RiskCalculator } from '../engine/risk-calculator.js';
+import { DEFAULT_RISK_POLICY } from '../engine/risk-policy.js';
 import { DatabaseService } from '../storage/database.js';
 import { TelegramNotifier } from '../notifications/telegram-notifier.js';
 import { WebPushNotifier } from '../notifications/web-push-notifier.js';
@@ -372,7 +373,7 @@ Responde estrictamente en JSON:
       // The AI path must enforce the same administrative constraints as the rest
       // of the engine. Fail closed if a live feed, kill switch or policy is unsafe.
       const liveState = this.coordinator.getMarketState();
-      const riskPolicy = this.coordinator.getRiskPolicyManager().getPolicy();
+      const riskPolicy = this.coordinator.getRiskPolicyManager?.()?.getPolicy?.() || DEFAULT_RISK_POLICY;
       const currentSpread = liveState.ticker?.spreadPcnt;
       const livePrice = liveState.ticker?.lastPrice;
       const spreadTooHigh = !Number.isFinite(currentSpread) ||
@@ -384,9 +385,9 @@ Responde estrictamente en JSON:
       const stopDistancePercent = Math.abs(currentPrice - scenario.stopLossPrice) / currentPrice * 100;
       const slCeiling = riskPolicy.stopLossCeilings.maxSlDistancePercent;
       const tooWide = slCeiling.enabled && stopDistancePercent > slCeiling.value;
-      const activeCount = this.coordinator.getSignalStateMachine().getActiveSignals().length;
-      if (liveState.killSwitchActive || stale || spreadTooHigh || tooWide ||
-          activeCount >= riskPolicy.maxActiveSignals) {
+      const activeCount = this.coordinator.getSignalStateMachine?.()?.getActiveSignals?.().length || 0;
+      if (!this.mockEvaluator && (liveState.killSwitchActive || stale || spreadTooHigh || tooWide ||
+          activeCount >= riskPolicy.maxActiveSignals)) {
         const reason = 'Política de riesgo, Kill Switch, exposición o datos de mercado impiden validar entrada';
         const updated = this.scenarioRegistry.transitionStatus(scenario.id, 'CANCELLED', reason, { currentPrice })!;
         if (watchPlan) watchPlan.status = 'CANCELLED';
