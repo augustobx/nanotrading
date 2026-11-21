@@ -152,7 +152,7 @@ describe('Fase 4.6.2 — Corrección Oficial de Tokens Gratuitos de OpenAI (Data
   // -------------------------------------------------------------------------
   // 6. Saldo Insuficiente y Bloqueo de Presupuesto Monetario
   // -------------------------------------------------------------------------
-  it('6. Saldo insuficiente: Bloqueo inmediato cuando la solicitud supera el límite monetario remanente', () => {
+  it('6. Saldo insuficiente: rechaza la solicitud sin bloquear otras más baratas', () => {
     const budget = new HardBudgetManager({
       dailyBudgetLimitUsd: 0.10,
       openaiFreeTier: {
@@ -180,7 +180,8 @@ describe('Fase 4.6.2 — Corrección Oficial de Tokens Gratuitos de OpenAI (Data
 
     assert.strictEqual(res.allowed, false);
     assert.strictEqual(res.status, 'AI_BUDGET_EXCEEDED');
-    assert.strictEqual(budget.isBlocked(), true);
+    assert.strictEqual(budget.isBlocked(), false);
+    assert.strictEqual(budget.getTodaySpendUsd(), 0.09);
   });
 
   // -------------------------------------------------------------------------
@@ -330,7 +331,8 @@ describe('Fase 4.6.2 — Corrección Oficial de Tokens Gratuitos de OpenAI (Data
     assert.strictEqual(allowed.length, 3);
     assert.strictEqual(rejected.length, 7);
     assert.strictEqual(budget.getReservedPendingUsd(), 0.09);
-    assert.strictEqual(budget.isBlocked(), true);
+    assert.strictEqual(budget.isBlocked(), false);
+    assert.strictEqual(budget.getSummary().lastBudgetDenial?.code, 'DAILY_GLOBAL');
   });
 
   // -------------------------------------------------------------------------
