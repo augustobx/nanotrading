@@ -48,14 +48,14 @@ export class StrategyATrendContinuation {
     const isHigherTfBullish = struct4h.trend === 'BULLISH' || struct1h.trend === 'BULLISH';
     if (isHigherTfBullish) {
       // Find active Bullish FVG or Order Block on 15m
-      const activeFvg = struct15m.fvgs.find((f) => f.type === 'BULLISH' && f.status === 'ACTIVE');
-      const activeOb = struct15m.orderBlocks.find((o) => o.type === 'BULLISH' && o.status === 'ACTIVE');
+      const activeFvg = [...struct15m.fvgs].reverse().find((f) => f.type === 'BULLISH' && f.status === 'ACTIVE');
+      const activeOb = [...struct15m.orderBlocks].reverse().find((o) => o.type === 'BULLISH' && o.status === 'ACTIVE');
 
       const demandZone = activeFvg ? { top: activeFvg.top, bottom: activeFvg.bottom } : activeOb ? { top: activeOb.top, bottom: activeOb.bottom } : null;
 
       if (demandZone && currentPrice >= demandZone.bottom && currentPrice <= demandZone.top * 1.002) {
         // Micro confirmation on 5m: Bullish BOS or CHoCH
-        const recentBullBreak = struct5m.structureBreaks.find(
+        const recentBullBreak = [...struct5m.structureBreaks].reverse().find(
           (b) => b.direction === 'BULLISH' && b.candleIndex >= candles5m.length - 8
         );
 
@@ -114,14 +114,14 @@ export class StrategyATrendContinuation {
     const isHigherTfBearish = struct4h.trend === 'BEARISH' || struct1h.trend === 'BEARISH';
     if (isHigherTfBearish) {
       // Find active Bearish FVG or Order Block on 15m
-      const activeFvg = struct15m.fvgs.find((f) => f.type === 'BEARISH' && f.status === 'ACTIVE');
-      const activeOb = struct15m.orderBlocks.find((o) => o.type === 'BEARISH' && o.status === 'ACTIVE');
+      const activeFvg = [...struct15m.fvgs].reverse().find((f) => f.type === 'BEARISH' && f.status === 'ACTIVE');
+      const activeOb = [...struct15m.orderBlocks].reverse().find((o) => o.type === 'BEARISH' && o.status === 'ACTIVE');
 
       const supplyZone = activeFvg ? { top: activeFvg.top, bottom: activeFvg.bottom } : activeOb ? { top: activeOb.top, bottom: activeOb.bottom } : null;
 
       if (supplyZone && currentPrice <= supplyZone.top && currentPrice >= supplyZone.bottom * 0.998) {
         // Micro confirmation on 5m: Bearish BOS or CHoCH
-        const recentBearBreak = struct5m.structureBreaks.find(
+        const recentBearBreak = [...struct5m.structureBreaks].reverse().find(
           (b) => b.direction === 'BEARISH' && b.candleIndex >= candles5m.length - 8
         );
 
