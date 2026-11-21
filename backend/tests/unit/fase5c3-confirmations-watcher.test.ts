@@ -315,8 +315,14 @@ describe('Fase 5C.3: Algorithmic Confirmation Operators & Sequential Watcher', (
 
     registry.registerScenario(neutralSc);
 
-    // Precio rompe por encima del techo (51050 > 51000)
+    // A single tick/wick outside the range is not a confirmed breakout.
     watcher.evaluateTick(51050);
+    assert.equal(registry.getScenario(neutralId)?.status, 'NO_TRADE_OBSERVATION');
+    // Only a closed 15m candle after discovery may complete the observation.
+    watcher.evaluateCandleClose({
+      timeframe: '15m', timestamp: now + 1000, confirmed: true,
+      open: 50800, high: 51100, low: 50700, close: 51050, volume: 10,
+    });
 
     const updated = registry.getScenario(neutralId);
     assert.strictEqual(updated?.status, 'COMPLETED', 'La observación NEUTRAL debe completarse al romper el rango');

@@ -33,24 +33,27 @@ export class AlgorithmicWatcher extends EventEmitter {
     this.approachThresholdPct = options.approachThresholdPct ?? 0.35;
   }
 
+  private readonly onStateUpdated = (state: any): void => {
+    if (this.isRunning && state.ticker?.lastPrice) {
+      this.evaluateTick(state.ticker.lastPrice, state.ticker.spreadPcnt);
+    }
+  };
+  private readonly onCandleClosed = (candle: any): void => {
+    if (this.isRunning) this.evaluateCandleClose(candle);
+  };
+
   public start(): void {
     if (this.isRunning) return;
     this.isRunning = true;
-
-    // Listen to market ticks from coordinator
-    this.coordinator.on('state_updated', (state) => {
-      if (state.ticker?.lastPrice) {
-        this.evaluateTick(state.ticker.lastPrice, state.ticker.spreadPcnt);
-      }
-    });
-
-    this.coordinator.on('candle_closed', (candle) => {
-      this.evaluateCandleClose(candle);
-    });
+    this.coordinator.on('state_updated', this.onStateUpdated);
+    this.coordinator.on('candle_closed', this.onCandleClosed);
   }
 
   public stop(): void {
+    if (!this.isRunning) return;
     this.isRunning = false;
+    this.coordinator.off('state_updated', this.onStateUpdated);
+    this.coordinator.off('candle_closed', this.onCandleClosed);
   }
 
   public evaluateTick(currentPrice: number, spreadPcnt: number = 0.001): void {
@@ -77,49 +80,9 @@ export class AlgorithmicWatcher extends EventEmitter {
         continue;
       }
 
-      // 2. NEUTRAL_OBSERVATION check: Monitor range breakout ONLY. NEVER revalidate as a trade entry!
+      // NEUTRAL is a market observation, not a trade or tick-level breakout.
+      // Wait for an explicit matching CLOSED candle in evaluateCandleClose.
       if (sc.kind === 'NEUTRAL_OBSERVATION' || sc.direction === 'NEUTRAL') {
-        let breakoutOccurred = false;
-        let breakoutReason = '';
-
-        // Check if price broke through dynamic range boundaries
-        if (sc.entryZoneMax > 0 && currentPrice > sc.entryZoneMax) {
-          breakoutOccurred = true;
-          breakoutReason = `Ruptura alcista de rango neutral: precio $${currentPrice.toFixed(1)} superó techo $${sc.entryZoneMax.toFixed(1)}`;
-        } else if (sc.entryZoneMin > 0 && currentPrice < sc.entryZoneMin) {
-          breakoutOccurred = true;
-          breakoutReason = `Ruptura bajista de rango neutral: precio $${currentPrice.toFixed(1)} perforó piso $${sc.entryZoneMin.toFixed(1)}`;
-        }
-
-        // Check any observable conditions on the neutral plan
-        if (!breakoutOccurred && sc.watchPlan?.observableConditions) {
-          for (const cond of sc.watchPlan.observableConditions) {
-            if (this.evaluateCondition(cond, currentPrice, spreadPcnt, undefined, sc.discoveryTimestamp)) {
-              cond.isMet = true;
-              cond.metTimestamp = now;
-              breakoutOccurred = true;
-              breakoutReason = cond.description;
-              break;
-            }
-          }
-        }
-
-        if (breakoutOccurred) {
-          this.scenarioRegistry.transitionStatus(
-            sc.id,
-            'COMPLETED',
-            `${breakoutReason}. Ruptura confirmada: solicitando nuevo descubrimiento de IA.`,
-            { currentPrice }
-          );
-          if (sc.watchPlan) {
-            sc.watchPlan.status = 'COMPLETED';
-          }
-          this.emit('neutral_range_breakout', { scenario: sc, breakoutPrice: currentPrice, reason: breakoutReason });
-          // Autonomous Trigger: When neutral observation breaks out, trigger a fresh AI market discovery
-          this.coordinator.getDiscoveryScheduler?.()?.triggerDiscovery?.('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', currentPrice);
-        }
-
-        // Never evaluate entry revalidation for neutral observations
         continue;
       }
 
@@ -294,6 +257,7 @@ export class AlgorithmicWatcher extends EventEmitter {
   }
 
   public evaluateCandleClose(candle: any): void {
+    if (!candle || candle.confirmed === false || !Number.isFinite(candle.close)) return;
     const inactiveStatuses = ['EXPIRED', 'INVALIDATED', 'CANCELLED', 'COMPLETED', 'DISCARDED'];
     const activeScenarios = this.scenarioRegistry.getAllActive().filter((s) => !inactiveStatuses.includes(s.status));
     if (activeScenarios.length === 0) return;
@@ -303,6 +267,9 @@ export class AlgorithmicWatcher extends EventEmitter {
     for (const sc of activeScenarios) {
       // 1. NEUTRAL_OBSERVATION check on candle close
       if (sc.kind === 'NEUTRAL_OBSERVATION' || sc.direction === 'NEUTRAL') {
+        if (candle.timeframe !== sc.timeframe ||
+            !Number.isFinite(candle.timestamp) ||
+            candle.timestamp < sc.discoveryTimestamp) continue;
         let breakoutOccurred = false;
         let breakoutReason = '';
 
@@ -331,6 +298,7 @@ export class AlgorithmicWatcher extends EventEmitter {
       }
 
       // 2. Sequential conditions check on candle close
+      if (candle.timestamp < sc.discoveryTimestamp) continue;
       if (sc.watchPlan?.observableConditions && sc.watchPlan.observableConditions.length > 0) {
         const sortedConditions = [...sc.watchPlan.observableConditions].sort(
           (a, b) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
@@ -358,7 +326,14 @@ export class AlgorithmicWatcher extends EventEmitter {
           }
 
           if (cond.automatable) {
-            const isMet = this.evaluateCondition(cond, candle.close, 0.001, candle, sc.discoveryTimestamp, previousStepMetTimestamp);
+            if (cond.params?.timeframe && cond.params.timeframe !== candle.timeframe) {
+              sequenceBlocked = true;
+              continue;
+            }
+            const spreadNow = this.coordinator.getMarketState()?.ticker?.spreadPcnt;
+            const isMet = this.evaluateCondition(cond, candle.close,
+              typeof spreadNow === 'number' ? spreadNow : Number.NaN,
+              candle, sc.discoveryTimestamp, previousStepMetTimestamp);
             if (isMet) {
               cond.isMet = true;
               cond.metTimestamp = now;
@@ -453,12 +428,12 @@ export class AlgorithmicWatcher extends EventEmitter {
   public evaluateVolumeExpansion(candle: any, timeframe: any = '15m', threshold: number = 1.5): boolean {
     if (!candle) return false;
     const candleManager = this.coordinator.getCandleManager?.();
-    if (!candleManager) return true;
+    if (!candleManager) return false;
     const recent = candleManager.getCandles(timeframe, 20);
-    if (!recent || recent.length < 3) return true;
+    if (!recent || recent.length < 3) return false;
     const past = recent.slice(0, -1);
     const avgVol = past.reduce((acc: number, c: any) => acc + (c.volume || 0), 0) / Math.max(1, past.length);
-    if (avgVol === 0) return true;
+    if (!Number.isFinite(avgVol) || avgVol <= 0) return false;
     return (candle.volume || 0) >= avgVol * threshold;
   }
 
@@ -495,13 +470,13 @@ export class AlgorithmicWatcher extends EventEmitter {
         return spreadPcnt <= maxSpread;
       }
       case 'RSI_THRESHOLD': {
-        if (p.threshold === undefined) return true;
+        if (p.threshold === undefined) return false;
         const tf = p.timeframe || '15m';
         const analysis = this.coordinator.getSetupEngine()?.getAnalysis(tf);
-        if (!analysis) return true;
+        if (!analysis || !Number.isFinite(analysis.rsi)) return false;
         if (p.comparison === 'GREATER_THAN') return analysis.rsi >= p.threshold;
         if (p.comparison === 'LESS_THAN') return analysis.rsi <= p.threshold;
-        return true;
+        return false;
       }
       case 'CANDLE_CLOSE_ABOVE': {
         if (p.level === undefined || !candle) return false;
@@ -626,7 +601,10 @@ export class AlgorithmicWatcher extends EventEmitter {
         );
       }
       case 'TIME_ELAPSED': {
-        return true;
+        // threshold is elapsed seconds since the previous confirmation or discovery.
+        if (!Number.isFinite(p.threshold) || !p.threshold || p.threshold < 0) return false;
+        const anchor = previousStepMetTimestamp || discoveryTimestamp;
+        return !!anchor && Date.now() - anchor >= p.threshold * 1000;
       }
       default:
         return false;
