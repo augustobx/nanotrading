@@ -90,6 +90,16 @@ export class SmcDetector {
     return c.timestamp + TIMEFRAME_DURATION_MS[c.timeframe];
   }
 
+  /** Missing candles are not consecutive evidence; never bridge a feed gap. */
+  private static consecutive(first: Candle, second: Candle): boolean {
+    return second.timestamp - first.timestamp === TIMEFRAME_DURATION_MS[first.timeframe] &&
+      first.timeframe === second.timeframe;
+  }
+
+  private static swingKey(s: SwingPoint): string {
+    return s.type + ':' + s.index;
+  }
+
   /** Filter unfinished, invalid, out-of-order and duplicate observations. */
   private static normalizeCandles(candles: Candle[], timeframe?: Timeframe): Candle[] {
     const closed = new Map<number, Candle>();
@@ -116,6 +126,13 @@ export class SmcDetector {
         leftBars < 1 || rightBars < 1 || candles.length < leftBars + rightBars + 1) return swings;
     for (let i = leftBars; i < candles.length - rightBars; i++) {
       const current = candles[i];
+      let contiguous = true;
+      for (let j = i - leftBars; j < i + rightBars; j++) {
+        if (!this.consecutive(candles[j], candles[j + 1])) {
+          contiguous = false; break;
+        }
+      }
+      if (!contiguous) continue;
       let isHigh = true;
       let isLow = true;
       for (let j = i - leftBars; j < i; j++) {
@@ -176,6 +193,7 @@ export class SmcDetector {
     if (candles.length < 3) return fvgs;
     for (let i = 0; i < candles.length - 2; i++) {
       const c1 = candles[i], c2 = candles[i + 1], c3 = candles[i + 2];
+      if (!this.consecutive(c1, c2) || !this.consecutive(c2, c3)) continue;
       const body = Math.abs(c2.close - c2.open);
       const range = c2.high - c2.low;
       if (range <= 0 || body / range < 0.5) continue;
@@ -205,6 +223,13 @@ export class SmcDetector {
       };
       for (let k = i + 3; k < candles.length; k++) {
         const future = candles[k];
+        if (!this.consecutive(candles[k - 1], future)) {
+          // A missing interval might have filled the gap. A stale FVG cannot
+          // be considered safely ACTIVE without reconstructing that period.
+          fvg.status = 'INVALIDATED';
+          fvg.mitigatedAt = this.closeTime(future);
+          break;
+        }
         if (type === 'BULLISH') {
           if (future.low <= fvg.bottom) {
             fvg.status = 'INVALIDATED'; fvg.mitigatedAt = this.closeTime(future); break;
@@ -237,6 +262,7 @@ export class SmcDetector {
     for (let i = 1; i < candles.length - 2; i++) {
       const obCandle = candles[i];
       const nextCandle = candles[i + 1];
+      if (!this.consecutive(obCandle, nextCandle)) continue;
 
       const bodySize = Math.abs(obCandle.close - obCandle.open);
       const nextBodySize = Math.abs(nextCandle.close - nextCandle.open);
@@ -334,19 +360,20 @@ export class SmcDetector {
     const orderBlocks = this.detectOrderBlocks(candles, timeframe);
     const structureBreaks: StructureBreak[] = [];
     const sweeps: LiquiditySweep[] = [];
-    const brokenLevels = new Set<number>();
-    const sweptLevels = new Set<number>();
+    const brokenLevels = new Set<string>();
+    const sweptLevels = new Set<string>();
     let trend: MarketStructureResult['trend'] = 'RANGING';
 
     for (let i = 1; i < candles.length; i++) {
       const c = candles[i], prev = candles[i - 1];
+      if (!this.consecutive(prev, c)) continue;
       const available = swings.filter(s => s.confirmedAtIndex <= i &&
         s.operationalAvailableTimestamp <= this.closeTime(c));
       if (trend === 'RANGING') trend = this.trendFromConfirmedSwings(available);
 
-      const bullish = available.filter(s => s.type === 'HIGH' && !brokenLevels.has(s.index) &&
+      const bullish = available.filter(s => s.type === 'HIGH' && !brokenLevels.has(this.swingKey(s)) &&
         prev.close <= s.price && c.close > s.price);
-      const bearish = available.filter(s => s.type === 'LOW' && !brokenLevels.has(s.index) &&
+      const bearish = available.filter(s => s.type === 'LOW' && !brokenLevels.has(this.swingKey(s)) &&
         prev.close >= s.price && c.close < s.price);
 
       // In a consistent OHLC sequence opposite closes cannot both occur across
@@ -359,7 +386,7 @@ export class SmcDetector {
         // Select strongest broken structure, not one marker per older swing.
         const brokenSwing = [...candidates].sort((a, b) =>
           direction === 'BULLISH' ? b.price - a.price : a.price - b.price)[0];
-        candidates.forEach(s => brokenLevels.add(s.index));
+        candidates.forEach(s => brokenLevels.add(this.swingKey(s)));
         const type: StructureBreak['type'] =
           (trend !== 'RANGING' && trend !== direction) ? 'CHoCH' : 'BOS';
         structureBreaks.push({
@@ -375,11 +402,11 @@ export class SmcDetector {
       // Sweep only once per structural level, after its confirmation, and
       // only when the market rejected it by the close (not a BOS by wick).
       const highSweeps = available.filter(s => s.type === 'HIGH' &&
-        !brokenLevels.has(s.index) && !sweptLevels.has(s.index) &&
+        !brokenLevels.has(this.swingKey(s)) && !sweptLevels.has(this.swingKey(s)) &&
         c.high > s.price && c.close <= s.price &&
         (c.high - Math.max(c.open, c.close)) / Math.max(0.000001, c.high - c.low) >= 0.25);
       const lowSweeps = available.filter(s => s.type === 'LOW' &&
-        !brokenLevels.has(s.index) && !sweptLevels.has(s.index) &&
+        !brokenLevels.has(this.swingKey(s)) && !sweptLevels.has(this.swingKey(s)) &&
         c.low < s.price && c.close >= s.price &&
         (Math.min(c.open, c.close) - c.low) / Math.max(0.000001, c.high - c.low) >= 0.25);
       for (const [candidates, sweepDirection] of [
@@ -387,7 +414,7 @@ export class SmcDetector {
       ] as const) {
         if (!candidates.length) continue;
         const s = [...candidates].sort((a, b) => b.confirmedAtIndex - a.confirmedAtIndex)[0];
-        candidates.forEach(candidate => sweptLevels.add(candidate.index));
+        candidates.forEach(candidate => sweptLevels.add(this.swingKey(candidate)));
         sweeps.push({
           direction: sweepDirection, sweptLevel: s.price,
           wickExtreme: sweepDirection === 'BEARISH' ? c.high : c.low,
