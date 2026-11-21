@@ -1693,7 +1693,7 @@ export class ApiServer {
           smallGroupUsedTokens: payload.reconcileUsage.smallGroupUsedTokens,
           source: reconciliationSource,
           evidenceDetails: payload.billingEvidenceDetails,
-          verifiedBilled: verificationStatus === 'CONFIRMED_BILLED',
+          verifiedBilled: false,
         });
       }
 
@@ -1719,7 +1719,7 @@ export class ApiServer {
       this.db.saveHardBudgetConfig(updatedConfig);
       this.db.logConfigAudit({
         category: 'OPENAI_FREE_TIER',
-        action: verificationStatus === 'CONFIRMED_BILLED' ? 'VERIFIED_OFFICIAL_BILLING' : isVerified ? 'DECLARED_BY_ADMIN' : 'API_KEY_VALID_UNVERIFIED_TIER',
+        action: isVerified ? 'DECLARED_BY_ADMIN' : 'API_KEY_VALID_UNVERIFIED_TIER',
         details: { orgId, verificationStatus, isGlobalUsageEstimated, ipAddress: clientIp },
         ipAddress: clientIp,
       });
