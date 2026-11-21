@@ -2434,7 +2434,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 font-bold text-sm text-red-300">
                         <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse" />
-                        <span>HARD STOP ACTIVO: Límite de Presupuesto de IA Alcanzado</span>
+                        <span>PAUSA DE IA: protección presupuestaria activa</span>
                       </div>
                       <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-red-900 text-red-100 border border-red-600">
                         AI_BUDGET_EXCEEDED
@@ -2449,7 +2449,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                       <strong> El monitoreo continuo de Bybit, la ingesta de velas, los indicadores cuantitativos y la gestión de órdenes existentes continúan 100% operativos.</strong>
                     </p>
                     <div className="p-2.5 rounded bg-black/40 border border-red-900/60 text-xs text-red-300 space-y-1">
-                      <div><strong>Motivo del bloqueo:</strong> {hardBudgetSummary?.blockedReason || 'Consumo acumulado superó el límite asignado.'}</div>
+                      <div><strong>Motivo del bloqueo:</strong> {hardBudgetSummary?.blockedReason || 'Protección presupuestaria configurada; ver estado de consumo y reservas.'}</div>
                       <div><strong>Regla Inviolable:</strong> El gasto confirmado es inmutable en base de datos. No se puede reducir ni resetear manualmente sin avanzar el período.</div>
                     </div>
 
@@ -2538,11 +2538,11 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                     <span className="text-[10px] text-slate-500 block">Margen + safety</span>
                   </div>
                   <div className="p-3.5 rounded-lg bg-[#111624] border border-[#21283b]">
-                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Gasto Hoy (Inmutable)</span>
+                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Gasto neto hoy (registrado)</span>
                     <span className="text-base font-bold font-mono text-white">
                       ${hardBudgetSummary ? hardBudgetSummary.todaySpendUsd.toFixed(4) : '—'}
                     </span>
-                    <span className="text-[10px] text-slate-500 block">Persistido en DB</span>
+                    <span className="text-[10px] text-slate-500 block">Bruto: ${hardBudgetSummary ? hardBudgetSummary.todayGrossSpendUsd.toFixed(4) : '—'} USD</span>
                   </div>
                   <div className="p-3.5 rounded-lg bg-[#111624] border border-[#21283b]">
                     <span className="text-[10px] text-slate-400 uppercase font-mono block">Gasto Mensual</span>

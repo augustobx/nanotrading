@@ -306,7 +306,9 @@ export function AiTradingIntelligence() {
   const inZoneCount = scenarios.filter((s) => s.status === 'IN_ZONE' || s.status === 'REVALIDATION_REQUESTED').length;
   const approachingCount = scenarios.filter((s) => s.status === 'APPROACHING_ZONE').length;
   const validatedCount = scenarios.filter((s) => s.status === 'ENTRY_VALIDATED').length;
-  const totalAiCost = scenarios.reduce((acc, s) => acc + (s.aiCostUsd || 0), 0);
+  // Scenarios are not an accounting ledger: calls without accepted scenarios
+  // and connection tests must still be counted by the persisted database.
+  const totalAiCost: number | null = configSummary?.aiAccounting?.lifetimeGrossSpendUsd ?? null;
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -471,8 +473,8 @@ export function AiTradingIntelligence() {
         </div>
 
         <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Gasto Total IA</p>
-          <p className="text-xl font-mono font-extrabold text-slate-200 mt-0.5">${totalAiCost.toFixed(4)}</p>
+          <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Gasto bruto histórico IA</p>
+          <p className="text-xl font-mono font-extrabold text-slate-200 mt-0.5">${totalAiCost === null ? '—' : totalAiCost.toFixed(4)}</p>
           <p className="text-[10px] text-slate-500 font-mono mt-0.5">Descubrimiento + Reval.</p>
         </div>
 
@@ -621,7 +623,7 @@ export function AiTradingIntelligence() {
                   }`}
               >
                 <DollarSign className="w-3 h-3" />
-                Auditoría Costos IA (${totalAiCost.toFixed(4)})
+                Auditoría Costos IA (${totalAiCost === null ? '—' : totalAiCost.toFixed(4)})
               </button>
             </div>
             <p className="text-[11px] text-slate-400 font-mono italic">
@@ -640,7 +642,7 @@ export function AiTradingIntelligence() {
               RECONCILIACIÓN Y AUDITORÍA DE COSTOS DE IA (FASE 5C.3)
             </span>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] text-purple-400 font-bold">LÍMITE DIARIO ESTRICTO: $0.50 USD</span>
+              <span className="text-[10px] text-purple-400 font-bold">LÍMITE DIARIO: ${(configSummary?.dailyBudgetUsd ?? 0.50).toFixed(2)} USD</span>
               <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
                 SALDO RESTANTE: ${(configSummary?.aiAccounting?.dailyRemainingBalanceUsd ?? configSummary?.budgetRemainingUsd ?? 0.5).toFixed(4)} USD
               </span>
@@ -657,7 +659,7 @@ export function AiTradingIntelligence() {
                 <span className="text-emerald-400 font-bold">${(configSummary?.aiAccounting?.todayNetSpendUsd ?? configSummary?.spentTodayUsd ?? 0).toFixed(4)} USD</span>
               </div>
               <p className="text-[10px] text-slate-500">
-                Consumo exacto hoy en Bybit snapshots.
+                Costos de OpenAI y Gemini persistidos en la base de datos.
               </p>
             </div>
 
@@ -678,11 +680,11 @@ export function AiTradingIntelligence() {
             <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 space-y-1">
               <div className="flex items-center justify-between text-slate-400">
                 <span>Gasto Bruto Histórico:</span>
-                <span className="text-slate-300 font-bold">${(configSummary?.aiAccounting?.lifetimeGrossSpendUsd ?? totalAiCost).toFixed(4)} USD</span>
+                <span className="text-slate-300 font-bold">${configSummary?.aiAccounting?.lifetimeGrossSpendUsd?.toFixed(4) ?? '—'} USD</span>
               </div>
               <div className="flex items-center justify-between text-slate-400 text-[11px]">
                 <span>Gasto Neto Histórico:</span>
-                <span className="text-purple-300 font-bold">${(configSummary?.aiAccounting?.lifetimeNetSpendUsd ?? totalAiCost).toFixed(4)} USD</span>
+                <span className="text-purple-300 font-bold">${configSummary?.aiAccounting?.lifetimeNetSpendUsd?.toFixed(4) ?? '—'} USD</span>
               </div>
               <p className="text-[10px] text-slate-500">
                 Historial completo persistido en SQLite.
