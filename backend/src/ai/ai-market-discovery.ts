@@ -545,16 +545,27 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         return { scenarios: [], summary, aiCostUsd: 0, skippedReason: 'NO_AI_PROVIDERS_CONFIGURED' };
       }
 
-      // Reserve budget for market discovery
-      const resv = this.hardBudgetManager.reserveBudget({
-        provider: openaiConfigured ? 'OPENAI' : 'GEMINI',
-        model: openaiConfigured ? this.openaiAdapter.getModel() : this.geminiAdapter.getModel(),
-        task: 'MARKET_DISCOVERY',
-        estimatedTokens: 3500,
-      });
-
-      if (!resv.allowed) {
-        return { scenarios: [], summary, aiCostUsd: 0, skippedReason: resv.reason || 'AI_BUDGET_EXCEEDED' };
+      // Reserve independently for BOTH possible paid providers before requesting either.
+      // Never launch the second AI call against a reservation held only for the first.
+      const reservations: Array<{
+        provider: 'OPENAI' | 'GEMINI'; model: string; reservationId: string;
+      }> = [];
+      const providersToQuery: Array<{ provider: 'OPENAI' | 'GEMINI'; model: string }> = [];
+      if (openaiConfigured) providersToQuery.push({ provider: 'OPENAI', model: this.openaiAdapter.getModel() });
+      if (geminiConfigured) providersToQuery.push({ provider: 'GEMINI', model: this.geminiAdapter.getModel() });
+      if (!summary.dataAvailability.allCriticalDataPresent) {
+        return { scenarios: [], summary, aiCostUsd: 0, skippedReason: 'MARKET_DATA_NOT_READY' };
+      }
+      for (const provider of providersToQuery) {
+        const held = this.hardBudgetManager.reserveBudget({
+          provider: provider.provider, model: provider.model,
+          task: 'MARKET_DISCOVERY', estimatedTokens: 3500,
+        });
+        if (!held.allowed || !held.reservationId) {
+          for (const prior of reservations) this.hardBudgetManager.releaseReservation(prior.reservationId);
+          return { scenarios: [], summary, aiCostUsd: 0, skippedReason: held.reason || 'AI_BUDGET_EXCEEDED' };
+        }
+        reservations.push({ ...provider, reservationId: held.reservationId });
       }
 
       let totalCostUsd = 0;
@@ -614,34 +625,21 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
             }
           }
 
-          // Record Gemini direct usage into database consumption logs so both providers are segregated
-          if (geminiDiscovery.costUsd > 0) {
-            try {
-              this.db.logAiConsumption({
-                provider: 'GEMINI',
-                model: this.geminiAdapter.getModel(),
-                task: 'MARKET_DISCOVERY',
-                tokensPrompt: geminiDiscovery.promptTokens || 1800,
-                tokensCompletion: geminiDiscovery.completionTokens || 500,
-                costUsd: geminiDiscovery.costUsd,
-                status: 'SUCCESS',
-                latencyMs: geminiDiscovery.latencyMs || 1200,
-                discountStatus: 'NONE',
-              });
-            } catch {}
-          }
         }
       } finally {
-        if (resv.reservationId) {
-          this.hardBudgetManager.reconcileReservation(resv.reservationId, {
-            provider: openaiConfigured ? 'OPENAI' : 'GEMINI',
-            model: openaiConfigured ? this.openaiAdapter.getModel() : this.geminiAdapter.getModel(),
+        for (const reservation of reservations) {
+          const result = reservation.provider === 'OPENAI' ? openaiDiscovery : geminiDiscovery;
+          // Missing/invalid responses are uncertain: keep the reserved amount
+          // instead of incorrectly reporting a zero-cost successful API call.
+          this.hardBudgetManager.reconcileReservation(reservation.reservationId, {
+            provider: reservation.provider,
+            model: result?.model || reservation.model,
             task: 'MARKET_DISCOVERY',
-            promptTokens: 2000,
-            completionTokens: 600,
-            costUsd: totalCostUsd,
-            status: 'SUCCESS',
-            latencyMs: 1400,
+            promptTokens: result?.promptTokens || 0,
+            completionTokens: result?.completionTokens || 0,
+            ...(result ? { costUsd: result.costUsd } : {}),
+            status: result ? 'SUCCESS' : 'UNCERTAIN_TIMEOUT',
+            latencyMs: result?.latencyMs || 0,
           });
         }
       }

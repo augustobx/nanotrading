@@ -564,7 +564,7 @@ export class HardBudgetManager {
       group !== 'NONE' &&
       this.config.openaiFreeTier?.enabled &&
       this.config.openaiFreeTier?.verified &&
-      this.config.openaiFreeTier?.verificationStatus !== 'UNVERIFIED'
+      this.config.openaiFreeTier?.verificationStatus === 'CONFIRMED_BILLED'
     ) {
       const remainingFree = this.getRemainingFreeTokens(group, true);
       if (estimatedTokens <= remainingFree) {
