@@ -2377,6 +2377,35 @@ export class DatabaseService {
     }
   }
 
+  /** SQL-based continuity check; avoids loading 100k+ 1m candles in JS. */
+  public getHistoricalGapStats(
+    symbol: string, timeframe: string, startTime: number, intervalMs: number
+  ): { gapCount: number; missingCandles: number; largestGapMs: number } {
+    if (this.isClosed) throw new Error('Base de datos cerrada: continuidad histórica no verificable');
+    if (!Number.isFinite(startTime) || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+      throw new Error('Parámetros de continuidad histórica inválidos');
+    }
+    const row = this.db.prepare(`
+      WITH rows AS (
+        SELECT timestamp, LAG(timestamp) OVER (ORDER BY timestamp) AS previous
+        FROM historical_candles WHERE symbol = ? AND timeframe = ? AND timestamp >= ?
+      )
+      SELECT
+        COALESCE(SUM(CASE WHEN previous IS NOT NULL AND timestamp - previous > ?
+          THEN 1 ELSE 0 END), 0) AS gap_count,
+        COALESCE(SUM(CASE WHEN previous IS NOT NULL AND timestamp - previous > ?
+          THEN CAST((timestamp - previous - 1) / ? AS INTEGER) ELSE 0 END), 0) AS missing,
+        COALESCE(MAX(CASE WHEN previous IS NOT NULL
+          THEN timestamp - previous ELSE 0 END), 0) AS largest_gap
+      FROM rows
+    `).get(symbol, timeframe, startTime, intervalMs, intervalMs, intervalMs) as any;
+    return {
+      gapCount: Number(row?.gap_count || 0),
+      missingCandles: Number(row?.missing || 0),
+      largestGapMs: Number(row?.largest_gap || 0),
+    };
+  }
+
   public getHistoricalCandleStats(symbol: string, timeframe: string): {
     count: number;
     earliest: number | null;
