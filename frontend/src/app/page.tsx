@@ -23,7 +23,6 @@ import {
   RefreshCw,
   Sun,
   Moon,
-  Crosshair,
   TrendingUp,
   AlertTriangle,
   Bell,
@@ -672,85 +671,6 @@ export default function DashboardPage() {
           <div className="lg:col-span-1 space-y-5">
             <OrderBookWidget orderBook={orderBook} />
           </div>
-        </div>
-
-        {/* Oportunidades & Setups Cuantitativos (Fase 2) */}
-        <div className="rounded-2xl border border-slate-800 bg-[#0f1422] p-4 shadow-xl">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-3">
-            <div className="flex items-center gap-2">
-              <Crosshair className="w-4 h-4 text-[var(--color-brand,#FF6600)]" />
-              <h3 className="font-display font-bold text-sm text-slate-200 uppercase tracking-wider">
-                Oportunidades & Setups Cuantitativos (Estrategias A y B)
-              </h3>
-            </div>
-            <span className="text-[11px] font-mono bg-amber-500/10 text-amber-300 font-bold px-2 py-0.5 rounded border border-amber-500/30">
-              Filtro Estricto R:R $\ge$ 1:4 Neto
-            </span>
-          </div>
-
-          {setups.length > 0 ? (
-            <div className="overflow-x-auto custom-scrollbar">
-              <table className="w-full text-left font-mono text-xs">
-                <thead>
-                  <tr className="border-b border-slate-800 text-slate-500 text-[11px]">
-                    <th className="pb-2">Estrategia</th>
-                    <th className="pb-2">Dirección</th>
-                    <th className="pb-2">Entrada</th>
-                    <th className="pb-2">Stop Loss</th>
-                    <th className="pb-2">Take Profit</th>
-                    <th className="pb-2">R:R Neto</th>
-                    <th className="pb-2">Estado</th>
-                    <th className="pb-2">Justificación Técnica</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/50">
-                  {setups.map((s, i) => (
-                    <tr key={s.id || i} className="hover:bg-slate-900/40">
-                      <td className="py-2.5 font-bold text-slate-300">
-                        {s.strategy === 'STRATEGY_A_TREND_CONTINUATION'
-                          ? 'Estrategia A (Tendencia)'
-                          : 'Estrategia B (Barrido)'}
-                      </td>
-                      <td className="py-2.5">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            s.direction === 'LONG'
-                              ? 'bg-emerald-500/15 text-emerald-400'
-                              : 'bg-rose-500/15 text-rose-400'
-                          }`}
-                        >
-                          {s.direction}
-                        </span>
-                      </td>
-                      <td className="py-2.5 text-slate-100 font-semibold">${s.entryPrice.toFixed(1)}</td>
-                      <td className="py-2.5 text-rose-400 font-semibold">${s.stopLoss.toFixed(1)}</td>
-                      <td className="py-2.5 text-emerald-400 font-semibold">${s.takeProfit.toFixed(1)}</td>
-                      <td className="py-2.5 font-bold text-amber-400">
-                        1:{s.rrRatio?.toFixed(1) || '4.0'}
-                      </td>
-                      <td className="py-2.5">
-                        <span className="px-2 py-0.5 rounded text-[10px] bg-emerald-500/10 text-emerald-300 font-bold border border-emerald-500/20">
-                          {s.status}
-                        </span>
-                      </td>
-                      <td className="py-2.5 text-slate-400 text-[11px] max-w-xs truncate">
-                        {s.evidence?.triggerReason || 'Confluencia técnica multitemporal'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="py-6 px-4 rounded-xl border border-slate-800/60 bg-slate-900/40 text-center">
-              <p className="text-sm font-semibold text-slate-300 mb-1">
-                Estado Actual: <span className="text-amber-400">ESPERAR (Sin setups 1:4 con confluencia)</span>
-              </p>
-              <p className="text-xs text-slate-500 font-mono max-w-2xl mx-auto">
-                El sistema no fuerza operaciones. No se detectó confluencia técnica estricta con R:R neto $\ge$ 1:4 sobre velas cerradas. No operar es una decisión válida y deliberada.
-              </p>
-            </div>
-          )}
         </div>
 
         {/* Multi-Timeframe Matrix */}

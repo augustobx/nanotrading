@@ -50,23 +50,10 @@ export class SetupEngine extends EventEmitter {
       this.evaluateTimeframe(tf);
     }
 
-    // Evaluate Strategies
-    const closed = (tf: Timeframe) =>
-      this.candleManager.getCandles(tf, 100).filter((c) => c.confirmed === true);
-    const candles4h = closed('4h');
-    const candles1h = closed('1h');
-    const candles15m = closed('15m');
-    const candles5m = closed('5m');
-
-    const stratA = StrategyATrendContinuation.evaluate(candles4h, candles1h, candles15m, candles5m, spread);
-    if (stratA) {
-      this.registerSetup(stratA);
-    }
-
-    const stratB = StrategyBLiquiditySweep.evaluate(candles1h, candles15m, candles5m, spread);
-    if (stratB) {
-      this.registerSetup(stratB);
-    }
+    // PR 4.1: Autonomous architecture consolidation.
+    // Automatic live evaluation and operative registration of Strategy A & B are removed.
+    // Strategies A/B are preserved for historical backtesting and research only.
+    // Live opportunities and signals originate strictly from the autonomous discovery pipeline.
 
     const analysesObj: Record<string, MultiTimeframeAnalysis> = {};
     for (const [tf, an] of this.latestAnalyses.entries()) {
@@ -75,7 +62,7 @@ export class SetupEngine extends EventEmitter {
 
     return {
       analyses: analysesObj,
-      setups: Array.from(this.activeSetups.values()),
+      setups: [],
     };
   }
 

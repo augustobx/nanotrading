@@ -240,26 +240,14 @@ export class MarketCoordinator extends EventEmitter {
       this.emit('orderbook_updated', ob);
     });
 
-    // Forward setup engine events and trigger dual AI consensus evaluation
-    this.setupEngine.on('setup_detected', async (setup) => {
+    // PR 4.1: Autonomous architecture consolidation.
+    // Legacy consensus evaluation triggered by setup_detected is completely disabled.
+    // All operative signals originate exclusively from autonomous AI discovery -> AlgorithmicWatcher -> AI revalidation.
+    this.setupEngine.on('setup_detected', (setup) => {
       this.emit('setup_detected', setup);
-      // Never run the old dual-AI setup evaluator in parallel with autonomous
-      // AI discovery. The strategies remain zero-cost technical signals; only
-      // one autonomous discovery/revalidation pipeline may incur AI expenses.
-      if (this.discoveryScheduler?.getConfig().enabled) {
-        this.db.logEvent('INFO', 'Coordinator',
-          'Technical setup observed; paid legacy AI evaluator disabled while autonomous discovery is enabled',
-          { setupId: setup.id });
-        return;
-      }
-      try {
-        const signal = await this.consensusEngine.evaluateSetup(setup);
-        this.emit('signal_evaluated', signal);
-      } catch (err: any) {
-        if (!this.isStopped) {
-          this.db.logEvent('ERROR', 'ConsensusEngine', `Error evaluating setup: ${err.message}`, { setupId: setup.id });
-        }
-      }
+      this.db.logEvent('INFO', 'Coordinator',
+        'Technical setup observed (legacy research); no operative signal generated. Operative signals originate strictly from autonomous AI discovery.',
+        { setupId: setup.id });
     });
 
     // Forward Signal State Machine events

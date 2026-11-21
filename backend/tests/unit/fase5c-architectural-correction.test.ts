@@ -147,8 +147,9 @@ test('Fase 5C — Análisis integral autónomo de IA sin ataduras a Estrategia A
   assert.strictEqual(summary.dataAvailability.wsConnected, true);
   assert.strictEqual(summary.dataAvailability.orderBookSynced, true);
   assert.strictEqual(summary.dataAvailability.allCriticalDataPresent, true);
-  assert.ok(summary.algorithmicReferenceSetups && summary.algorithmicReferenceSetups.length > 0);
-  assert.strictEqual(summary.algorithmicReferenceSetups[0].strategy, 'STRATEGY_A_TREND_CONTINUATION');
+  // In PR 4.1: algorithmicReferenceSetups must remain empty so AI discovery is not conditioned by legacy setups
+  assert.ok(Array.isArray(summary.algorithmicReferenceSetups));
+  assert.strictEqual(summary.algorithmicReferenceSetups.length, 0);
 
   // 2. Mock de razonamiento autónomo de las IA:
   // OpenAI y Gemini proponen libremente una oportunidad de mitigación en zona de descuento FVG (sin ser forzados a Estrategia A o B)

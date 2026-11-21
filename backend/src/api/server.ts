@@ -618,25 +618,14 @@ export class ApiServer {
           return;
         }
 
-        const setups = this.coordinator.getActiveSetups();
-        const setup = setups.find((s: any) => s.id === setupId);
-        if (!setup) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: `Setup con id ${setupId} no encontrado entre setups activos` }));
-          return;
-        }
-
-        // 6. Audit security log
-        this.db.logEvent('INFO', 'Security', `Evaluación IA autorizada para setup ${setupId}`, { clientIp });
-
-        this.evaluationsInProgress.add(setupId);
-        try {
-          const result = await this.coordinator.getConsensusEngine().evaluateSetup(setup);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: true, data: result }));
-        } finally {
-          this.evaluationsInProgress.delete(setupId);
-        }
+        // PR 4.1: Autonomous architecture consolidation.
+        // Legacy manual setup evaluation is permanently disabled. Operative signals originate strictly from autonomous AI discovery.
+        res.writeHead(410, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'LEGACY_EVALUATOR_DISABLED',
+          message: 'La evaluación manual de setups legados está deshabilitada en la arquitectura autónoma consolidada. Las oportunidades y señales operativas son gestionadas exclusivamente a través del ciclo autónomo (descubrimiento -> vigilancia -> revalidación).'
+        }));
+        return;
       } catch (err: any) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(

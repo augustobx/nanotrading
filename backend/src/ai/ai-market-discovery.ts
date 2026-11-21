@@ -404,25 +404,9 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       missingDataNotice: missingItems.length > 0 ? missingItems.join('; ') : undefined,
     };
 
-    // Algorithmic reference setups (Strategy A and B as benchmarks, NOT mandatory filters)
-    const activeSetups = setupEngine?.getActiveSetups() || [];
-    const algorithmicReferenceSetups: AlgorithmicReferenceSetup[] = activeSetups.map((s: any) => ({
-      strategy: s.strategy,
-      direction: s.direction,
-      timeframe: s.timeframe,
-      entryPrice: s.entryPrice,
-      stopLossPrice: s.stopLossPrice,
-      takeProfitPrice: s.takeProfitPrice,
-      netRR: s.riskReward?.netRR || 0,
-      evidence: Array.isArray(s.evidence)
-        ? s.evidence
-        : [
-            s.evidence?.triggerReason,
-            s.evidence?.macroTrend,
-            s.evidence?.invalidationReason,
-            ...(s.evidence?.confluencePoints || []),
-          ].filter(Boolean),
-    }));
+    // PR 4.1: Autonomous architecture consolidation.
+    // Live AI discovery operates fully autonomously without legacy A/B benchmarks.
+    const algorithmicReferenceSetups: AlgorithmicReferenceSetup[] = [];
 
     const summary: MarketIntelligenceSummary = {
       symbol: marketState.symbol || 'BTCUSDT',
@@ -1148,7 +1132,7 @@ Tu objetivo es analizar integralmente la estructura técnica de BTCUSDT Perpetua
 Precio actual de BTCUSDT: $${summary.currentPrice} USDT.
 
 DIRECTIVAS ESTRICTAS:
-1. No estás limitado por estrategias fijas ni patrones predefinidos (Estrategia A o B solo existen como referencias de comparación algorítmica).
+1. Eres un analista autónomo. No dependes de estrategias fijas ni de patrones predefinidos. Analiza libremente la acción del precio y las estructuras de mercado.
 2. Tienes plena libertad para descubrir hipótesis operables LONG o SHORT con confluencia estructural estricta y R:R neto >= 1:2 o 1:4.
 3. Si el mercado no ofrece una ventaja estadística nítida, la conclusión imperativa es NEUTRAL / NO_TRADE ("No operar es una decisión válida y a menudo la mejor").
 4. Para cada oportunidad seleccionada, diseña un plan de vigilancia determinista (AI_WATCH_PLAN) con condiciones observables en secuencia mediante operadores algorítmicos nativos evaluados en velas cerradas: PRICE_IN_RANGE, CANDLE_PATTERN (BEARISH_ENGULFING, BULLISH_ENGULFING, PIN_BAR, SHOOTING_STAR, HAMMER), LEVEL_REJECTION_WICK (con minWickRatio), STRUCTURE_CLOSE, BREAK_AND_RETEST, SWEEP_AND_RECLAIM, VOLUME_EXPANSION, BOS_CONFIRMED, CHOCH_CONFIRMED, RSI_THRESHOLD, SPREAD_TOLERANCE. Marca automatable: true para estos operadores. Si requieres una confirmación cualitativa no automatizable, se mantendrá automatable: false y requerirá reevaluación.
