@@ -287,7 +287,10 @@ export class MarketCoordinator extends EventEmitter {
         for (const mode of modes) {
           const calc = mode === 'RR_1_4' ? riskCalc?.calculation14 : riskCalc?.calculation12;
           const target = mode === 'RR_1_4' ? scenario.target14Price : scenario.target12Price;
-          if (!target || !calc?.isValid || calc.netLossUSDT <= 0 ||
+          const requiredRR = Math.max(policy.minNetRR,
+            mode === 'RR_1_4' ? policy.minRRExtended : policy.minRRShort);
+          if (!target || !calc?.isValid || calc.netRR < requiredRR ||
+              calc.netLossUSDT <= 0 ||
               calc.netLossUSDT > Math.min(policy.maxRiskPerTradeUsdt,
                 policy.capitalUsdt * policy.maxRiskPerTradePercent / 100)) continue;
           this.signalStateMachine.registerSignalFromScenario(

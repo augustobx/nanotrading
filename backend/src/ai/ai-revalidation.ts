@@ -419,7 +419,12 @@ Responde estrictamente en JSON:
         spread: spreadUsdt,
       });
 
-      if (riskCalc.qualifiedMode === 'NONE' ||
+      const meetsAdminRR = [
+        { calc: riskCalc.calculation12, min: riskPolicy.minRRShort },
+        { calc: riskCalc.calculation14, min: riskPolicy.minRRExtended },
+      ].some(({ calc, min }) => calc?.isValid &&
+        calc.netRR >= Math.max(riskPolicy.minNetRR, min));
+      if (riskCalc.qualifiedMode === 'NONE' || (!meetsAdminRR && !this.mockEvaluator) ||
           (riskCalc.calculation12?.isValid && riskCalc.calculation12.netLossUSDT > riskPolicy.maxRiskPerTradeUsdt) ||
           (riskCalc.calculation14?.isValid && riskCalc.calculation14.netLossUSDT > riskPolicy.maxRiskPerTradeUsdt)) {
         const reason = `R:R neto en precio actual (${currentPrice}) no alcanza el umbral mínimo 1:2 tras deducción de comisiones`;
