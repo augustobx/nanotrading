@@ -467,8 +467,9 @@ export function calculateCallCost(
     completion = completionTokens || 0;
   }
 
-  // Internal reasoning tokens are billed as output tokens according to OpenAI specifications
-  const effectiveCompletionTokens = completion + reasoning;
+  // Completion tokens already INCLUDE reasoning tokens for Chat Completions.
+  // Never count the same output tokens twice.
+  const effectiveCompletionTokens = Math.max(completion, reasoning);
 
   // Uncached prompt tokens
   const uncachedPromptTokens = Math.max(0, prompt - cached);

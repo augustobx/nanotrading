@@ -1571,7 +1571,7 @@ export class DatabaseService {
           COALESCE(SUM(cost_gross_usd), 0) as grossSpend,
           COALESCE(SUM(discount_usd), 0) as discount,
           COALESCE(SUM(cost_net_usd), 0) as netSpend,
-          COALESCE(SUM(CASE WHEN is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as freeTokens,
+          COALESCE(SUM(CASE WHEN is_free_tier = 1 THEN (tokens_prompt + MAX(tokens_completion, tokens_reasoning)) ELSE 0 END), 0) as freeTokens,
           COUNT(*) as calls 
         FROM ai_consumption_logs 
         WHERE timestamp >= ?
@@ -1640,12 +1640,12 @@ export class DatabaseService {
     try {
       const row = this.db.prepare(`
         SELECT 
-          COALESCE(SUM(CASE WHEN free_tier_group = 'MAIN' AND is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as mainTokens,
-          COALESCE(SUM(CASE WHEN free_tier_group = 'SMALL' AND is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as smallTokens,
+          COALESCE(SUM(CASE WHEN free_tier_group = 'MAIN' AND is_free_tier = 1 THEN (tokens_prompt + MAX(tokens_completion, tokens_reasoning)) ELSE 0 END), 0) as mainTokens,
+          COALESCE(SUM(CASE WHEN free_tier_group = 'SMALL' AND is_free_tier = 1 THEN (tokens_prompt + MAX(tokens_completion, tokens_reasoning)) ELSE 0 END), 0) as smallTokens,
           COALESCE(SUM(cost_gross_usd), 0) as grossSpend,
           COALESCE(SUM(discount_usd), 0) as discount,
           COALESCE(SUM(cost_net_usd), 0) as netSpend,
-          COALESCE(SUM(CASE WHEN is_free_tier = 1 THEN (tokens_prompt + tokens_completion + tokens_reasoning) ELSE 0 END), 0) as freeTokens
+          COALESCE(SUM(CASE WHEN is_free_tier = 1 THEN (tokens_prompt + MAX(tokens_completion, tokens_reasoning)) ELSE 0 END), 0) as freeTokens
         FROM ai_consumption_logs
         WHERE timestamp >= ?
       `).get(startOfUtcDay) as any;

@@ -803,7 +803,8 @@ export class HardBudgetManager {
     const completionTokens = usage.completionTokens || 0;
     const cachedTokens = usage.cachedTokens || 0;
     const reasoningTokens = usage.reasoningTokens || 0;
-    const totalTokens = promptTokens + completionTokens + reasoningTokens;
+    // Completion count already includes OpenAI reasoning usage.
+    const totalTokens = promptTokens + Math.max(completionTokens, reasoningTokens);
 
     let grossCost: number;
     if (usage.status === 'UNCERTAIN_TIMEOUT') {
@@ -1006,7 +1007,8 @@ export class HardBudgetManager {
    * "Las notificaciones de presupuesto no deben consumir tokens de IA."
    */
   private evaluateAlerts(): void {
-    const todaySpend = this.getTodaySpendUsd();
+    const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+    const todaySpend = this.grossSpentSince(dayStart.getTime()) + this.getReservedPendingUsd();
     const percent = (todaySpend / this.config.dailyBudgetLimitUsd) * 100;
 
     // Check 100% suspension
@@ -1058,7 +1060,8 @@ export class HardBudgetManager {
   }
 
   public reactivateBudget(updatedBy: string = 'admin', newDailyLimit?: number): void {
-    const currentToday = this.getTodaySpendUsd() + this.getReservedPendingUsd();
+    const dayStart = new Date(); dayStart.setUTCHours(0, 0, 0, 0);
+    const currentToday = this.grossSpentSince(dayStart.getTime()) + this.getReservedPendingUsd();
     if (currentToday >= this.config.dailyBudgetLimitUsd) {
       if (newDailyLimit === undefined || newDailyLimit <= currentToday) {
         throw new Error(
@@ -1112,12 +1115,8 @@ export class HardBudgetManager {
       updatedAt: Date.now(),
     };
 
-    // If new limit is higher than current spend and isBlocked was not explicitly set, unblock
-    const today = this.getTodaySpendUsd();
-    if (updates.isBlocked === undefined && this.config.isBlocked && today < this.config.dailyBudgetLimitUsd) {
-      this.config.isBlocked = false;
-      this.config.blockedReason = null;
-    }
+    // Editing limits is not permission to clear an administrative hard stop.
+    // Use the explicit, authenticated reactivateBudget operation instead.
 
     this.notifiers.logAudit?.('AI_BUDGET', 'UPDATE_CONFIG', {
       updates,
@@ -1228,7 +1227,7 @@ export class HardBudgetManager {
         completionTokens,
         cachedTokens,
         reasoningTokens,
-        totalTokens: promptTokens + completionTokens + reasoningTokens,
+        totalTokens: promptTokens + Math.max(completionTokens, reasoningTokens),
       },
       openaiFreeTier: {
         enabled: !!cfg?.enabled,
@@ -1259,7 +1258,7 @@ export class HardBudgetManager {
           discountUsd: parseFloat(discountToday.toFixed(4)),
           netSpendUsd: parseFloat(netSpendToday.toFixed(4)),
           freeTokensConsumed: freeTokensToday,
-          paidTokensConsumed: Math.max(0, (promptTokens + completionTokens + reasoningTokens) - freeTokensToday),
+          paidTokensConsumed: Math.max(0, (promptTokens + Math.max(completionTokens, reasoningTokens)) - freeTokensToday),
           verifiedBilledSpendUsd: cfg?.verificationStatus === 'CONFIRMED_BILLED' ? parseFloat(netSpendToday.toFixed(4)) : null,
           discountStatus: cfg?.verificationStatus === 'CONFIRMED_BILLED' ? 'CONFIRMED_BILLED' : cfg?.verificationStatus === 'DECLARED_BY_ADMIN' ? 'ESTIMATED' : 'NONE',
         },
