@@ -87,9 +87,11 @@ describe('Fase 4.6.2 — Corrección Oficial de Tokens Gratuitos de OpenAI (Data
     });
 
     const benefitDeclared = budgetDeclared.calculateFreeTierBenefit('gpt-4o', 5000, 0.05);
-    assert.strictEqual(benefitDeclared.isFree, true);
+    assert.strictEqual(benefitDeclared.isFree, false);
     assert.strictEqual(benefitDeclared.discountStatus, 'ESTIMATED');
-    assert.match(benefitDeclared.reason, /Estimado por declaración administrativa/i);
+    assert.strictEqual(benefitDeclared.netCostUsd, 0.05);
+    assert.strictEqual(benefitDeclared.discountUsd, 0);
+    assert.match(benefitDeclared.reason, /costo bruto completo/i);
 
     // Caso B: Confirmado en Facturación (CONFIRMED_BILLED)
     const budgetConfirmed = new HardBudgetManager({

@@ -369,17 +369,19 @@ export class HardBudgetManager {
       };
     }
 
-    if (!cfg.verified || cfg.verificationStatus === 'UNVERIFIED') {
+    if (!cfg.verified || cfg.verificationStatus !== 'CONFIRMED_BILLED') {
+      // An administrator's declaration is not an actual invoice. Report a
+      // possible discount, but enforce the budget against the full gross cost.
       return {
         group,
         isEligible: true,
         isFree: false,
-        discountStatus: 'NONE',
+        discountStatus: cfg.verificationStatus === 'DECLARED_BY_ADMIN' ? 'ESTIMATED' : 'NONE',
         totalTokens,
         grossCostUsd,
         discountUsd: 0,
         netCostUsd: grossCostUsd,
-        reason: 'Programa no verificado con OpenAI (estimación conservadora)',
+        reason: 'Descuento estimado sin facturación verificada: presupuestar costo bruto completo',
       };
     }
 
