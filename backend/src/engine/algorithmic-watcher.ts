@@ -173,11 +173,16 @@ export class AlgorithmicWatcher extends EventEmitter {
       const { inZone, distPct } = this.calculateDistance(sc, currentPrice);
 
       // Update tracked metrics on scenario
-      this.scenarioRegistry.updateMetrics(sc.id, {
-        distanceToZonePct: distPct,
-        currentPrice,
-        lastCheckedTimestamp: now,
-      });
+      // Avoid a SQLite write for every WebSocket tick. State transitions are
+      // still persisted immediately; live ticker remains available via Bybit.
+      if (!sc.lastCheckedTimestamp || now - sc.lastCheckedTimestamp >= 10000 ||
+          Math.abs(distPct - (sc.distanceToZonePct ?? distPct)) >= 0.1) {
+        this.scenarioRegistry.updateMetrics(sc.id, {
+          distanceToZonePct: distPct,
+          currentPrice,
+          lastCheckedTimestamp: now,
+        });
+      }
 
       // 6. In Zone Trigger
       if (inZone) {
@@ -196,7 +201,7 @@ export class AlgorithmicWatcher extends EventEmitter {
           continue;
         }
 
-        if (sc.status !== 'IN_ZONE' && sc.status !== 'REVALIDATION_REQUESTED' && sc.status !== 'AI_REVALIDATING' && sc.status !== 'ENTRY_VALIDATED') {
+        if (sc.status !== 'IN_ZONE' && sc.status !== 'REVALIDATION_REQUESTED' && sc.status !== 'AI_REVALIDATING' && sc.status !== 'ENTRY_VALIDATED' && sc.status !== 'WAITING_CONFIRMATION') {
           const triggerReason = inZone
             ? `Precio alcanzó la zona operativa [${sc.entryZoneMin} - ${sc.entryZoneMax}]`
             : `Condiciones observables del AI_WATCH_PLAN satisfechas en secuencia`;
@@ -256,13 +261,29 @@ export class AlgorithmicWatcher extends EventEmitter {
     }
   }
 
+  /**
+   * A neutral breakout must have meaningful relative volume. Claims in the
+   * AI plan are not evidence: verify against >= 10 historical closed candles.
+   */
+  private hasConfirmedNeutralVolume(candle: any, timeframe: string): boolean {
+    const recent = this.coordinator.getCandleManager?.()?.getCandles(timeframe as any, 30) || [];
+    const prior = recent.filter((c: any) =>
+      c.confirmed !== false && Number.isFinite(c.timestamp) && c.timestamp < candle.timestamp &&
+      Number.isFinite(c.volume) && c.volume > 0
+    ).slice(-20);
+    if (prior.length < 10 || !Number.isFinite(candle.volume) || candle.volume <= 0) return false;
+    const avg = prior.reduce((sum: number, c: any) => sum + c.volume, 0) / prior.length;
+    return avg > 0 && candle.volume / avg >= 1.2;
+  }
+
   public evaluateCandleClose(candle: any): void {
-    if (!candle || candle.confirmed === false || !Number.isFinite(candle.close)) return;
+    if (!candle || candle.confirmed !== true || !Number.isFinite(candle.close)) return;
     const inactiveStatuses = ['EXPIRED', 'INVALIDATED', 'CANCELLED', 'COMPLETED', 'DISCARDED'];
     const activeScenarios = this.scenarioRegistry.getAllActive().filter((s) => !inactiveStatuses.includes(s.status));
     if (activeScenarios.length === 0) return;
 
     const now = Date.now();
+    let neutralBreakout: { price: number; reason: string } | null = null;
 
     for (const sc of activeScenarios) {
       // 1. NEUTRAL_OBSERVATION check on candle close
@@ -270,6 +291,9 @@ export class AlgorithmicWatcher extends EventEmitter {
         if (candle.timeframe !== sc.timeframe ||
             !Number.isFinite(candle.timestamp) ||
             candle.timestamp < sc.discoveryTimestamp) continue;
+        if (!Number.isFinite(sc.entryZoneMin) || !Number.isFinite(sc.entryZoneMax) ||
+            sc.entryZoneMin <= 0 || sc.entryZoneMax <= sc.entryZoneMin ||
+            !this.hasConfirmedNeutralVolume(candle, sc.timeframe)) continue;
         let breakoutOccurred = false;
         let breakoutReason = '';
 
@@ -292,13 +316,32 @@ export class AlgorithmicWatcher extends EventEmitter {
             sc.watchPlan.status = 'COMPLETED';
           }
           this.emit('neutral_range_breakout', { scenario: sc, breakoutPrice: candle.close, reason: breakoutReason });
-          this.coordinator.getDiscoveryScheduler?.()?.triggerDiscovery?.('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', candle.close);
+          // Multiple overlapping neutral watches in the same candle must not
+          // individually charge the AI. One coalesced scheduler request only.
+          if (!neutralBreakout) neutralBreakout = { price: candle.close, reason: breakoutReason };
         }
         continue;
       }
 
       // 2. Sequential conditions check on candle close
       if (candle.timestamp < sc.discoveryTimestamp) continue;
+      // WAIT means "wait for new evidence", never "call AI again next tick".
+      // A later CLOSED candle and a 30-minute cooldown are required to retry.
+      if (sc.status === 'WAITING_CONFIRMATION') {
+        const lastReview = sc.lastRevalidationTimestamp ?? sc.discoveryTimestamp;
+        if (sc.watchPlan?.automatable !== false && candle.timeframe === sc.timeframe &&
+            candle.timestamp >= lastReview && now - lastReview >= 30 * 60000 &&
+            this.calculateDistance(sc, candle.close).inZone) {
+          this.scenarioRegistry.transitionStatus(sc.id, 'REVALIDATION_REQUESTED',
+            'Nueva vela cerrada tras espera y cooldown; reevaluación justificada',
+            { currentPrice: candle.close });
+          this.emit('revalidation_requested', {
+            scenario: sc, watchPlan: sc.watchPlan, currentPrice: candle.close,
+            triggerReason: 'NEW_CONFIRMED_CANDLE_AFTER_WAIT',
+          });
+        }
+        continue;
+      }
       if (sc.watchPlan?.observableConditions && sc.watchPlan.observableConditions.length > 0) {
         const sortedConditions = [...sc.watchPlan.observableConditions].sort(
           (a, b) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
@@ -348,6 +391,11 @@ export class AlgorithmicWatcher extends EventEmitter {
       }
     }
 
+    if (neutralBreakout) {
+      this.coordinator.getDiscoveryScheduler?.()?.triggerDiscovery?.(
+        'RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', neutralBreakout.price
+      );
+    }
     this.evaluateTick(candle.close);
   }
 
@@ -612,30 +660,22 @@ export class AlgorithmicWatcher extends EventEmitter {
   }
 
   public calculateDistance(scenario: Scenario, currentPrice: number): { inZone: boolean; distPct: number } {
-    const minZone = Math.min(scenario.entryZoneMin, scenario.entryZoneMax);
-    const maxZone = Math.max(scenario.entryZoneMin, scenario.entryZoneMax);
-
-    if (scenario.direction === 'LONG') {
-      if (currentPrice >= minZone && currentPrice <= maxZone) {
-        return { inZone: true, distPct: 0 };
-      }
-      if (currentPrice < minZone) {
-        return { inZone: true, distPct: 0 };
-      }
-      const distPct = Math.max(0, ((currentPrice - maxZone) / currentPrice) * 100);
-      return { inZone: false, distPct: Number(distPct.toFixed(2)) };
-    } else if (scenario.direction === 'SHORT') {
-      if (currentPrice >= minZone && currentPrice <= maxZone) {
-        return { inZone: true, distPct: 0 };
-      }
-      if (currentPrice > maxZone) {
-        return { inZone: true, distPct: 0 };
-      }
-      const distPct = Math.max(0, ((minZone - currentPrice) / currentPrice) * 100);
-      return { inZone: false, distPct: Number(distPct.toFixed(2)) };
+    const minZone = scenario.entryZoneMin;
+    const maxZone = scenario.entryZoneMax;
+    if (!Number.isFinite(currentPrice) || currentPrice <= 0 ||
+        !Number.isFinite(minZone) || !Number.isFinite(maxZone) ||
+        minZone <= 0 || maxZone <= minZone) {
+      return { inZone: false, distPct: Number.POSITIVE_INFINITY };
     }
-
-    return { inZone: false, distPct: 0 };
+    if (scenario.direction !== 'LONG' && scenario.direction !== 'SHORT') {
+      return { inZone: false, distPct: Number.POSITIVE_INFINITY };
+    }
+    // Passing completely through a zone is NOT a valid zone touch / fill.
+    // Reentry must be observed inside the actual bounded interval.
+    const inZone = currentPrice >= minZone && currentPrice <= maxZone;
+    const distance = inZone ? 0 : currentPrice < minZone ?
+      minZone - currentPrice : currentPrice - maxZone;
+    return { inZone, distPct: Number((distance / currentPrice * 100).toFixed(2)) };
   }
 
   private notifyApproaching(sc: Scenario, currentPrice: number, distPct: number): void {
