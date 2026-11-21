@@ -51,8 +51,8 @@ class MockMarketCoordinator extends EventEmitter {
     super();
     this.candleManager = {
       getCandles: () => [
-        { open: 64800, high: 65300, low: 64700, close: 65200, volume: 1500, timestamp: Date.now() - 900000 },
-        { open: 65200, high: 65400, low: 65150, close: 65200, volume: 1200, timestamp: Date.now() },
+        { open: 64800, high: 65300, low: 64700, close: 65200, volume: 1500, timestamp: Date.now() - 900000, confirmed: true },
+        { open: 65200, high: 65400, low: 65150, close: 65200, volume: 1200, timestamp: Date.now(), confirmed: true },
       ],
       getLastClosedCandle: () => ({ open: 64800, high: 65300, low: 64700, close: 65200, volume: 1500, timestamp: Date.now() - 900000 }),
       getCurrentCandle: () => ({ open: 65200, high: 65400, low: 65150, close: 65200, volume: 1200, timestamp: Date.now() }),
