@@ -402,7 +402,7 @@ export function AiTradingIntelligence() {
         <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
           <span className="text-slate-400">OpenAI Provider:</span>
           {configSummary?.openaiConfigured ? (
-            <span className="text-emerald-400 font-bold flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> CONECTADO</span>
+            <span className="text-emerald-400 font-bold flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> CONFIGURADO</span>
           ) : (
             <span className="text-amber-400/90 font-bold flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" /> PENDIENTE</span>
           )}
@@ -410,23 +410,30 @@ export function AiTradingIntelligence() {
         <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
           <span className="text-slate-400">Gemini Provider:</span>
           {configSummary?.geminiConfigured ? (
-            <span className="text-emerald-400 font-bold flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> CONECTADO</span>
+            <span className="text-emerald-400 font-bold flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> CONFIGURADO</span>
           ) : (
             <span className="text-amber-400/90 font-bold flex items-center gap-1"><AlertTriangle className="w-3.5 h-3.5" /> PENDIENTE</span>
           )}
         </div>
         <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
           <span className="text-slate-400">Scheduler Autónomo:</span>
-          {schedulerStatus?.isRunning ? (
-            <span className="text-emerald-400 font-bold flex items-center gap-1"><Activity className="w-3.5 h-3.5 text-emerald-400 animate-pulse" /> ACTIVO</span>
+          {schedulerStatus?.isRunning && schedulerStatus?.enabled ? (
+            <span className="text-emerald-400 font-bold flex items-center gap-1">
+              <Activity className="w-3.5 h-3.5 text-emerald-400" />
+              {schedulerStatus.activeWatchedScenarios > 0
+                ? `VIGILANDO ${schedulerStatus.activeWatchedScenarios} ZONA(S) · SIN IA`
+                : schedulerStatus.discoveryInFlight ? 'DESCUBRIENDO...' : 'ESPERANDO EVENTO'}
+            </span>
           ) : (
-            <span className="text-slate-400 font-bold">EN ESPERA</span>
+            <span className="text-slate-400 font-bold">DESACTIVADO / NO DISPONIBLE</span>
           )}
         </div>
         <div className="p-2.5 rounded-xl bg-slate-900/80 border border-slate-800 flex items-center justify-between">
-          <span className="text-slate-400">Presupuesto Hoy:</span>
+          <span className="text-slate-400">IA bruto + reservas / límite:</span>
           <span className="text-slate-200 font-bold">
-            ${configSummary?.spentTodayUsd !== undefined ? Number(configSummary.spentTodayUsd).toFixed(3) : '0.000'} / ${configSummary?.dailyBudgetUsd || '5.00'}
+            ${configSummary?.grossSpentTodayUsd !== undefined
+              ? Number(configSummary.grossSpentTodayUsd + (configSummary.reservedPendingUsd ?? 0)).toFixed(4)
+              : '—'} / ${configSummary?.dailyBudgetUsd ?? '—'}
           </span>
         </div>
       </div>

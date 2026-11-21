@@ -24,6 +24,8 @@ export interface SchedulerStatus {
   nextScheduledRun: number | null;
   totalAutonomousRuns: number;
   totalScenariosFound: number;
+  activeWatchedScenarios: number;
+  discoveryInFlight: boolean;
 }
 
 export class AutonomousDiscoveryScheduler extends EventEmitter {
@@ -284,6 +286,12 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       nextScheduledRun: this.config.enabled ? nextRun : null,
       totalAutonomousRuns: this.totalAutonomousRuns,
       totalScenariosFound: this.totalScenariosFound,
+      activeWatchedScenarios: this.coordinator.getScenarioRegistry?.()?.getAllActive?.()
+        .filter((sc) => Number.isFinite(sc.validUntilTimestamp) &&
+          sc.validUntilTimestamp > now &&
+          !['COMPLETED', 'CANCELLED', 'EXPIRED', 'INVALIDATED', 'DISCARDED'].includes(sc.status))
+        .length || 0,
+      discoveryInFlight: this.discoveryInFlight,
     };
   }
 }
