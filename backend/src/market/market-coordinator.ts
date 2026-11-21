@@ -280,23 +280,21 @@ export class MarketCoordinator extends EventEmitter {
       this.emit('scenario_entry_validated', evt);
       const { scenario, currentPrice, riskCalc } = evt;
       if (scenario && scenario.direction !== 'NEUTRAL') {
-        if (scenario.target12Price && riskCalc?.calculation12?.isValid) {
+        // Alternative targets do NOT allocate two independently sized positions.
+        const policy = this.riskPolicyManager.getPolicy();
+        const modes = policy.rrTargetMode === 'RR_1_2' ?
+          ['RR_1_2', 'RR_1_4'] : ['RR_1_4', 'RR_1_2'];
+        for (const mode of modes) {
+          const calc = mode === 'RR_1_4' ? riskCalc?.calculation14 : riskCalc?.calculation12;
+          const target = mode === 'RR_1_4' ? scenario.target14Price : scenario.target12Price;
+          if (!target || !calc?.isValid || calc.netLossUSDT <= 0 ||
+              calc.netLossUSDT > Math.min(policy.maxRiskPerTradeUsdt,
+                policy.capitalUsdt * policy.maxRiskPerTradePercent / 100)) continue;
           this.signalStateMachine.registerSignalFromScenario(
-            scenario,
-            currentPrice,
-            'RR_1_2',
-            scenario.target12Price,
-            riskCalc.calculation12.netRR
+            scenario, currentPrice, mode as 'RR_1_2' | 'RR_1_4',
+            target, calc.netRR, calc.netLossUSDT, calc.positionSizeBTC
           );
-        }
-        if (scenario.target14Price && riskCalc?.calculation14?.isValid) {
-          this.signalStateMachine.registerSignalFromScenario(
-            scenario,
-            currentPrice,
-            'RR_1_4',
-            scenario.target14Price,
-            riskCalc.calculation14.netRR
-          );
+          break;
         }
       }
     });
