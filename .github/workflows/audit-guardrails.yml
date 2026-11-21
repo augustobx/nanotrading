@@ -16,7 +16,6 @@ jobs:
     env:
       NODE_ENV: test
       CONFIG_MASTER_KEY: audit-ci-only-ephemeral-key-never-use-in-production-2026
-      ADMIN_API_KEY: test_admin_secure_key_123
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,7 +35,6 @@ jobs:
     env:
       NODE_ENV: test
       CONFIG_MASTER_KEY: audit-ci-only-ephemeral-key-never-use-in-production-2026
-      ADMIN_API_KEY: test_admin_secure_key_123
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
