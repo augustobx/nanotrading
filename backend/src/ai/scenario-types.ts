@@ -31,7 +31,7 @@ export type TriggerSource = 'AUTOMATIC_SCHEDULER' | 'MANUAL_TRIGGER' | 'NEUTRAL_
 export interface ObservableLevel {
   price: number;
   timeframe: Timeframe;
-  levelType: 'SWING_HIGH' | 'SWING_LOW' | 'FVG_TOP' | 'FVG_BOTTOM' | 'ORDER_BLOCK' | 'SUPPORT' | 'RESISTANCE' | 'DYNAMIC_EMA' | 'VWAP' | 'RANGE_BOUNDARY';
+  levelType: 'SWING_HIGH' | 'SWING_LOW' | 'FVG' | 'FVG_TOP' | 'FVG_BOTTOM' | 'ORDER_BLOCK' | 'SUPPORT' | 'RESISTANCE' | 'DYNAMIC_INDICATOR' | 'DYNAMIC_EMA' | 'VWAP' | 'RANGE_BOUNDARY' | 'PRICE_ACTION';
   evidence: string;
   sourceTimestamp?: number;
   distancePct: number;
@@ -147,6 +147,9 @@ export interface ScenarioInterpretation {
   keyZones: string[];
   confidence: number;
   marketAnalysis?: AiMarketAnalysis;
+  promptTokens?: number;
+  completionTokens?: number;
+  costUsd?: number;
 }
 
 export interface Scenario {
