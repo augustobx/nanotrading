@@ -68,6 +68,7 @@ services:
         condition: service_healthy
     networks:
       - nanolabs_trading_net
+      - proxy
     ports:
       - "127.0.0.1:3001:3001"
     healthcheck:
@@ -85,13 +86,15 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3000
-      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:3001}
-      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:3001/ws/live}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-https://nanotrading.nanoapps.ar}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-wss://nanotrading.nanoapps.ar/ws/live}
+      BACKEND_INTERNAL_URL: http://nanolabs_trading_backend:3001
     depends_on:
       backend:
         condition: service_healthy
     networks:
       - nanolabs_trading_net
+      - proxy
     ports:
       - "127.0.0.1:3000:3000"
 
@@ -99,6 +102,8 @@ networks:
   nanolabs_trading_net:
     name: nanolabs_trading_net
     driver: bridge
+  proxy:
+    external: true
 
 volumes:
   nanolabs_trading_pgdata:

@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json ./
 COPY frontend/package.json ./frontend/
 
-RUN npm install --workspace=frontend
+RUN npm install
 
 COPY frontend ./frontend
 
@@ -19,9 +19,9 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 COPY --from=builder /app/frontend/.next/standalone ./
-COPY --from=builder /app/frontend/.next/static ./.next/static
-COPY --from=builder /app/frontend/public ./public
+COPY --from=builder /app/frontend/.next/static ./frontend/.next/static
+COPY --from=builder /app/frontend/public ./frontend/public
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+CMD ["node", "frontend/server.js"]
