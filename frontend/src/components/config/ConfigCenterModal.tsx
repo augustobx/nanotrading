@@ -187,6 +187,8 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
 
   // AI Consumption & Hard Budget
   const [consumptionStats, setConsumptionStats] = useState<any>(null);
+  const [consumptionFetchError, setConsumptionFetchError] = useState<string | null>(null);
+  const [budgetFetchError, setBudgetFetchError] = useState<string | null>(null);
   const [consumptionLogs, setConsumptionLogs] = useState<any[]>([]);
   const [selectedProviderFilter, setSelectedProviderFilter] = useState<string>('ALL');
 
@@ -433,7 +435,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
 
   const fetchRouterConfig = async () => {
     try {
-      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/ai/router`);
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/ai/router`, { credentials: 'include' });
       if (res.ok) {
         const json = await res.json();
         if (json.success) {
@@ -446,15 +448,22 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
 
   const fetchConsumptionData = async () => {
     try {
-      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/ai/consumption?limit=50`);
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success) {
-          setConsumptionStats(json.data.stats);
-          setConsumptionLogs(json.data.logs);
-        }
-      }
-    } catch {}
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/ai/consumption?limit=50`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error(res.status === 401
+        ? 'Iniciá sesión como administrador para consultar el consumo de IA.'
+        : `No se pudo consultar el consumo (HTTP ${res.status}).`);
+      const json = await res.json();
+      if (!json.success || !json.data?.stats) throw new Error('La API no devolvió datos válidos de consumo.');
+      setConsumptionStats(json.data.stats);
+      setConsumptionLogs(json.data.logs || []);
+      setConsumptionFetchError(null);
+    } catch (err: any) {
+      setConsumptionStats(null);
+      setConsumptionLogs([]);
+      setConsumptionFetchError(err.message || 'Datos de consumo no disponibles.');
+    }
   };
 
   const fetchAuditLogs = async () => {
@@ -603,20 +612,24 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
 
   const fetchHardBudget = async () => {
     try {
-      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/budget`);
-      if (res.ok) {
-        const json = await res.json();
-        if (json.success && json.data) {
-          setHardBudgetSummary(json.data);
-          setHardBudgetForm({
-            dailyBudgetLimitUsd: json.data.dailyBudgetLimitUsd ?? 0.50,
-            monthlyBudgetLimitUsd: json.data.monthlyBudgetLimitUsd ?? 10.00,
-            maxCostPerRequestUsd: json.data.maxCostPerRequestUsd ?? 0.05,
-            autoResetPeriod: true,
-          });
-        }
-      }
-    } catch {}
+      const res = await fetch(`${getApiBaseUrl()}/api/v1/config/budget`, { credentials: 'include' });
+      if (!res.ok) throw new Error(res.status === 401
+        ? 'Iniciá sesión como administrador para ver el presupuesto de IA.'
+        : `No se pudo consultar el presupuesto (HTTP ${res.status}).`);
+      const json = await res.json();
+      if (!json.success || !json.data) throw new Error('Respuesta de presupuesto inválida.');
+      setHardBudgetSummary(json.data);
+      setHardBudgetForm({
+        dailyBudgetLimitUsd: json.data.dailyBudgetLimitUsd ?? 0.50,
+        monthlyBudgetLimitUsd: json.data.monthlyBudgetLimitUsd ?? 10.00,
+        maxCostPerRequestUsd: json.data.maxCostPerRequestUsd ?? 0.05,
+        autoResetPeriod: true,
+      });
+      setBudgetFetchError(null);
+    } catch (err: any) {
+      setHardBudgetSummary(null);
+      setBudgetFetchError(err.message || 'Presupuesto no disponible.');
+    }
   };
 
   const handleSaveBudget = async (e: React.FormEvent) => {
@@ -2402,25 +2415,41 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                   </div>
                 )}
 
+                {(consumptionFetchError || budgetFetchError) && (
+                  <div role="alert" className="rounded-lg border border-amber-700/60 bg-amber-950/30 p-3 text-xs text-amber-200">
+                    {consumptionFetchError || budgetFetchError}
+                    {' '}Los datos no disponibles se muestran como no disponibles, no como gasto cero.
+                  </div>
+                )}
+                {!hardBudgetSummary?.isBlocked && hardBudgetSummary?.lastBudgetDenial &&
+                  Date.now() - hardBudgetSummary.lastBudgetDenial.timestamp < 2 * 60 * 60 * 1000 && (
+                    <div className="rounded-lg border border-amber-700/60 bg-amber-950/30 p-3 text-xs text-amber-200">
+                      <strong>Una solicitud de IA fue rechazada por su límite individual o por saldo insuficiente, no por dinero gastado.</strong>{' '}
+                      {hardBudgetSummary.lastBudgetDenial.reason}
+                    </div>
+                  )}
                 {/* Status Alert Banner */}
-                {hardBudgetSummary?.isBlocked || hardBudgetSummary?.status === 'AI_BUDGET_EXCEEDED' ? (
+                {hardBudgetSummary?.isBlocked ? (
                   <div className="p-4 rounded-xl bg-red-950/50 border border-red-700/80 text-red-200 space-y-3 shadow-lg">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 font-bold text-sm text-red-300">
                         <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse" />
-                        <span>HARD STOP ACTIVO: Límite de Presupuesto de IA Alcanzado</span>
+                        <span>PAUSA DE IA: protección presupuestaria activa</span>
                       </div>
                       <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-red-900 text-red-100 border border-red-600">
                         AI_BUDGET_EXCEEDED
                       </span>
                     </div>
                     <p className="text-xs text-red-300/90 leading-relaxed">
-                      Se ha alcanzado el límite presupuestario diario (${hardBudgetSummary?.dailyBudgetLimitUsd?.toFixed(2)} USD).
-                      Las llamadas a las APIs de OpenAI y Gemini se encuentran temporalmente suspendidas para evitar gastos no autorizados.
+                      Las llamadas de IA están detenidas por una protección presupuestaria.
+                      Gasto bruto de hoy: ${(hardBudgetSummary?.todayGrossSpendUsd ?? 0).toFixed(4)} USD;
+                      reservado: ${(hardBudgetSummary?.reservedPendingUsd ?? 0).toFixed(4)} USD;
+                      límite diario: ${(hardBudgetSummary?.dailyBudgetLimitUsd ?? 0.50).toFixed(2)} USD.
+                      No implica que el gasto ya haya alcanzado el límite.
                       <strong> El monitoreo continuo de Bybit, la ingesta de velas, los indicadores cuantitativos y la gestión de órdenes existentes continúan 100% operativos.</strong>
                     </p>
                     <div className="p-2.5 rounded bg-black/40 border border-red-900/60 text-xs text-red-300 space-y-1">
-                      <div><strong>Motivo del bloqueo:</strong> {hardBudgetSummary?.blockedReason || 'Consumo acumulado superó el límite asignado.'}</div>
+                      <div><strong>Motivo del bloqueo:</strong> {hardBudgetSummary?.blockedReason || 'Protección presupuestaria configurada; ver estado de consumo y reservas.'}</div>
                       <div><strong>Regla Inviolable:</strong> El gasto confirmado es inmutable en base de datos. No se puede reducir ni resetear manualmente sin avanzar el período.</div>
                     </div>
 
@@ -2497,28 +2526,28 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                   <div className="p-3.5 rounded-lg bg-[#111624] border border-[#21283b]">
                     <span className="text-[10px] text-slate-400 uppercase font-mono block">Disponible Hoy</span>
                     <span className="text-base font-bold font-mono text-emerald-400">
-                      ${(hardBudgetSummary?.remainingDailyBudgetUsd ?? Math.max(0, (hardBudgetSummary?.dailyBudgetLimitUsd || 0.5) - (hardBudgetSummary?.todaySpendUsd || 0))).toFixed(4)}
+                      ${hardBudgetSummary ? hardBudgetSummary.remainingDailyUsd.toFixed(4) : '—'}
                     </span>
                     <span className="text-[10px] text-slate-500 block">USD libres para gastar</span>
                   </div>
                   <div className="p-3.5 rounded-lg bg-[#111624] border border-[#21283b]">
                     <span className="text-[10px] text-slate-400 uppercase font-mono block">En Tránsito / Reservado</span>
                     <span className="text-base font-bold font-mono text-amber-400">
-                      ${(hardBudgetSummary?.reservedBudgetUsd ?? 0).toFixed(4)}
+                      ${hardBudgetSummary ? hardBudgetSummary.reservedPendingUsd.toFixed(4) : '—'}
                     </span>
                     <span className="text-[10px] text-slate-500 block">Margen + safety</span>
                   </div>
                   <div className="p-3.5 rounded-lg bg-[#111624] border border-[#21283b]">
-                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Gasto Hoy (Inmutable)</span>
+                    <span className="text-[10px] text-slate-400 uppercase font-mono block">Gasto neto hoy (registrado)</span>
                     <span className="text-base font-bold font-mono text-white">
-                      ${(hardBudgetSummary?.todaySpendUsd ?? consumptionStats?.todaySpendUsd ?? 0).toFixed(4)}
+                      ${hardBudgetSummary ? hardBudgetSummary.todaySpendUsd.toFixed(4) : '—'}
                     </span>
-                    <span className="text-[10px] text-slate-500 block">Persistido en DB</span>
+                    <span className="text-[10px] text-slate-500 block">Bruto: ${hardBudgetSummary ? hardBudgetSummary.todayGrossSpendUsd.toFixed(4) : '—'} USD</span>
                   </div>
                   <div className="p-3.5 rounded-lg bg-[#111624] border border-[#21283b]">
                     <span className="text-[10px] text-slate-400 uppercase font-mono block">Gasto Mensual</span>
                     <span className="text-base font-bold font-mono text-white">
-                      ${(hardBudgetSummary?.monthSpendUsd ?? consumptionStats?.monthSpendUsd ?? 0).toFixed(4)}
+                      ${hardBudgetSummary ? hardBudgetSummary.monthSpendUsd.toFixed(4) : '—'}
                     </span>
                     <span className="text-[10px] text-slate-500 block">Acumulado mes en curso</span>
                   </div>

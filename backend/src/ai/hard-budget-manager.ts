@@ -123,6 +123,9 @@ export interface HardBudgetSummary {
   };
   activeReservationsCount: number;
   totalCallsCount: number;
+  todayGrossSpendUsd: number;
+  monthGrossSpendUsd: number;
+  lastBudgetDenial: { code: string; reason: string; timestamp: number } | null;
   nextDailyResetUtc: string;
   nextDailyResetAr: string;
   nextMonthlyResetUtc: string;
@@ -171,6 +174,7 @@ export interface NotifierCallbacks {
 export class HardBudgetManager {
   private config: HardBudgetConfig;
   private reservations: Map<string, BudgetReservation> = new Map();
+  private lastBudgetDenial: { code: string; reason: string; timestamp: number } | null = null;
   private triggeredThresholds: Set<number> = new Set();
   private triggeredFreeTierThresholds: Set<string> = new Set();
   private lastResetDay: number = new Date().getUTCDate();
@@ -253,7 +257,37 @@ export class HardBudgetManager {
   }
 
   public isBlocked(): boolean {
+    this.reconcileLegacyEstimateBlock();
     return this.config.isBlocked;
+  }
+
+  /** Legacy releases persisted an incorrect hard stop for a denied estimate.
+   * Only repair that specific automatic block, not manual safety stops.
+   */
+  private reconcileLegacyEstimateBlock(): void {
+    const reason = this.config.blockedReason || '';
+    const dailyLegacy = /^Límite de presupuesto diario alcanzado \(\$[0-9.]+ \+ \$[0-9.]+ > \$[0-9.]+\)$/.test(reason);
+    const monthlyLegacy = /^Límite de presupuesto mensual alcanzado \(\$[0-9.]+ > \$[0-9.]+\)$/.test(reason);
+    const scope = dailyLegacy ? 'DAILY_GLOBAL' : monthlyLegacy ? 'MONTHLY_GLOBAL' : null;
+    if (!this.config.isBlocked || !scope || !this.db) return;
+    try {
+      const start = new Date();
+      if (scope === 'DAILY_GLOBAL') start.setUTCHours(0, 0, 0, 0);
+      else { start.setUTCDate(1); start.setUTCHours(0, 0, 0, 0); }
+      const spent = this.grossSpentSince(start.getTime());
+      const limit = scope === 'DAILY_GLOBAL' ? this.config.dailyBudgetLimitUsd : this.config.monthlyBudgetLimitUsd;
+      if (spent + this.getReservedPendingUsd() >= limit) return;
+      this.config.isBlocked = false;
+      this.config.blockedReason = null;
+      this.config.updatedAt = Date.now();
+      this.lastBudgetDenial = { code: scope, reason, timestamp: Date.now() };
+      this.db.saveHardBudgetConfig(this.config);
+      this.notifiers.logAudit?.('AI_BUDGET', 'REPAIR_PROSPECTIVE_BLOCK', {
+        code: scope, grossSpentUsd: spent, limitUsd: limit,
+      });
+    } catch {
+      // If the ledger cannot be verified, keep the stop active.
+    }
   }
 
   public getBlockedReason(): string | null {
@@ -598,6 +632,11 @@ export class HardBudgetManager {
 
     // 1. Max cost per request limit (checked against gross cost if paid)
     if (!isEstimatedFree && estimatedGrossCost > this.config.maxCostPerRequestUsd) {
+      this.lastBudgetDenial = {
+        code: 'MAX_PER_REQUEST',
+        reason: `Próxima llamada requiere $${estimatedGrossCost.toFixed(4)}; máximo por solicitud $${this.config.maxCostPerRequestUsd.toFixed(4)} USD`,
+        timestamp: Date.now(),
+      };
       return {
         allowed: false,
         status: 'AI_BUDGET_EXCEEDED',
@@ -617,22 +656,24 @@ export class HardBudgetManager {
 
     // 2. Global daily limit
     if (!isEstimatedFree && currentToday + currentPending + reservationAmount > this.config.dailyBudgetLimitUsd) {
-      this.triggerBlock(`Límite de presupuesto diario alcanzado ($${(currentToday + currentPending).toFixed(4)} + $${reservationAmount.toFixed(4)} > $${this.config.dailyBudgetLimitUsd.toFixed(4)})`);
+      const reason = `Solicitud requiere $${reservationAmount.toFixed(4)}; quedan $${Math.max(0, this.config.dailyBudgetLimitUsd - currentToday - currentPending).toFixed(4)} diarios (gasto bruto $${currentToday.toFixed(4)}, reservas $${currentPending.toFixed(4)})`;
+      this.lastBudgetDenial = { code: 'DAILY_GLOBAL', reason, timestamp: Date.now() };
       return {
         allowed: false,
         status: 'AI_BUDGET_EXCEEDED',
-        reason: this.config.blockedReason!,
+        reason,
         violatedLimit: 'DAILY_GLOBAL',
       };
     }
 
     // 3. Global monthly limit
     if (!isEstimatedFree && currentMonth + currentPending + reservationAmount > this.config.monthlyBudgetLimitUsd) {
-      this.triggerBlock(`Límite de presupuesto mensual alcanzado ($${(currentMonth + currentPending).toFixed(4)} > $${this.config.monthlyBudgetLimitUsd.toFixed(4)})`);
+      const reason = `Solicitud requiere $${reservationAmount.toFixed(4)}; quedan $${Math.max(0, this.config.monthlyBudgetLimitUsd - currentMonth - currentPending).toFixed(4)} mensuales (gasto bruto $${currentMonth.toFixed(4)}, reservas $${currentPending.toFixed(4)})`;
+      this.lastBudgetDenial = { code: 'MONTHLY_GLOBAL', reason, timestamp: Date.now() };
       return {
         allowed: false,
         status: 'AI_BUDGET_EXCEEDED',
-        reason: this.config.blockedReason!,
+        reason,
         violatedLimit: 'MONTHLY_GLOBAL',
       };
     }
@@ -648,6 +689,11 @@ export class HardBudgetManager {
           { provider: params.provider });
         if (provTodaySpend + this.pendingFor({ provider: params.provider }) +
             reservationAmount > provLimit) {
+          this.lastBudgetDenial = {
+            code: `PROVIDER_${params.provider}`,
+            reason: `Proveedor ${params.provider}: bruto $${provTodaySpend.toFixed(4)}, solicitado $${reservationAmount.toFixed(4)}, máximo $${provLimit.toFixed(4)} USD`,
+            timestamp: Date.now(),
+          };
           return {
             allowed: false,
             status: 'AI_BUDGET_EXCEEDED',
@@ -667,6 +713,11 @@ export class HardBudgetManager {
         { model: params.model });
       if (modelTodaySpend + this.pendingFor({ model: params.model }) +
           reservationAmount > modelLimit) {
+        this.lastBudgetDenial = {
+          code: `MODEL_${params.model}`,
+          reason: `Modelo ${params.model}: bruto $${modelTodaySpend.toFixed(4)}, solicitado $${reservationAmount.toFixed(4)}, máximo $${modelLimit.toFixed(4)} USD`,
+          timestamp: Date.now(),
+        };
         return {
           allowed: false,
           status: 'AI_BUDGET_EXCEEDED',
@@ -685,6 +736,11 @@ export class HardBudgetManager {
         { task: params.task });
       if (taskTodaySpend + this.pendingFor({ task: params.task }) +
           reservationAmount > taskLimit) {
+        this.lastBudgetDenial = {
+          code: `TASK_${params.task}`,
+          reason: `Tarea ${params.task}: bruto $${taskTodaySpend.toFixed(4)}, solicitado $${reservationAmount.toFixed(4)}, máximo $${taskLimit.toFixed(4)} USD`,
+          timestamp: Date.now(),
+        };
         return {
           allowed: false,
           status: 'AI_BUDGET_EXCEEDED',
@@ -934,8 +990,9 @@ export class HardBudgetManager {
   }
 
   private calculateCurrentStatus(): BudgetStatus {
-    if (this.config.isBlocked) return 'AI_BUDGET_EXCEEDED';
-    const today = this.getTodaySpendUsd() + this.getReservedPendingUsd();
+    if (this.isBlocked()) return 'AI_BUDGET_EXCEEDED';
+    const day = new Date(); day.setUTCHours(0, 0, 0, 0);
+    const today = this.grossSpentSince(day.getTime()) + this.getReservedPendingUsd();
     const percent = (today / this.config.dailyBudgetLimitUsd) * 100;
     if (percent >= 100) return 'AI_BUDGET_EXCEEDED';
     if (percent >= 95) return 'CRITICAL_95';
@@ -1071,11 +1128,16 @@ export class HardBudgetManager {
   }
 
   public getSummary(): HardBudgetSummary {
+    this.reconcileLegacyEstimateBlock();
     const todaySpend = this.getTodaySpendUsd();
     const monthSpend = this.getMonthSpendUsd();
     const reservedPending = this.getReservedPendingUsd();
-    const effectiveToday = todaySpend + reservedPending;
-    const effectiveMonth = monthSpend + reservedPending;
+    const day = new Date(); day.setUTCHours(0, 0, 0, 0);
+    const month = new Date(); month.setUTCDate(1); month.setUTCHours(0, 0, 0, 0);
+    const todayGrossSpend = this.grossSpentSince(day.getTime());
+    const monthGrossSpend = this.grossSpentSince(month.getTime());
+    const effectiveToday = todayGrossSpend + reservedPending;
+    const effectiveMonth = monthGrossSpend + reservedPending;
 
     const remainingDaily = Math.max(0, parseFloat((this.config.dailyBudgetLimitUsd - effectiveToday).toFixed(4)));
     const remainingMonthly = Math.max(0, parseFloat((this.config.monthlyBudgetLimitUsd - effectiveMonth).toFixed(4)));
@@ -1155,6 +1217,9 @@ export class HardBudgetManager {
       status: this.calculateCurrentStatus(),
       isBlocked: this.config.isBlocked,
       blockedReason: this.config.blockedReason,
+      todayGrossSpendUsd: todayGrossSpend,
+      monthGrossSpendUsd: monthGrossSpend,
+      lastBudgetDenial: this.lastBudgetDenial,
       spendByProvider,
       spendByModel,
       spendByTask,

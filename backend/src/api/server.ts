@@ -375,7 +375,7 @@ export class ApiServer {
         data: {
           currentMode,
           lastEvaluationMode: lastMode,
-          isBudgetBlocked: hardBudgetSummary.isBlocked || hardBudgetSummary.status === 'AI_BUDGET_EXCEEDED',
+          isBudgetBlocked: hardBudgetSummary.isBlocked,
           budgetStatus: hardBudgetSummary.status,
           blockedReason: hardBudgetSummary.blockedReason,
           hardBudgetSummary,
@@ -1802,12 +1802,12 @@ export class ApiServer {
     const hardBudgetSummary = this.coordinator.getConsensusEngine().getHardBudgetManager().getSummary();
     const consumptionStats = this.db.getAiConsumptionStats();
 
-    const lifetimeGrossSpendUsd = Number(consumptionStats.totalGrossSpendUsd || hardBudgetSummary.effectiveMonthSpendUsd || 0);
-    const lifetimeNetSpendUsd = Number(consumptionStats.totalNetSpendUsd || hardBudgetSummary.monthSpendUsd || 0);
+    const lifetimeGrossSpendUsd = Number(consumptionStats.totalGrossSpendUsd ?? 0);
+    const lifetimeNetSpendUsd = Number(consumptionStats.totalNetSpendUsd ?? 0);
     const lifetimeDiscountUsd = Number(consumptionStats.totalDiscountUsd || 0);
 
-    const todayGrossSpendUsd = Number(hardBudgetSummary.openaiFreeTier?.financialsToday?.grossSpendUsd ?? consumptionStats.grossSpendTodayUsd ?? hardBudgetSummary.todaySpendUsd);
-    const todayNetSpendUsd = Number(hardBudgetSummary.openaiFreeTier?.financialsToday?.netSpendUsd ?? consumptionStats.netSpendTodayUsd ?? hardBudgetSummary.todaySpendUsd);
+    const todayGrossSpendUsd = Number(hardBudgetSummary.todayGrossSpendUsd);
+    const todayNetSpendUsd = Number(consumptionStats.netSpendTodayUsd ?? hardBudgetSummary.todaySpendUsd);
     const todayDiscountUsd = Number(hardBudgetSummary.openaiFreeTier?.financialsToday?.discountUsd ?? consumptionStats.discountTodayUsd ?? 0);
 
     const isConfirmedBilled = hardBudgetSummary.openaiFreeTier?.verificationStatus === 'CONFIRMED_BILLED';
@@ -1839,6 +1839,10 @@ export class ApiServer {
       monthlyBudgetUsd: hardBudgetSummary.monthlyBudgetLimitUsd,
       spentTodayUsd: hardBudgetSummary.todaySpendUsd,
       spentMonthUsd: hardBudgetSummary.monthSpendUsd,
+      grossSpentTodayUsd: hardBudgetSummary.todayGrossSpendUsd,
+      reservedPendingUsd: hardBudgetSummary.reservedPendingUsd,
+      lastBudgetDenial: hardBudgetSummary.lastBudgetDenial,
+      budgetBlockedReason: hardBudgetSummary.blockedReason,
       budgetRemainingUsd: hardBudgetSummary.remainingDailyUsd,
       hardBudgetStatus: hardBudgetSummary.status,
       isBudgetBlocked: hardBudgetSummary.isBlocked,
