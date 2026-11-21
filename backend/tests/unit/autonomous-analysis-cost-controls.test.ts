@@ -275,3 +275,31 @@ test('Watcher: WAIT with unconfirmed plan condition must not spend on new candle
     assert.equal(registry.getScenario(scenario.id)?.status, 'WAITING_CONFIRMATION');
   } finally { db.close(); }
 });
+
+test('Scheduler: provider outage triggers a bounded automatic backoff, not a paid retry storm', async () => {
+  const db = new DatabaseService(':memory:');
+  const emitter = new EventEmitter() as EventEmitter & Record<string, any>;
+  emitter.getScenarioRegistry = () => ({ getAllActive: () => [] });
+  emitter.getMarketState = () => ({ ticker: { lastPrice: 60000 } });
+  let attempts = 0;
+  const scheduler = new AutonomousDiscoveryScheduler({
+    coordinator: emitter as any, db,
+    hardBudgetManager: { isBlocked: () => false } as any,
+    discoveryEngine: { runDiscovery: async () => {
+      attempts++;
+      return { scenarios: [], summary: {}, aiCostUsd: 0,
+        skippedReason: 'AI_PROVIDERS_FAILED_NO_VALID_ANALYSIS' };
+    }} as any,
+  });
+  try {
+    scheduler.start();
+    const failed = await scheduler.triggerDiscovery('PERIODIC_SCHEDULED_DISCOVERY', 60000);
+    assert.equal(failed, false);
+    assert.equal(attempts, 1);
+    assert.equal(scheduler.getStatus().consecutiveProviderFailures, 1);
+    assert.ok((scheduler.getStatus().providerFailureBackoffUntil || 0) > Date.now());
+    const retry = await scheduler.triggerDiscovery('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', 60000);
+    assert.equal(retry, false);
+    assert.equal(attempts, 1, 'RANGE_BREAKOUT cannot bypass provider failure backoff');
+  } finally { scheduler.stop(); db.close(); }
+});

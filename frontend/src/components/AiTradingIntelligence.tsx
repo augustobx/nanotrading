@@ -422,7 +422,11 @@ export function AiTradingIntelligence() {
               <Activity className="w-3.5 h-3.5 text-emerald-400" />
               {schedulerStatus.activeWatchedScenarios > 0
                 ? `VIGILANDO ${schedulerStatus.activeWatchedScenarios} ZONA(S) · SIN IA`
-                : schedulerStatus.discoveryInFlight ? 'DESCUBRIENDO...' : 'ESPERANDO EVENTO'}
+                : schedulerStatus.discoveryInFlight ? 'DESCUBRIENDO...'
+                : schedulerStatus.providerFailureBackoffUntil &&
+                    schedulerStatus.providerFailureBackoffUntil > Date.now()
+                  ? 'BACKOFF POR ERROR DE PROVEEDOR · SIN LLAMADAS'
+                  : 'ESPERANDO EVENTO'}
             </span>
           ) : (
             <span className="text-slate-400 font-bold">DESACTIVADO / NO DISPONIBLE</span>

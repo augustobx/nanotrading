@@ -15,7 +15,7 @@
 Los 109 registros entregados por el usuario no equivalen necesariamente a 109 descubrimientos; una evaluación dual son al menos dos llamadas. El panel mostraba US$0,9993 **brutos estimados**, US$0,0359 **netos registrados** y US$0,9634 de descuento **administrativamente declarado, no verificado en factura**. El hard limit debe seguir usando bruto. Sin la DB real no se puede asignar con rigor cada llamada a su disparador.
 
 ## Remediaciones incluidas en el PR #3
-- **Orquestación:** NO llamar a IA mientras exista un escenario vigente vigilado; cooldown también para rupturas NEUTRAL; un solo descubrimiento concurrente; ventana de 4h si el régimen estructural sigue igual; listeners desuscritos y contadores sin falsos éxitos.
+- **Orquestación:** NO llamar a IA mientras exista un escenario vigente vigilado; cooldown también para rupturas NEUTRAL; un solo descubrimiento concurrente; ventana de 4h si el régimen estructural sigue igual; backoff exponencial de 30m–4h si ambas APIs fallan; listeners desuscritos y contadores sin falsos éxitos.
 - **Watcher:** 10+ velas anteriores cerradas y RVOL>=1,2 antes de disparar ruptura neutral; una solicitud por cierre de vela; WAITING_CONFIRMATION sin llamadas por tick, solo nuevo cierre+30min; última reevaluación persistida en payload JSON de SQLite.
 - **Datos/zonas:** no generar un rango de vigilancia sin niveles reales ni ancho positivo; touch solo dentro del intervalo; indicadores/estrategias basados en velas cerradas.
 - **Integridad de decisiones:** mercado sin respuestas IA no es «consenso neutral»; bloqueo económico conserva escenarios válidos esperando confirmación; solo una ruta automática de IA cuando el scheduler autónomo está habilitado.
