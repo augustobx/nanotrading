@@ -266,8 +266,9 @@ export class HardBudgetManager {
    */
   private reconcileLegacyEstimateBlock(): void {
     const reason = this.config.blockedReason || '';
-    const scope = reason.startsWith('Límite de presupuesto diario alcanzado (') ? 'DAILY_GLOBAL' :
-      reason.startsWith('Límite de presupuesto mensual alcanzado (') ? 'MONTHLY_GLOBAL' : null;
+    const dailyLegacy = /^Límite de presupuesto diario alcanzado \(\$[0-9.]+ \+ \$[0-9.]+ > \$[0-9.]+\)$/.test(reason);
+    const monthlyLegacy = /^Límite de presupuesto mensual alcanzado \(\$[0-9.]+ > \$[0-9.]+\)$/.test(reason);
+    const scope = dailyLegacy ? 'DAILY_GLOBAL' : monthlyLegacy ? 'MONTHLY_GLOBAL' : null;
     if (!this.config.isBlocked || !scope || !this.db) return;
     try {
       const start = new Date();
