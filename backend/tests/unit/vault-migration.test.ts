@@ -50,7 +50,7 @@ test('Audit vault: dry-run is nonmutating, offline apply rotates both providers 
       ...(apply ? ['--apply'] : []),
     ], {
       cwd: process.cwd(), env: apply ? { ...env, OFFLINE_VAULT_MIGRATION: 'YES' } : env,
-      encoding: 'utf8', timeout: 25000,
+      encoding: 'utf8', timeout: 25000, shell: process.platform === 'win32',
     });
 
     const dry = run(false);

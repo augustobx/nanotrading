@@ -296,9 +296,9 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     };
 
     for (const tf of SUPPORTED_TIMEFRAMES) {
-      const candles: any[] = candleManager.getCandles(tf);
+      const candles: any[] = candleManager.getCandles(tf).filter((c: any) => c.confirmed === true);
       klinesAvailableMap[tf] = candles.length > 0;
-      const lastCandle = candleManager.getLastClosedCandle(tf) || candleManager.getCurrentCandle(tf);
+      const lastCandle = [...candles].at(-1);
       const closes: number[] = candles.map((c) => c.close);
 
       const rsiArr = TechnicalIndicators.rsi(closes, 14);

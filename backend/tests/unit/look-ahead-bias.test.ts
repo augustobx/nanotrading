@@ -73,8 +73,8 @@ test('Look-Ahead Bias Prevention - FVGs confirmed strictly on candle 3 close', (
 
   assert.equal(fvg.type, 'BULLISH');
   assert.equal(fvg.patternOriginTimestamp, candles[1].timestamp, 'Origin is the middle displacement candle');
-  assert.equal(fvg.confirmedAtTimestamp, candles[2].timestamp, 'Confirmation occurs only when candle 3 forms');
-  assert.equal(fvg.operationalAvailableTimestamp, candles[2].timestamp, 'Not operationally available before candle 3');
+  assert.equal(fvg.confirmedAtTimestamp, candles[2].timestamp + 15 * 60 * 1000, 'Confirmation occurs when candle 3 closes');
+  assert.equal(fvg.operationalAvailableTimestamp, candles[2].timestamp + 15 * 60 * 1000, 'Not operationally available before candle 3 close');
 });
 
 test('Look-Ahead Bias Prevention - BOS and Liquidity Sweeps occur strictly on breaking candle', () => {

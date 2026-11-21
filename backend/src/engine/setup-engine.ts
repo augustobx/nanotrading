@@ -52,7 +52,7 @@ export class SetupEngine extends EventEmitter {
 
     // Evaluate Strategies
     const closed = (tf: Timeframe) =>
-      this.candleManager.getCandles(tf, 100).filter((c) => c.confirmed !== false);
+      this.candleManager.getCandles(tf, 100).filter((c) => c.confirmed === true);
     const candles4h = closed('4h');
     const candles1h = closed('1h');
     const candles15m = closed('15m');
@@ -82,7 +82,7 @@ export class SetupEngine extends EventEmitter {
   public evaluateTimeframe(tf: Timeframe): MultiTimeframeAnalysis | null {
     // Never calculate structural signals from a still-forming candle.
     const candles = this.candleManager.getCandles(tf, 100)
-      .filter((c) => c.confirmed !== false);
+      .filter((c) => c.confirmed === true);
     if (candles.length < 5) return null;
 
     const closes = candles.map((c) => c.close);
