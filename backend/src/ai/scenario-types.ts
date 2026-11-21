@@ -13,6 +13,7 @@ export type ScenarioStatus =
   | 'WAITING_CONFIRMATION'
   | 'ENTRY_VALIDATED'
   | 'SIGNAL_GENERATED'
+  | 'COMPLETED'
   | 'INVALIDATED'
   | 'EXPIRED'
   | 'CANCELLED';

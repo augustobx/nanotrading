@@ -137,7 +137,7 @@ export function AiTradingIntelligence() {
         const data = await res.json();
         setScenarios(data.data || []);
       }
-    } catch {}
+    } catch { }
   };
 
   const fetchMarketIntel = async () => {
@@ -147,7 +147,7 @@ export function AiTradingIntelligence() {
         const data = await res.json();
         setMarketIntel(data.data || null);
       }
-    } catch {}
+    } catch { }
   };
 
   const fetchSchedulerStatus = async () => {
@@ -157,7 +157,7 @@ export function AiTradingIntelligence() {
         const data = await res.json();
         setSchedulerStatus(data.data || null);
       }
-    } catch {}
+    } catch { }
   };
 
   const fetchConfigSummary = async () => {
@@ -167,7 +167,7 @@ export function AiTradingIntelligence() {
         const data = await res.json();
         setConfigSummary(data.data || null);
       }
-    } catch {}
+    } catch { }
   };
 
   const fetchActiveSignals = async () => {
@@ -177,7 +177,7 @@ export function AiTradingIntelligence() {
         const data = await res.json();
         setActiveSignals(data.data || []);
       }
-    } catch {}
+    } catch { }
   };
 
   const fetchDetail = async (id: string) => {
@@ -187,7 +187,7 @@ export function AiTradingIntelligence() {
         const data = await res.json();
         setScenarioDetail(data.data);
       }
-    } catch {}
+    } catch { }
   };
 
   useEffect(() => {
@@ -411,11 +411,10 @@ export function AiTradingIntelligence() {
       {/* Notification / Alert banner */}
       {message && (
         <div
-          className={`p-3 rounded-xl text-xs flex items-center justify-between ${
-            message.type === 'success'
-              ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/40'
-              : 'bg-rose-950/40 text-rose-300 border border-rose-500/40'
-          }`}
+          className={`p-3 rounded-xl text-xs flex items-center justify-between ${message.type === 'success'
+            ? 'bg-emerald-950/40 text-emerald-300 border border-emerald-500/40'
+            : 'bg-rose-950/40 text-rose-300 border border-rose-500/40'
+            }`}
         >
           <span>{message.text}</span>
           <button onClick={() => setMessage(null)} className="text-slate-400 hover:text-white ml-2">
@@ -471,11 +470,10 @@ export function AiTradingIntelligence() {
         <div className="flex items-center gap-1">
           <button
             onClick={() => setActiveTab('scenarios')}
-            className={`px-3 py-1.5 rounded-t-lg text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-              activeTab === 'scenarios'
-                ? 'bg-slate-800 text-orange-400 border-t-2 border-orange-500'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
-            }`}
+            className={`px-3 py-1.5 rounded-t-lg text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${activeTab === 'scenarios'
+              ? 'bg-slate-800 text-orange-400 border-t-2 border-orange-500'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
+              }`}
           >
             <Crosshair className="w-3.5 h-3.5" />
             Escenarios Detectados ({scenarios.length})
@@ -483,11 +481,10 @@ export function AiTradingIntelligence() {
 
           <button
             onClick={() => setActiveTab('market_intelligence')}
-            className={`px-3 py-1.5 rounded-t-lg text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-              activeTab === 'market_intelligence'
-                ? 'bg-slate-800 text-orange-400 border-t-2 border-orange-500'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
-            }`}
+            className={`px-3 py-1.5 rounded-t-lg text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${activeTab === 'market_intelligence'
+              ? 'bg-slate-800 text-orange-400 border-t-2 border-orange-500'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
+              }`}
           >
             <Layers className="w-3.5 h-3.5" />
             Panorama Multitemporal (6TF)
@@ -495,11 +492,10 @@ export function AiTradingIntelligence() {
 
           <button
             onClick={() => setActiveTab('watcher_stats')}
-            className={`px-3 py-1.5 rounded-t-lg text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-              activeTab === 'watcher_stats'
-                ? 'bg-slate-800 text-orange-400 border-t-2 border-orange-500'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
-            }`}
+            className={`px-3 py-1.5 rounded-t-lg text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${activeTab === 'watcher_stats'
+              ? 'bg-slate-800 text-orange-400 border-t-2 border-orange-500'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
+              }`}
           >
             <Radar className="w-3.5 h-3.5" />
             Monitor Algorítmico 24/7
@@ -507,11 +503,10 @@ export function AiTradingIntelligence() {
 
           <button
             onClick={() => setActiveTab('paper_trading')}
-            className={`px-3 py-1.5 rounded-t-lg text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
-              activeTab === 'paper_trading'
-                ? 'bg-slate-800 text-orange-400 border-t-2 border-orange-500'
-                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
-            }`}
+            className={`px-3 py-1.5 rounded-t-lg text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${activeTab === 'paper_trading'
+              ? 'bg-slate-800 text-orange-400 border-t-2 border-orange-500'
+              : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900/40'
+              }`}
           >
             <ShieldCheck className="w-3.5 h-3.5" />
             Paper Trading ({activeSignals.length})
@@ -525,25 +520,22 @@ export function AiTradingIntelligence() {
               <span className="text-[11px] text-slate-500 font-mono">Tipo:</span>
               <button
                 onClick={() => setFilterKind('ALL')}
-                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                  filterKind === 'ALL' ? 'bg-orange-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterKind === 'ALL' ? 'bg-orange-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
               >
                 TODOS ({scenarios.length})
               </button>
               <button
                 onClick={() => setFilterKind('TRADE_SCENARIO')}
-                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                  filterKind === 'TRADE_SCENARIO' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterKind === 'TRADE_SCENARIO' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
               >
                 TRADES ({scenarios.filter((s) => s.kind !== 'NEUTRAL_OBSERVATION' && s.direction !== 'NEUTRAL').length})
               </button>
               <button
                 onClick={() => setFilterKind('NEUTRAL_OBSERVATION')}
-                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                  filterKind === 'NEUTRAL_OBSERVATION' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterKind === 'NEUTRAL_OBSERVATION' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
               >
                 OBSERVACIONES ({scenarios.filter((s) => s.kind === 'NEUTRAL_OBSERVATION' || s.direction === 'NEUTRAL').length})
               </button>
@@ -555,33 +547,29 @@ export function AiTradingIntelligence() {
               <span className="text-[11px] text-slate-500 font-mono">Modo R:R:</span>
               <button
                 onClick={() => setFilterRR('ALL')}
-                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                  filterRR === 'ALL' ? 'bg-orange-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterRR === 'ALL' ? 'bg-orange-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
               >
                 TODOS
               </button>
               <button
                 onClick={() => setFilterRR('RR_BOTH')}
-                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                  filterRR === 'RR_BOTH' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterRR === 'RR_BOTH' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
               >
                 1:2 Y 1:4
               </button>
               <button
                 onClick={() => setFilterRR('RR_1_2')}
-                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                  filterRR === 'RR_1_2' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterRR === 'RR_1_2' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
               >
                 1:2
               </button>
               <button
                 onClick={() => setFilterRR('RR_1_4')}
-                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                  filterRR === 'RR_1_4' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterRR === 'RR_1_4' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
               >
                 1:4
               </button>
@@ -591,11 +579,10 @@ export function AiTradingIntelligence() {
 
             <button
               onClick={() => setShowCostAudit(!showCostAudit)}
-              className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-bold flex items-center gap-1 ${
-                showCostAudit
-                  ? 'bg-purple-600 text-white'
-                  : 'bg-slate-900 border border-purple-500/30 text-purple-300 hover:bg-purple-950/40'
-              }`}
+              className={`px-2.5 py-0.5 rounded text-[10px] font-mono font-bold flex items-center gap-1 ${showCostAudit
+                ? 'bg-purple-600 text-white'
+                : 'bg-slate-900 border border-purple-500/30 text-purple-300 hover:bg-purple-950/40'
+                }`}
             >
               <DollarSign className="w-3 h-3" />
               Auditoría Costos IA (${totalAiCost.toFixed(4)})
@@ -679,9 +666,8 @@ export function AiTradingIntelligence() {
                     return (
                       <tr
                         key={sc.id}
-                        className={`hover:bg-slate-900/60 transition-colors ${
-                          isSelected ? 'bg-slate-900/80 border-l-2 border-orange-500' : ''
-                        }`}
+                        className={`hover:bg-slate-900/60 transition-colors ${isSelected ? 'bg-slate-900/80 border-l-2 border-orange-500' : ''
+                          }`}
                       >
                         <td className="py-2.5 text-slate-300">
                           <div className="font-bold">{sc.id}</div>
@@ -692,11 +678,10 @@ export function AiTradingIntelligence() {
                         <td className="py-2.5">
                           <div className="flex flex-col gap-0.5">
                             <span
-                              className={`px-1.5 py-0.2 rounded text-[9px] font-bold inline-block w-fit ${
-                                isNeutral
-                                  ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                                  : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                              }`}
+                              className={`px-1.5 py-0.2 rounded text-[9px] font-bold inline-block w-fit ${isNeutral
+                                ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                                : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                                }`}
                             >
                               {isNeutral ? 'NEUTRAL_WATCH' : 'TRADE'}
                             </span>
@@ -704,20 +689,19 @@ export function AiTradingIntelligence() {
                               {trigger === 'MANUAL_TRIGGER'
                                 ? 'MANUAL'
                                 : trigger === 'NEUTRAL_BREAKOUT'
-                                ? 'BREAKOUT'
-                                : 'AUTO'}
+                                  ? 'BREAKOUT'
+                                  : 'AUTO'}
                             </span>
                           </div>
                         </td>
                         <td className="py-2.5">
                           <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                              isNeutral
-                                ? 'bg-slate-700/50 text-slate-300'
-                                : isLong
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${isNeutral
+                              ? 'bg-slate-700/50 text-slate-300'
+                              : isLong
                                 ? 'bg-emerald-500/15 text-emerald-400'
                                 : 'bg-rose-500/15 text-rose-400'
-                            }`}
+                              }`}
                           >
                             {sc.direction} · {sc.timeframe}
                           </span>
@@ -762,9 +746,8 @@ export function AiTradingIntelligence() {
                           <div className="flex items-center gap-1.5">
                             <div className="w-16 bg-slate-800 h-1.5 rounded-full overflow-hidden">
                               <div
-                                className={`h-full ${
-                                  (sc.distanceToZonePct || 0) <= 0.35 ? 'bg-amber-400' : 'bg-blue-400'
-                                }`}
+                                className={`h-full ${(sc.distanceToZonePct || 0) <= 0.35 ? 'bg-amber-400' : 'bg-blue-400'
+                                  }`}
                                 style={{ width: `${Math.min(100, Math.max(5, 100 - (sc.distanceToZonePct || 0) * 20))}%` }}
                               />
                             </div>
@@ -814,9 +797,8 @@ export function AiTradingIntelligence() {
                     Detalle del Escenario: <span className="font-mono text-orange-400">{scenarioDetail.scenario.id}</span>
                   </h3>
                   {getStatusBadge(scenarioDetail.scenario.status)}
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                    scenarioDetail.scenario.kind === 'NEUTRAL_OBSERVATION' ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
-                  }`}>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${scenarioDetail.scenario.kind === 'NEUTRAL_OBSERVATION' ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
+                    }`}>
                     {scenarioDetail.scenario.kind || 'TRADE_SCENARIO'}
                   </span>
                 </div>
@@ -875,13 +857,12 @@ export function AiTradingIntelligence() {
                             <td className="py-1.5 text-slate-400">{lvl.evidence}</td>
                             <td className="py-1.5">{lvl.distancePct.toFixed(2)}%</td>
                             <td className="py-1.5">
-                              <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
-                                lvl.relevanceToHorizon === 'HIGH'
-                                  ? 'bg-emerald-500/20 text-emerald-400'
-                                  : lvl.relevanceToHorizon === 'MEDIUM'
+                              <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${lvl.relevanceToHorizon === 'HIGH'
+                                ? 'bg-emerald-500/20 text-emerald-400'
+                                : lvl.relevanceToHorizon === 'MEDIUM'
                                   ? 'bg-blue-500/20 text-blue-400'
                                   : 'bg-slate-800 text-slate-400'
-                              }`}>
+                                }`}>
                                 {lvl.relevanceToHorizon}
                               </span>
                             </td>
@@ -914,9 +895,8 @@ export function AiTradingIntelligence() {
                       <span className="px-2 py-0.5 rounded text-[10px] bg-slate-800 text-slate-300 font-bold">
                         HORIZONTE: {scenarioDetail.scenario.watchPlan.horizon || 'INTRADAY'}
                       </span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        scenarioDetail.scenario.watchPlan.automatable ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                      }`}>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${scenarioDetail.scenario.watchPlan.automatable ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                        }`}>
                         {scenarioDetail.scenario.watchPlan.automatable ? 'AUTOMATABLE DETERMINISTA' : 'REQUIERE CONFIRMACIÓN MANUAL'}
                       </span>
                     </div>
@@ -945,17 +925,15 @@ export function AiTradingIntelligence() {
                             return (
                               <div
                                 key={idx}
-                                className={`flex items-start gap-2 p-2 rounded text-[11px] border ${
-                                  cond.isMet
-                                    ? 'bg-emerald-950/20 border-emerald-500/40'
-                                    : isNextAwaited
+                                className={`flex items-start gap-2 p-2 rounded text-[11px] border ${cond.isMet
+                                  ? 'bg-emerald-950/20 border-emerald-500/40'
+                                  : isNextAwaited
                                     ? 'bg-amber-950/20 border-amber-500/50 shadow-md shadow-amber-500/10 animate-pulse'
                                     : 'bg-slate-900 border-slate-800 opacity-60'
-                                }`}
+                                  }`}
                               >
-                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${
-                                  cond.isMet ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-300'
-                                }`}>
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold shrink-0 ${cond.isMet ? 'bg-emerald-500 text-slate-950' : 'bg-slate-800 text-slate-300'
+                                  }`}>
                                   Paso {cond.sequenceOrder || idx + 1}
                                 </span>
                                 <div className="space-y-0.5 min-w-0 flex-1">
@@ -1111,13 +1089,12 @@ export function AiTradingIntelligence() {
                   <div className="flex items-center justify-between">
                     <span className="font-mono font-extrabold text-sm text-slate-100">{tf.toUpperCase()}</span>
                     <span
-                      className={`px-1.5 py-0.2 rounded text-[10px] font-mono font-bold ${
-                        data.trend === 'BULLISH'
-                          ? 'bg-emerald-500/20 text-emerald-400'
-                          : data.trend === 'BEARISH'
+                      className={`px-1.5 py-0.2 rounded text-[10px] font-mono font-bold ${data.trend === 'BULLISH'
+                        ? 'bg-emerald-500/20 text-emerald-400'
+                        : data.trend === 'BEARISH'
                           ? 'bg-rose-500/20 text-rose-400'
                           : 'bg-slate-700 text-slate-300'
-                      }`}
+                        }`}
                     >
                       {data.trend}
                     </span>
