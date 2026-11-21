@@ -264,12 +264,12 @@ Responde estrictamente en JSON:
       if (openaiRes) {
         openaiVerdict = ['APPROVE', 'WAIT', 'REJECT'].includes(openaiRes.verdict) ? openaiRes.verdict : 'WAIT';
         openaiReason = openaiRes.reasoning || '';
-        totalCostUsd += openaiRes.costUsd || 0.0005;
+        totalCostUsd += openaiRes.costUsd ?? 0;
       }
       if (geminiRes) {
         geminiVerdict = ['APPROVE', 'WAIT', 'REJECT'].includes(geminiRes.verdict) ? geminiRes.verdict : 'WAIT';
         geminiReason = geminiRes.reasoning || '';
-        totalCostUsd += geminiRes.costUsd || 0.0005;
+        totalCostUsd += geminiRes.costUsd ?? 0;
       }
     } finally {
       for (const reservation of reservations) {

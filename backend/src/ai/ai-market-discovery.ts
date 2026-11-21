@@ -782,10 +782,11 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       triggerSource,
       timeframe: '15m',
       structureType: 'RANGING_NO_CONFLUENCE',
-      proposedBy: 'CONSENSUS',
+      proposedBy: openaiDiscovery && geminiDiscovery ? 'CONSENSUS' :
+        openaiDiscovery ? 'OPENAI' : 'GEMINI',
       modelsUsed: [
-        ...(openaiConfigured ? [this.openaiAdapter.getModel()] : []),
-        ...(geminiConfigured ? [this.geminiAdapter.getModel()] : []),
+        ...(openaiDiscovery ? [openaiDiscovery.model || this.openaiAdapter.getModel()] : []),
+        ...(geminiDiscovery ? [geminiDiscovery.model || this.geminiAdapter.getModel()] : []),
       ],
       snapshotId,
       discoveryTimestamp: Date.now(),
