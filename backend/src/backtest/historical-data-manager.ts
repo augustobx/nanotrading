@@ -97,7 +97,7 @@ export class HistoricalDataManager {
     days: number = 90,
     onProgress?: (msg: string, overallPct: number) => void
   ): Promise<DataStatusSummary> {
-    const timeframes: Timeframe[] = ['1d', '4h', '1h', '15m', '5m'];
+    const timeframes: Timeframe[] = ['1d', '4h', '1h', '15m', '5m', '1m'];
     const totalTfs = timeframes.length;
 
     for (let i = 0; i < totalTfs; i++) {
@@ -121,7 +121,7 @@ export class HistoricalDataManager {
   }
 
   public getDataStatus(targetDays: number = 90): DataStatusSummary {
-    const timeframes: Timeframe[] = ['1d', '4h', '1h', '15m', '5m'];
+    const timeframes: Timeframe[] = ['1d', '4h', '1h', '15m', '5m', '1m'];
     const result: DataStatusSummary = {
       symbol: this.symbol,
       targetDays,

@@ -173,15 +173,16 @@ export class BacktestEngine {
       }
 
       const bar15m = candles15m[i];
-      const barTs = bar15m.timestamp;
+      // Market knowledge becomes available at the candle CLOSE, not its open.
+      const barTs = bar15m.timestamp + 15 * 60 * 1000;
+      if (barTs > Date.now()) continue;
 
-      // Slice historical windows strictly up to barTs (NO look-ahead)
       const window15m = candles15m.slice(Math.max(0, i - 100), i + 1);
-      const window1h = candles1h.filter((c) => c.timestamp <= barTs);
-      const window4h = candles4h.filter((c) => c.timestamp <= barTs);
+      const window1h = candles1h.filter((c) => c.timestamp + 60 * 60 * 1000 <= barTs);
+      const window4h = candles4h.filter((c) => c.timestamp + 4 * 60 * 60 * 1000 <= barTs);
 
-      // We need recent 5m candles up to barTs
-      const idx5m = this.findLastCandleIndex(candles5m, barTs);
+      // Include only fully closed 5m candles available at this exact time.
+      const idx5m = this.findLastCandleIndex(candles5m, barTs - 5 * 60 * 1000);
       if (idx5m < 30) continue;
       const window5m = candles5m.slice(Math.max(0, idx5m - 50), idx5m + 1);
 
@@ -497,7 +498,20 @@ export class BacktestEngine {
     const entryPrice = setup.entryPrice;
     const stopLossPrice = setup.stopLossPrice;
     const isLong = setup.direction === 'LONG';
-    const entryTimestamp = setup.timestamp;
+    let entryTimestamp = setup.timestamp;
+
+    // No virtual fill unless a subsequent recorded 5m candle traded at entry.
+    let fillIdx = -1;
+    const maxWaitIdx = Math.min(candles5m.length - 1, start5mIdx + 12);
+    for (let j = start5mIdx + 1; j <= maxWaitIdx; j++) {
+      const c = candles5m[j];
+      if (c.low <= entryPrice && c.high >= entryPrice) {
+        fillIdx = j;
+        entryTimestamp = c.timestamp;
+        break;
+      }
+    }
+    if (fillIdx < 0) return null;
 
     let mfePrice = entryPrice;
     let maePrice = entryPrice;
@@ -506,9 +520,9 @@ export class BacktestEngine {
     let outcome: 'TAKE_PROFIT' | 'STOP_LOSS' | 'EXPIRED' = 'EXPIRED';
 
     const maxHoldingCandles = 576; // 48 hours in 5m candles (48 * 12)
-    const endLookIdx = Math.min(candles5m.length - 1, start5mIdx + maxHoldingCandles);
+    const endLookIdx = Math.min(candles5m.length - 1, fillIdx + maxHoldingCandles);
 
-    for (let j = start5mIdx + 1; j <= endLookIdx; j++) {
+    for (let j = fillIdx; j <= endLookIdx; j++) {
       const candle = candles5m[j];
 
       // Update MFE & MAE
@@ -522,7 +536,9 @@ export class BacktestEngine {
 
       // Check hit conditions
       const hitStopLoss = isLong ? candle.low <= stopLossPrice : candle.high >= stopLossPrice;
-      const hitTakeProfit = isLong ? candle.high >= takeProfitPrice : candle.low <= takeProfitPrice;
+      // No optimistic TP on the ambiguous fill candle (unknown OHLC ordering).
+      const hitTakeProfit = j > fillIdx &&
+        (isLong ? candle.high >= takeProfitPrice : candle.low <= takeProfitPrice);
 
       // Conservative resolution: If both touched in the same candle, SL hit first
       if (hitStopLoss && hitTakeProfit) {
