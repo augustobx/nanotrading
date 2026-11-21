@@ -3,11 +3,11 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Copy root package files
-COPY package.json ./
+COPY package.json package-lock.json ./
 COPY backend/package.json ./backend/
 
-# Install dependencies
-RUN npm install
+# Install frozen dependency graph
+RUN npm ci
 
 # Copy backend source
 COPY backend ./backend
@@ -27,6 +27,8 @@ COPY --from=builder /app/package.json ./
 COPY --from=builder /app/backend/package.json ./backend/
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/backend/dist ./backend/dist
+# Offline vault-rotation script; no production keys are included in this image.
+COPY --from=builder /app/backend/scripts/migrate-vault-key.ts ./backend/scripts/migrate-vault-key.ts
 
 RUN mkdir -p /app/data
 

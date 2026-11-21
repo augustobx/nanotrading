@@ -1,0 +1,74 @@
+name: Audit guardrails
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: ['fix/audit-hardening-*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NODE_ENV: test
+      CONFIG_MASTER_KEY: audit-ci-only-ephemeral-key-never-use-in-production-2026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run build:backend
+      - run: npm run build:frontend
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      NODE_ENV: test
+      CONFIG_MASTER_KEY: audit-ci-only-ephemeral-key-never-use-in-production-2026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Test individual files with timeout and per-file diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find backend/tests/unit -maxdepth 1 -name '*.test.ts' | sort)
+          failed=0
+          for i in "${!files[@]}"; do
+            if (( i % 4 != ${{ matrix.shard }} )); then continue; fi
+            echo "::group::${files[i]}"
+            if ! (cd backend && timeout 75s npx --no-install tsx --test "../${files[i]}"); then
+              echo "::error file=${files[i]}::Test failed, errored, or timed out"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
+
+  docker-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CONFIG_MASTER_KEY: audit-ci-only-ephemeral-key-never-use-in-production-2026
+      DB_PASSWORD: audit-ci-database-password-not-for-production
+      REDIS_PASSWORD: audit-ci-redis-password-not-for-production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose configuration
+        run: docker compose -f compose.yml config --quiet
+      - name: Build isolated NanoTrading container images
+        run: docker compose -f compose.yml build backend frontend

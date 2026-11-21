@@ -60,36 +60,45 @@ export class ApiServer {
   }
 
   private async readJsonBody<T = any>(req: http.IncomingMessage): Promise<T> {
-    return new Promise((resolve, reject) => {
-      let data = '';
-      req.on('data', (chunk) => (data += chunk));
-      req.on('end', () => {
-        try {
-          resolve(data ? JSON.parse(data) : ({} as T));
-        } catch (err) {
-          reject(new Error('Invalid JSON'));
-        }
-      });
-      req.on('error', reject);
-    });
+    // Reuse the bounded parser; never buffer arbitrarily large request bodies.
+    return this.parseJsonBody<T>(req);
   }
 
   private handleHttpRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
-    // Enable CORS for frontend PWA with Cookie Credentials & CSRF
-    const origin = (req.headers.origin as string) || 'http://localhost:3000';
-    res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-admin-key');
+    // Credentialed CORS must never reflect arbitrary caller-controlled origins.
+    const origin = req.headers.origin as string | undefined;
+    const trustedOrigins = config.security.corsAllowedOrigins;
+    const allowedOrigin = !!origin && trustedOrigins.includes(origin);
+    res.setHeader('Vary', 'Origin');
+    if (allowedOrigin) {
+      res.setHeader('Access-Control-Allow-Origin', origin!);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-csrf-token, x-admin-key');
+    }
 
     if (req.method === 'OPTIONS') {
-      res.writeHead(204);
+      res.writeHead(origin && !allowedOrigin ? 403 : 204);
       res.end();
       return;
     }
 
     const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname;
+
+    // Market prices may remain public, but private configuration/usage records cannot.
+    const privateReadPaths = new Set([
+      '/api/v1/config/bybit', '/api/v1/config/budget',
+      '/api/v1/config/ai/router', '/api/v1/config/ai/credentials',
+      '/api/v1/config/ai/consumption', '/api/v1/config/ai/consumption/export',
+      '/api/v1/config/ai/gemini/models', '/api/v1/config/audit',
+      '/api/v1/notifications/history',
+    ]);
+    if (req.method === 'GET' && privateReadPaths.has(pathname) && !this.isAuthenticated(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Autenticación requerida' }));
+      return;
+    }
 
     try {
       if (pathname === '/health' && req.method === 'GET') {
@@ -1059,8 +1068,8 @@ export class ApiServer {
   }
 
   private async handleGetGeminiModels(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
-    let apiKey = (url.searchParams.get('apiKey') || '').trim();
+    // Never accept API keys in GET query parameters (they leak to access logs).
+    let apiKey = '';
 
     if (!apiKey) {
       const saved = this.db.getAiCredentials('gemini');
@@ -1094,7 +1103,7 @@ export class ApiServer {
 
     try {
       const googleRes = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
+        'https://generativelanguage.googleapis.com/v1beta/models',
         {
           method: 'GET',
           headers: {
@@ -1660,10 +1669,11 @@ export class ApiServer {
 
       // Check if billing evidence is explicitly provided
       if (payload.billingEvidenceDetails) {
-        verificationStatus = 'CONFIRMED_BILLED';
-        isGlobalUsageEstimated = false;
-        reconciliationSource = 'OPENAI_USAGE_API';
-        message = 'Beneficio comprobado mediante datos oficiales de facturación y uso. Los descuentos se registran como CONFIRMADOS en facturación.';
+        // Client-provided text is not independently verified API billing evidence.
+        verificationStatus = 'DECLARED_BY_ADMIN';
+        isGlobalUsageEstimated = true;
+        reconciliationSource = 'ADMIN_DECLARATION';
+        message = 'Se registró evidencia declarada por el administrador. Los descuentos siguen siendo ESTIMADOS hasta verificar facturación oficial.';
       } else if (payload.adminDeclaration || payload.dataSharingConfirmed || payload.forceVerify) {
         verificationStatus = 'DECLARED_BY_ADMIN';
         isGlobalUsageEstimated = true;
@@ -1683,7 +1693,7 @@ export class ApiServer {
           smallGroupUsedTokens: payload.reconcileUsage.smallGroupUsedTokens,
           source: reconciliationSource,
           evidenceDetails: payload.billingEvidenceDetails,
-          verifiedBilled: verificationStatus === 'CONFIRMED_BILLED',
+          verifiedBilled: false,
         });
       }
 
@@ -1709,7 +1719,7 @@ export class ApiServer {
       this.db.saveHardBudgetConfig(updatedConfig);
       this.db.logConfigAudit({
         category: 'OPENAI_FREE_TIER',
-        action: verificationStatus === 'CONFIRMED_BILLED' ? 'VERIFIED_OFFICIAL_BILLING' : isVerified ? 'DECLARED_BY_ADMIN' : 'API_KEY_VALID_UNVERIFIED_TIER',
+        action: isVerified ? 'DECLARED_BY_ADMIN' : 'API_KEY_VALID_UNVERIFIED_TIER',
         details: { orgId, verificationStatus, isGlobalUsageEstimated, ipAddress: clientIp },
         ipAddress: clientIp,
       });

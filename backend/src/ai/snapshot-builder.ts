@@ -84,6 +84,13 @@ export class SnapshotBuilder {
       sl: effectiveSetup.stopLossPrice,
       tp: effectiveSetup.takeProfitPrice,
       netRR: effectiveSetup.riskReward?.netRR || 4.0,
+      ticker: marketState.ticker,
+      orderBook: ob,
+      multiTimeframe,
+      marketStatus: marketState.status,
+      gapsDetectedCount: marketState.gapsDetectedCount,
+      lastWsMessageTimestamp: marketState.lastWsMessageTimestamp,
+      candidateSetup: effectiveSetup,
     });
 
     const snapshotId = `snap_${createHash('sha256').update(rawPayload).digest('hex').substring(0, 16)}`;

@@ -15,6 +15,9 @@ export interface DataStatusSummary {
       latestDate: string | null;
       isComplete: boolean;
       expectedCandles: number;
+      gapCount: number;
+      missingCandles: number;
+      largestGapMs: number;
     };
   };
   totalCandles: number;
@@ -97,7 +100,7 @@ export class HistoricalDataManager {
     days: number = 90,
     onProgress?: (msg: string, overallPct: number) => void
   ): Promise<DataStatusSummary> {
-    const timeframes: Timeframe[] = ['1d', '4h', '1h', '15m', '5m'];
+    const timeframes: Timeframe[] = ['1d', '4h', '1h', '15m', '5m', '1m'];
     const totalTfs = timeframes.length;
 
     for (let i = 0; i < totalTfs; i++) {
@@ -121,7 +124,7 @@ export class HistoricalDataManager {
   }
 
   public getDataStatus(targetDays: number = 90): DataStatusSummary {
-    const timeframes: Timeframe[] = ['1d', '4h', '1h', '15m', '5m'];
+    const timeframes: Timeframe[] = ['1d', '4h', '1h', '15m', '5m', '1m'];
     const result: DataStatusSummary = {
       symbol: this.symbol,
       targetDays,
@@ -133,7 +136,14 @@ export class HistoricalDataManager {
       const stats = this.db.getHistoricalCandleStats(this.symbol, tf);
       const minutesPerCandle = this.getMinutesForTimeframe(tf);
       const expectedCandles = Math.ceil((targetDays * 24 * 60) / minutesPerCandle);
-      const isComplete = stats.count >= Math.floor(expectedCandles * 0.95);
+      const intervalMs = minutesPerCandle * 60000;
+      const startTime = Date.now() - targetDays * 86400000;
+      const gaps = this.db.getHistoricalGapStats(this.symbol, tf, startTime, intervalMs);
+      const coversRange = stats.earliest !== null && stats.latest !== null &&
+        stats.earliest <= startTime + intervalMs * 2 &&
+        stats.latest >= Date.now() - intervalMs * 2;
+      const isComplete = coversRange && gaps.gapCount === 0 &&
+        stats.count >= Math.floor(expectedCandles * 0.95);
 
       result.timeframes[tf] = {
         count: stats.count,
@@ -143,6 +153,9 @@ export class HistoricalDataManager {
         latestDate: stats.latest ? new Date(stats.latest).toISOString() : null,
         isComplete,
         expectedCandles,
+        gapCount: gaps.gapCount,
+        missingCandles: gaps.missingCandles,
+        largestGapMs: gaps.largestGapMs,
       };
 
       result.totalCandles += stats.count;

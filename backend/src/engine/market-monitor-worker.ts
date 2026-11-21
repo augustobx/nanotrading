@@ -172,7 +172,7 @@ export class MarketMonitorWorker extends EventEmitter {
           }
 
           if (tpHit) {
-            this.stateMachine.transition(signal.id, 'COMPLETED_TP', `Take Profit alcanzado en $${price.toFixed(2)}`);
+            this.stateMachine.transition(signal.id, 'COMPLETED_TP', `Take Profit alcanzado en ${price.toFixed(2)}`, { executionPrice: price });
             this.telegramNotifier.notifyTakeProfitCompleted(signal).catch(() => {});
             this.webPushNotifier.notifyTakeProfit(signal).catch(() => {});
             continue;
@@ -187,7 +187,7 @@ export class MarketMonitorWorker extends EventEmitter {
           }
 
           if (slHit) {
-            this.stateMachine.transition(signal.id, 'COMPLETED_SL', `Stop Loss alcanzado en $${price.toFixed(2)}`);
+            this.stateMachine.transition(signal.id, 'COMPLETED_SL', `Stop Loss alcanzado en ${price.toFixed(2)}`, { executionPrice: price });
             this.telegramNotifier.notifyStopLossCompleted(signal).catch(() => {});
             this.webPushNotifier.notifyStopLoss(signal).catch(() => {});
             continue;

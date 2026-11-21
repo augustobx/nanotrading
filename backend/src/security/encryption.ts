@@ -1,5 +1,4 @@
 import crypto from 'crypto';
-import { config } from '../config/index.js';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12; // 96 bits recommended for GCM
@@ -10,7 +9,14 @@ const AUTH_TAG_LENGTH = 16;
  * Uses CONFIG_MASTER_KEY if provided, falling back to adminApiKey.
  */
 function getMasterKey(): Buffer {
-  const masterSecret = process.env.CONFIG_MASTER_KEY || config.security.adminApiKey || 'nanolabs_default_secure_vault_key_2026';
+  // Never derive production encryption keys from an admin password or a public fallback.
+  // Test fixtures have an isolated key; production and development fail closed.
+  const isTest = process.env.NODE_ENV === 'test' || process.env.npm_lifecycle_event === 'test';
+  const masterSecret = process.env.CONFIG_MASTER_KEY ||
+    (isTest ? 'nanotrading-test-only-encryption-secret-not-for-production' : undefined);
+  if (!masterSecret || Buffer.byteLength(masterSecret, 'utf8') < 32) {
+    throw new Error('CONFIG_MASTER_KEY must contain at least 32 UTF-8 bytes before storing encrypted credentials');
+  }
   const salt = Buffer.from('nanolabs_ai_trading_vault_salt_v1', 'utf8');
   return crypto.pbkdf2Sync(masterSecret, salt, 100000, 32, 'sha256');
 }

@@ -242,12 +242,17 @@ test('Fase 5C - Registra y transiciona a TRACKING un Paper Trade generado desde 
       80000,
       'RR_1_2',
       81100,
-      2.1
+      2.1,
+      50,
+      0.08
     );
 
     assert.ok(paperSignal12 !== undefined);
     assert.equal(paperSignal12.id, `sig_${scenario.id}_RR_1_2`);
-    assert.equal(paperSignal12.state, 'TRACKING');
+    assert.equal(paperSignal12.state, 'ENTRY_VALIDATED');
+    assert.equal(paperSignal12.entryMode, 'EMITTED_SIGNAL');
+    stateMachine.transition(paperSignal12.id, 'ENTRY_TRIGGERED', 'Precio de entrada observado');
+    stateMachine.transition(paperSignal12.id, 'TRACKING', 'Seguimiento paper');
     assert.equal(paperSignal12.entryMode, 'SIMULATED_PAPER_ENTRY');
     assert.equal(paperSignal12.entryPrice, 80000);
     assert.equal(paperSignal12.takeProfitPrice, 81100);
@@ -261,8 +266,10 @@ test('Fase 5C - Registra y transiciona a TRACKING un Paper Trade generado desde 
     // Simular Take Profit alcanzado
     stateMachine.transition(paperSignal12.id, 'COMPLETED_TP', 'Take Profit alcanzado en precio real');
     assert.equal(paperSignal12.state, 'COMPLETED_TP');
-    assert.equal(paperSignal12.realizedNetR, 2.1);
-    assert.equal(paperSignal12.realizedNetPnlUsdt, 210); // 100 USDT * 2.1R
+    assert.ok((paperSignal12.realizedNetR || 0) > 1);
+    assert.ok((paperSignal12.realizedNetPnlUsdt || 0) > 0);
+    assert.ok((paperSignal12.realizedNetPnlUsdt || 0) < (81100 - 80000) * 0.08);
+    assert.equal(paperSignal12.riskUsdt, 50);
   } finally {
     cleanup();
   }

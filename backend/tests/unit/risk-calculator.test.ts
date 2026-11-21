@@ -195,3 +195,27 @@ test('RiskCalculator - Rejects setups with invalid geometry', () => {
   assert.equal(badShort.isValid, false);
   assert.ok(badShort.rejectionReason?.includes('Take Profit debe ser menor'));
 });
+
+test('RiskCalculator - rejects the exchange minimum when it would exceed monetary risk', () => {
+  const result = RiskCalculator.calculate({
+    direction: 'LONG',
+    entryPrice: 60000,
+    stopLossPrice: 59900,
+    takeProfitPrice: 61000,
+    accountBalance: 10,
+    riskPercent: 0.1,
+    minOrderQty: 0.001,
+    qtyStep: 0.001,
+    minRequiredRR: 0,
+  });
+  assert.equal(result.isValid, false);
+  assert.match(result.rejectionReason || '', /lote mínimo|riesgo insuficiente/i);
+});
+
+test('RiskCalculator - rejects invalid financial inputs instead of propagating NaN', () => {
+  const result = RiskCalculator.calculate({
+    direction: 'SHORT', entryPrice: NaN, stopLossPrice: 61000,
+    takeProfitPrice: 59000, accountBalance: 10000, minRequiredRR: 0,
+  });
+  assert.equal(result.isValid, false);
+});

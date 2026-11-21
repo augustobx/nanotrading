@@ -104,8 +104,8 @@ export class RiskPolicyManager {
 
   public updatePolicy(updates: Partial<RiskPolicyConfig>, updatedBy: string = 'admin'): RiskPolicyConfig {
     // Strict validations
-    if (updates.minNetRR !== undefined && updates.minNetRR < 4.0) {
-      throw new Error('El ratio riesgo/beneficio mínimo no puede ser menor a 1:4.0 (Regla fundamental NanoLabs)');
+    if (updates.minNetRR !== undefined && updates.minNetRR < 2.0) {
+      throw new Error('El ratio riesgo/beneficio mínimo no puede ser menor a 1:2.0 neto');
     }
     if (updates.capitalUsdt !== undefined && updates.capitalUsdt <= 0) {
       throw new Error('El capital operativo debe ser mayor a 0 USDT');

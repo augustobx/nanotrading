@@ -41,17 +41,15 @@ export class DatabaseService {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      // Create automatic rolling safety backup if database exists
-      if (fs.existsSync(dbPath)) {
-        try {
-          fs.copyFileSync(dbPath, `${dbPath}.bak`);
-        } catch { }
-      }
+      // Back up only AFTER SQLite opens and recovers WAL; copying now can
+      // silently omit transactions that still live in the WAL sidecar.
     }
 
     this.db = new DatabaseSync(dbPath);
     this.init();
     this.prepareStatements();
+    this.db.exec('CREATE TABLE IF NOT EXISTS runtime_flags (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    if (dbPath !== ':memory:' && fs.existsSync(dbPath)) this.backup();
   }
 
   private init(): void {
@@ -517,6 +515,8 @@ export class DatabaseService {
       'realized_net_pnl_usdt REAL',
       "entry_mode TEXT DEFAULT 'SIGNALS_ONLY'",
       "evaluation_mode TEXT DEFAULT 'DUAL_AI'",
+      'risk_usdt REAL',
+      'position_size_btc REAL',
     ];
     for (const col of extraCols) {
       try {
@@ -627,8 +627,8 @@ export class DatabaseService {
     `);
 
     this.insertSignalStmt = this.db.prepare(`
-      INSERT INTO signals (id, setup_id, timestamp, symbol, strategy, direction, timeframe, entry_price, stop_loss, take_profit, rr_net, consensus_verdict, openai_verdict, gemini_verdict, status, rejection_reason, snapshot_id, created_at, evaluation_mode)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO signals (id, setup_id, timestamp, symbol, strategy, direction, timeframe, entry_price, stop_loss, take_profit, rr_net, consensus_verdict, openai_verdict, gemini_verdict, status, rejection_reason, snapshot_id, created_at, evaluation_mode, risk_usdt, position_size_btc)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         rejection_reason = excluded.rejection_reason,
@@ -927,7 +927,9 @@ export class DatabaseService {
         signal.rejectionReason || null,
         signal.snapshotId || null,
         signal.createdAt || Date.now(),
-        signal.evaluationMode || 'DUAL_AI'
+        signal.evaluationMode || 'DUAL_AI',
+        signal.riskUsdt ?? null,
+        signal.positionSizeBTC ?? null
       );
     } catch {}
   }
@@ -955,6 +957,8 @@ export class DatabaseService {
       snapshotId: r.snapshot_id,
       createdAt: Number(r.created_at),
       evaluationMode: r.evaluation_mode || 'DUAL_AI',
+      riskUsdt: r.risk_usdt != null ? Number(r.risk_usdt) : null,
+      positionSizeBTC: r.position_size_btc != null ? Number(r.position_size_btc) : null,
       simulatedEntryTime: r.simulated_entry_time ? Number(r.simulated_entry_time) : null,
       exitTime: r.exit_time ? Number(r.exit_time) : null,
       durationMs: r.duration_ms ? Number(r.duration_ms) : null,
@@ -1164,6 +1168,8 @@ export class DatabaseService {
         snapshotId: r.snapshot_id,
         createdAt: Number(r.created_at),
         evaluationMode: r.evaluation_mode || 'DUAL_AI',
+        riskUsdt: r.risk_usdt != null ? Number(r.risk_usdt) : null,
+        positionSizeBTC: r.position_size_btc != null ? Number(r.position_size_btc) : null,
         simulatedEntryTime: r.simulated_entry_time ? Number(r.simulated_entry_time) : null,
         exitTime: r.exit_time ? Number(r.exit_time) : null,
         durationMs: r.duration_ms ? Number(r.duration_ms) : null,
@@ -1528,14 +1534,36 @@ export class DatabaseService {
     }
   }
 
+  /**
+   * Durable gross spend for HARD budget limits (never subtract estimated
+   * promotion discounts). Filter names are fixed SQL, values parameterized.
+   */
+  public getAiGrossSpendSince(since: number, criteria: {
+    provider?: string; model?: string; task?: string;
+  } = {}): number {
+    if (this.isClosed) throw new Error('No se puede verificar presupuesto con base de datos cerrada');
+    const clauses = ['timestamp >= ?'];
+    const values: Array<string | number> = [since];
+    if (criteria.provider) { clauses.push('provider = ?'); values.push(criteria.provider); }
+    if (criteria.model) { clauses.push('model = ?'); values.push(criteria.model); }
+    if (criteria.task) { clauses.push('task = ?'); values.push(criteria.task); }
+    const row = this.db.prepare(`
+      SELECT COALESCE(SUM(CASE
+        WHEN cost_gross_usd > 0 THEN cost_gross_usd
+        ELSE cost_usd END), 0) AS gross
+      FROM ai_consumption_logs WHERE ${clauses.join(' AND ')}
+    `).get(...values) as { gross: number };
+    return Number(row?.gross || 0);
+  }
+
   public getAiConsumptionStats(): any {
     if (this.isClosed) return {};
     try {
       const now = Date.now();
-      const startOfToday = new Date().setHours(0, 0, 0, 0);
+      const startOfToday = new Date().setUTCHours(0, 0, 0, 0);
       const startOfYesterday = startOfToday - 86400000;
       const startOfLast7Days = now - 7 * 86400000;
-      const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+      const startOfMonth = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1);
 
       const todayRow = this.db.prepare(`
         SELECT 
@@ -2349,6 +2377,35 @@ export class DatabaseService {
     }
   }
 
+  /** SQL-based continuity check; avoids loading 100k+ 1m candles in JS. */
+  public getHistoricalGapStats(
+    symbol: string, timeframe: string, startTime: number, intervalMs: number
+  ): { gapCount: number; missingCandles: number; largestGapMs: number } {
+    if (this.isClosed) throw new Error('Base de datos cerrada: continuidad histórica no verificable');
+    if (!Number.isFinite(startTime) || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+      throw new Error('Parámetros de continuidad histórica inválidos');
+    }
+    const row = this.db.prepare(`
+      WITH rows AS (
+        SELECT timestamp, LAG(timestamp) OVER (ORDER BY timestamp) AS previous
+        FROM historical_candles WHERE symbol = ? AND timeframe = ? AND timestamp >= ?
+      )
+      SELECT
+        COALESCE(SUM(CASE WHEN previous IS NOT NULL AND timestamp - previous > ?
+          THEN 1 ELSE 0 END), 0) AS gap_count,
+        COALESCE(SUM(CASE WHEN previous IS NOT NULL AND timestamp - previous > ?
+          THEN CAST((timestamp - previous - 1) / ? AS INTEGER) ELSE 0 END), 0) AS missing,
+        COALESCE(MAX(CASE WHEN previous IS NOT NULL
+          THEN timestamp - previous ELSE 0 END), 0) AS largest_gap
+      FROM rows
+    `).get(symbol, timeframe, startTime, intervalMs, intervalMs, intervalMs) as any;
+    return {
+      gapCount: Number(row?.gap_count || 0),
+      missingCandles: Number(row?.missing || 0),
+      largestGapMs: Number(row?.largest_gap || 0),
+    };
+  }
+
   public getHistoricalCandleStats(symbol: string, timeframe: string): {
     count: number;
     earliest: number | null;
@@ -2607,29 +2664,51 @@ export class DatabaseService {
     }
   }
 
-  public checkpoint(): void {
-    if (this.isClosed) return;
+  public getKillSwitchState(): boolean | null {
+    const row = this.db.prepare("SELECT value FROM runtime_flags WHERE key='kill_switch'").get() as
+      { value: string } | undefined;
+    return row ? row.value === 'true' : null;
+  }
+
+  public saveKillSwitchState(active: boolean): void {
+    if (this.isClosed) throw new Error('No se puede persistir Kill Switch con DB cerrada');
+    this.db.prepare(`
+      INSERT INTO runtime_flags (key, value) VALUES ('kill_switch', ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    `).run(active ? 'true' : 'false');
+  }
+
+  public checkpoint(): boolean {
+    if (this.isClosed) return false;
     try {
-      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
-    } catch { }
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   public backup(targetPath?: string): boolean {
     if (this.isClosed || this.dbPath === ':memory:') return false;
+    const dest = targetPath || `${this.dbPath}.bak`;
+    const temp = `${dest}.tmp`;
     try {
-      this.checkpoint();
-      const dest = targetPath || `${this.dbPath}.bak`;
-      fs.copyFileSync(this.dbPath, dest);
+      if (!this.checkpoint()) return false;
+      fs.copyFileSync(this.dbPath, temp);
+      fs.renameSync(temp, dest);
       return true;
     } catch (err) {
-      console.warn('[Database] Error al crear backup de SQLite:', err);
+      try { fs.rmSync(temp, { force: true }); } catch {}
+      console.warn('[Database] Error al crear backup consistente de SQLite:', err);
       return false;
     }
   }
 
   public close(): void {
-    this.isClosed = true;
+    if (this.isClosed) return;
     this.checkpoint();
+    this.isClosed = true;
     this.db.close();
   }
+
 }

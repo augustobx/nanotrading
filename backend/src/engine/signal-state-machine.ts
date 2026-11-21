@@ -38,6 +38,7 @@ export interface SignalInstance {
   grossRR: number;
   netRR: number;
   riskUsdt: number;
+  positionSizeBTC?: number;
   state: SignalState;
   entryMode: EntryMode;
   rrMode?: 'RR_1_2' | 'RR_1_4';
@@ -161,13 +162,22 @@ export class SignalStateMachine extends EventEmitter {
     currentPrice: number,
     ratioTarget: 'RR_1_2' | 'RR_1_4',
     takeProfitPrice: number,
-    netRR: number
+    netRR: number,
+    riskUsdt: number,
+    positionSizeBTC: number
   ): SignalInstance {
     const id = `sig_${scenario.id}_${ratioTarget}`;
-    const existing = this.signals.get(id);
+    const existing = this.signals.get(id) ||
+      Array.from(this.signals.values()).find((signal) => signal.setupId === scenario.id);
     if (existing) return existing;
 
-    const riskUsdt = 100; // Standard 100 USDT reference risk for paper tracking
+    if (scenario.direction === 'NEUTRAL' || scenario.status !== 'ENTRY_VALIDATED' ||
+        !Number.isFinite(riskUsdt) || riskUsdt <= 0 ||
+        !Number.isFinite(positionSizeBTC) || positionSizeBTC <= 0 ||
+        !Number.isFinite(currentPrice) || currentPrice <= 0 ||
+        !Number.isFinite(takeProfitPrice) || !Number.isFinite(netRR)) {
+      throw new Error('Señal paper rechazada: riesgo/volumen inválido o escenario no autorizado');
+    }
     const instance: SignalInstance = {
       id,
       setupId: scenario.id,
@@ -181,11 +191,11 @@ export class SignalStateMachine extends EventEmitter {
       grossRR: netRR,
       netRR,
       riskUsdt,
-      state: 'ENTRY_TRIGGERED',
-      entryMode: 'SIMULATED_PAPER_ENTRY',
+      positionSizeBTC,
+      state: 'ENTRY_VALIDATED',
+      entryMode: 'EMITTED_SIGNAL',
       rrMode: ratioTarget,
       evaluationMode: 'DUAL_AI',
-      simulatedEntryTime: Date.now(),
       mfePrice: currentPrice,
       mfeR: 0,
       maePrice: currentPrice,
@@ -213,19 +223,19 @@ export class SignalStateMachine extends EventEmitter {
       status: instance.state,
       evaluationMode: instance.evaluationMode,
       createdAt: instance.createdAt,
+      riskUsdt: instance.riskUsdt,
+      positionSizeBTC: instance.positionSizeBTC,
     });
 
     this.db.recordSignalTransition({
       signalId: instance.id,
-      fromState: 'ENTRY_VALIDATED',
-      toState: 'ENTRY_TRIGGERED',
+      fromState: 'SCENARIO_REGISTERED',
+      toState: 'ENTRY_VALIDATED',
       timestamp: instance.lastStateChangeTimestamp,
-      reason: `Ejecución paper trading iniciada (${ratioTarget})`,
-      metadata: { scenarioId: scenario.id, ratioTarget, currentPrice, netRR },
+      reason: `Entrada paper autorizada, pendiente de tick de ejecución (${ratioTarget})`,
+      metadata: { scenarioId: scenario.id, ratioTarget, currentPrice, netRR,
+        riskUsdt: instance.riskUsdt, positionSizeBTC: instance.positionSizeBTC },
     });
-
-    // Automatically transition to TRACKING
-    this.transition(instance.id, 'TRACKING', `Paper trading tracking en curso para ${ratioTarget}`);
 
     this.emit('signal_created', instance);
     return instance;
@@ -274,18 +284,32 @@ export class SignalStateMachine extends EventEmitter {
       signal.maeR = 0;
     } else if (toState === 'COMPLETED_TP') {
       signal.exitTime = now;
-      signal.exitPrice = signal.takeProfitPrice;
+      const observed = metadata?.executionPrice;
+      signal.exitPrice = Number.isFinite(observed) ?
+        (signal.direction === 'LONG' ? Math.min(observed, signal.takeProfitPrice) : Math.max(observed, signal.takeProfitPrice)) :
+        signal.takeProfitPrice;
       signal.durationMs = signal.simulatedEntryTime ? now - signal.simulatedEntryTime : 0;
-      signal.realizedNetR = signal.netRR;
-      signal.realizedNetPnlUsdt = parseFloat((signal.riskUsdt * signal.netRR).toFixed(2));
+      if (signal.positionSizeBTC) {
+        this.realizePaperExit(signal);
+      } else {
+        signal.realizedNetR = signal.netRR;
+        signal.realizedNetPnlUsdt = parseFloat((signal.riskUsdt * signal.netRR).toFixed(2));
+      }
       signal.mfePrice = signal.takeProfitPrice;
       signal.mfeR = signal.netRR;
     } else if (toState === 'COMPLETED_SL') {
       signal.exitTime = now;
-      signal.exitPrice = signal.stopLossPrice;
+      const observed = metadata?.executionPrice;
+      signal.exitPrice = Number.isFinite(observed) ?
+        (signal.direction === 'LONG' ? Math.min(observed, signal.stopLossPrice) : Math.max(observed, signal.stopLossPrice)) :
+        signal.stopLossPrice;
       signal.durationMs = signal.simulatedEntryTime ? now - signal.simulatedEntryTime : 0;
-      signal.realizedNetR = -1.0;
-      signal.realizedNetPnlUsdt = -signal.riskUsdt;
+      if (signal.positionSizeBTC) {
+        this.realizePaperExit(signal);
+      } else {
+        signal.realizedNetR = -1.0;
+        signal.realizedNetPnlUsdt = -signal.riskUsdt;
+      }
       signal.maePrice = signal.stopLossPrice;
       signal.maeR = -1.0;
     } else if (toState === 'CANCELLED' || toState === 'EXPIRED' || toState === 'INVALIDATED') {
@@ -330,6 +354,22 @@ export class SignalStateMachine extends EventEmitter {
     }
 
     return signal;
+  }
+
+  /** Paper PnL at observed price, including two-way taker fees and slippage. */
+  private realizePaperExit(signal: SignalInstance): void {
+    const qty = signal.positionSizeBTC;
+    const exit = signal.exitPrice;
+    if (!qty || !exit || !Number.isFinite(qty) || !Number.isFinite(exit)) {
+      throw new Error('Cierre paper requiere cantidad y precio válidos');
+    }
+    const direction = signal.direction === 'LONG' ? 1 : -1;
+    const gross = direction * (exit - signal.entryPrice) * qty;
+    const takerFees = (signal.entryPrice + exit) * qty * 0.00055;
+    const conservativeSlippage = (signal.entryPrice + exit) * qty * 0.0002;
+    const pnl = gross - takerFees - conservativeSlippage;
+    signal.realizedNetPnlUsdt = Number(pnl.toFixed(2));
+    signal.realizedNetR = Number((pnl / signal.riskUsdt).toFixed(4));
   }
 
   public updatePriceMetrics(
@@ -406,7 +446,8 @@ export class SignalStateMachine extends EventEmitter {
             takeProfitPrice: row.takeProfit,
             grossRR: row.rrNet,
             netRR: row.rrNet,
-            riskUsdt: 100,
+            riskUsdt: Number(row.riskUsdt) || 0,
+            positionSizeBTC: Number(row.positionSizeBTC) || undefined,
             state: (row.status as SignalState) || 'ENTRY_VALIDATED',
             entryMode: (row.entryMode as EntryMode) || 'EMITTED_SIGNAL',
             evaluationMode: (row.evaluationMode as AiEvaluationMode) || 'DUAL_AI',

@@ -147,22 +147,9 @@ export function verifyProposedLevels(
     }
   }
 
-  // If no anchors exist (e.g. mock test environment), allow with default level
+  // No observed market anchor => no verified structural trade level.
   if (anchors.length === 0) {
-    return {
-      isValid: true,
-      verifiedLevels: [
-        {
-          price: targetEntry,
-          timeframe: candidate.timeframe || '15m',
-          levelType: 'DYNAMIC_INDICATOR',
-          evidence: 'Nivel preliminar derivado cuantitativo',
-          distancePct: Number(distPct.toFixed(2)),
-          isVerified: true,
-          relevanceToHorizon: 'HIGH',
-        },
-      ],
-    };
+    return { isValid: false, rejectionReason: 'No hay niveles de mercado verificables', verifiedLevels: [] };
   }
 
   // Verify proposed candidate levels
@@ -172,12 +159,10 @@ export function verifyProposedLevels(
   if (candidate.stopLossPrice || candidate.structuralStopLoss) {
     levelsToTest.push({ price: Number(candidate.stopLossPrice || candidate.structuralStopLoss), role: 'stopLoss' });
   }
-  if (candidate.candidateTarget12) {
-    levelsToTest.push({ price: Number(candidate.candidateTarget12), role: 'target12' });
-  }
-  if (candidate.candidateTarget14) {
-    levelsToTest.push({ price: Number(candidate.candidateTarget14), role: 'target14' });
-  }
+  const candidateTp12 = candidate.target12Price || candidate.candidateTarget12;
+  const candidateTp14 = candidate.target14Price || candidate.candidateTarget14;
+  if (candidateTp12) levelsToTest.push({ price: Number(candidateTp12), role: 'target12' });
+  if (candidateTp14) levelsToTest.push({ price: Number(candidateTp14), role: 'target14' });
 
   const verifiedLevels: ObservableLevel[] = [];
 
@@ -219,8 +204,10 @@ export function verifyProposedLevels(
     }
   }
 
+  const allLevelsVerified = verifiedLevels.length > 0 && verifiedLevels.every((level) => level.isVerified);
   return {
-    isValid: true,
+    isValid: allLevelsVerified,
+    rejectionReason: allLevelsVerified ? undefined : 'Uno o más niveles no coinciden con estructura de mercado confirmada',
     verifiedLevels,
   };
 }
@@ -545,16 +532,35 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         return { scenarios: [], summary, aiCostUsd: 0, skippedReason: 'NO_AI_PROVIDERS_CONFIGURED' };
       }
 
-      // Reserve budget for market discovery
-      const resv = this.hardBudgetManager.reserveBudget({
-        provider: openaiConfigured ? 'OPENAI' : 'GEMINI',
-        model: openaiConfigured ? this.openaiAdapter.getModel() : this.geminiAdapter.getModel(),
-        task: 'MARKET_DISCOVERY',
-        estimatedTokens: 3500,
-      });
-
-      if (!resv.allowed) {
-        return { scenarios: [], summary, aiCostUsd: 0, skippedReason: resv.reason || 'AI_BUDGET_EXCEEDED' };
+      // Reserve independently for BOTH possible paid providers before requesting either.
+      // Never launch the second AI call against a reservation held only for the first.
+      const reservations: Array<{
+        provider: 'OPENAI' | 'GEMINI'; model: string; reservationId: string;
+      }> = [];
+      const providersToQuery: Array<{ provider: 'OPENAI' | 'GEMINI'; model: string }> = [];
+      const router = this.coordinator.getAiRouter?.();
+      const remainingUsd = Math.max(0,
+        this.hardBudgetManager.getConfig().dailyBudgetLimitUsd -
+        this.hardBudgetManager.getTodaySpendUsd() - this.hardBudgetManager.getReservedPendingUsd());
+      const openaiModel = router?.routeModel('MARKET_DISCOVERY', 'OPENAI', remainingUsd).selectedModel ||
+        this.openaiAdapter.getModel();
+      const geminiModel = router?.routeModel('MARKET_DISCOVERY', 'GEMINI', remainingUsd).selectedModel ||
+        this.geminiAdapter.getModel();
+      if (openaiConfigured) providersToQuery.push({ provider: 'OPENAI', model: openaiModel });
+      if (geminiConfigured) providersToQuery.push({ provider: 'GEMINI', model: geminiModel });
+      if (!summary.dataAvailability.allCriticalDataPresent) {
+        return { scenarios: [], summary, aiCostUsd: 0, skippedReason: 'MARKET_DATA_NOT_READY' };
+      }
+      for (const provider of providersToQuery) {
+        const held = this.hardBudgetManager.reserveBudget({
+          provider: provider.provider, model: provider.model,
+          task: 'MARKET_DISCOVERY', estimatedTokens: 3500,
+        });
+        if (!held.allowed || !held.reservationId) {
+          for (const prior of reservations) this.hardBudgetManager.releaseReservation(prior.reservationId);
+          return { scenarios: [], summary, aiCostUsd: 0, skippedReason: held.reason || 'AI_BUDGET_EXCEEDED' };
+        }
+        reservations.push({ ...provider, reservationId: held.reservationId });
       }
 
       let totalCostUsd = 0;
@@ -565,8 +571,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       try {
         // Query OpenAI and Gemini for autonomous discovery
         const [resOpenai, resGemini] = await Promise.all([
-          this.queryOpenAiDiscovery(summary),
-          this.queryGeminiDiscovery(summary),
+          openaiConfigured ? this.queryOpenAiDiscovery(summary, openaiModel) : Promise.resolve(null),
+          geminiConfigured ? this.queryGeminiDiscovery(summary, geminiModel) : Promise.resolve(null),
         ]);
         openaiDiscovery = resOpenai;
         geminiDiscovery = resGemini;
@@ -580,7 +586,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
             if (sc) {
               sc.openaiInterpretation = {
                 provider: 'OPENAI',
-                model: this.openaiAdapter.getModel(),
+                model: openaiDiscovery.model || openaiModel,
                 bias: openaiDiscovery.bias,
                 reasoning: openaiDiscovery.reasoning,
                 keyZones: openaiDiscovery.keyZones || [],
@@ -602,7 +608,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
             if (sc) {
               sc.geminiInterpretation = {
                 provider: 'GEMINI',
-                model: this.geminiAdapter.getModel(),
+                model: geminiDiscovery.model || geminiModel,
                 bias: geminiDiscovery.bias,
                 reasoning: geminiDiscovery.reasoning,
                 keyZones: geminiDiscovery.keyZones || [],
@@ -614,34 +620,21 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
             }
           }
 
-          // Record Gemini direct usage into database consumption logs so both providers are segregated
-          if (geminiDiscovery.costUsd > 0) {
-            try {
-              this.db.logAiConsumption({
-                provider: 'GEMINI',
-                model: this.geminiAdapter.getModel(),
-                task: 'MARKET_DISCOVERY',
-                tokensPrompt: geminiDiscovery.promptTokens || 1800,
-                tokensCompletion: geminiDiscovery.completionTokens || 500,
-                costUsd: geminiDiscovery.costUsd,
-                status: 'SUCCESS',
-                latencyMs: geminiDiscovery.latencyMs || 1200,
-                discountStatus: 'NONE',
-              });
-            } catch {}
-          }
         }
       } finally {
-        if (resv.reservationId) {
-          this.hardBudgetManager.reconcileReservation(resv.reservationId, {
-            provider: openaiConfigured ? 'OPENAI' : 'GEMINI',
-            model: openaiConfigured ? this.openaiAdapter.getModel() : this.geminiAdapter.getModel(),
+        for (const reservation of reservations) {
+          const result = reservation.provider === 'OPENAI' ? openaiDiscovery : geminiDiscovery;
+          // Missing/invalid responses are uncertain: keep the reserved amount
+          // instead of incorrectly reporting a zero-cost successful API call.
+          this.hardBudgetManager.reconcileReservation(reservation.reservationId, {
+            provider: reservation.provider,
+            model: result?.model || reservation.model,
             task: 'MARKET_DISCOVERY',
-            promptTokens: 2000,
-            completionTokens: 600,
-            costUsd: totalCostUsd,
-            status: 'SUCCESS',
-            latencyMs: 1400,
+            promptTokens: result?.promptTokens || 0,
+            completionTokens: result?.completionTokens || 0,
+            ...(result ? { costUsd: result.costUsd } : {}),
+            status: result ? 'SUCCESS' : 'UNCERTAIN_TIMEOUT',
+            latencyMs: result?.latencyMs || 0,
           });
         }
       }
@@ -851,7 +844,9 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     let targetEntry = Number(candidate.targetEntry || (entryMin + entryMax) / 2);
     const stopLoss = Number(candidate.stopLossPrice || candidate.structuralStopLoss);
 
-    if (isNaN(entryMin) || isNaN(entryMax) || isNaN(targetEntry) || isNaN(stopLoss)) return null;
+    if (![currentPrice, entryMin, entryMax, targetEntry, stopLoss].every(
+      (n) => Number.isFinite(n) && n > 0
+    ) || entryMin > entryMax || targetEntry < entryMin || targetEntry > entryMax) return null;
 
     // Validate sanity of prices (no fake values, no inverted order)
     if (direction === 'LONG') {
@@ -869,19 +864,18 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     const riskDistance = Math.abs(targetEntry - stopLoss);
     if (riskDistance <= 0) return null;
 
-    if (!target12) {
-      target12 = direction === 'LONG' ? targetEntry + riskDistance * 2.05 : targetEntry - riskDistance * 2.05;
-    }
-    if (!target14) {
-      target14 = direction === 'LONG' ? targetEntry + riskDistance * 4.10 : targetEntry - riskDistance * 4.10;
-    }
+    // A qualifying mathematical R:R is not itself a structural target.
+    // Never fabricate 2.05R / 4.10R price levels when neither analyst supplied one.
+    if (!target12 && !target14) return null;
+    if ((target12 !== undefined && (!Number.isFinite(target12) || target12 <= 0)) ||
+        (target14 !== undefined && (!Number.isFinite(target14) || target14 <= 0))) return null;
 
     // Run strict quantitative net R:R calculation
     const dualCalc = RiskCalculator.calculateDualTargets({
       direction,
       entryPrice: targetEntry,
       stopLossPrice: stopLoss,
-      candidateTargets: [target12, target14],
+      candidateTargets: [target12, target14].filter((n): n is number => typeof n === 'number'),
       explicit12Price: target12,
       explicit14Price: target14,
       accountBalance: 10000,
@@ -1085,13 +1079,14 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     return scenario;
   }
 
-  private async queryOpenAiDiscovery(summary: MarketIntelligenceSummary): Promise<{
+  private async queryOpenAiDiscovery(summary: MarketIntelligenceSummary, selectedModel?: string): Promise<{
     bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
     reasoning: string;
     keyZones: string[];
     scenarios: any[];
     marketAnalysis?: AiMarketAnalysis;
     costUsd: number;
+    model?: string;
     promptTokens?: number;
     completionTokens?: number;
     latencyMs?: number;
@@ -1172,7 +1167,7 @@ Responde obligatoriamente en JSON estricto:
 
 Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
 
-      const res = await this.openaiAdapter.evaluateWithCustomPrompt?.(prompt) || null;
+      const res = await this.openaiAdapter.evaluateWithCustomPrompt?.(prompt, selectedModel) || null;
       if (!res) return null;
       return {
         bias: res.bias || res.marketAnalysis?.bias || 'NEUTRAL',
@@ -1180,7 +1175,8 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
         keyZones: res.keyZones || [],
         scenarios: res.scenarios || [],
         marketAnalysis: res.marketAnalysis,
-        costUsd: res.costUsd || 0.001,
+        costUsd: res.costUsd || 0,
+        model: res.model || selectedModel,
         promptTokens: res.promptTokens,
         completionTokens: res.completionTokens,
         latencyMs: res.latencyMs,
@@ -1190,13 +1186,14 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
     }
   }
 
-  private async queryGeminiDiscovery(summary: MarketIntelligenceSummary): Promise<{
+  private async queryGeminiDiscovery(summary: MarketIntelligenceSummary, selectedModel?: string): Promise<{
     bias: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
     reasoning: string;
     keyZones: string[];
     scenarios: any[];
     marketAnalysis?: AiMarketAnalysis;
     costUsd: number;
+    model?: string;
     promptTokens?: number;
     completionTokens?: number;
     latencyMs?: number;
@@ -1276,7 +1273,7 @@ Responde obligatoriamente en JSON estricto:
 
 Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
 
-      const res = await this.geminiAdapter.evaluateWithCustomPrompt?.(prompt) || null;
+      const res = await this.geminiAdapter.evaluateWithCustomPrompt?.(prompt, selectedModel) || null;
       if (!res) return null;
       return {
         bias: res.bias || res.marketAnalysis?.bias || 'NEUTRAL',
@@ -1284,7 +1281,8 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
         keyZones: res.keyZones || [],
         scenarios: res.scenarios || [],
         marketAnalysis: res.marketAnalysis,
-        costUsd: res.costUsd || 0.0003,
+        costUsd: res.costUsd || 0,
+        model: res.model || selectedModel,
         promptTokens: res.promptTokens,
         completionTokens: res.completionTokens,
         latencyMs: res.latencyMs,

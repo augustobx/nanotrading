@@ -45,6 +45,7 @@ services:
       TIMEZONE: America/Argentina/Buenos_Aires
       DB_TYPE: sqlite
       DB_SQLITE_PATH: /app/data/trading.db
+      CONFIG_MASTER_KEY: ${CONFIG_MASTER_KEY:?CONFIG_MASTER_KEY_REQUIRED}
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: ${DB_NAME:-nanolabs_trading}

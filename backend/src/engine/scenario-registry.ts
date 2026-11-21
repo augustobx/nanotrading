@@ -27,9 +27,11 @@ export class ScenarioRegistry extends EventEmitter {
         'IN_ZONE',
         'REVALIDATION_REQUESTED',
         'AI_REVALIDATING',
+        'WAITING_CONFIRMATION',
+        'NO_TRADE_OBSERVATION',
         'ENTRY_VALIDATED',
       ],
-      limit: 100,
+      // Read all nonterminal scenarios, not only the newest 100.
     });
     for (const sc of active) {
       this.scenarios.set(sc.id, sc);
@@ -116,13 +118,14 @@ export class ScenarioRegistry extends EventEmitter {
       else if (toStatus === 'INVALIDATED') updated.watchPlan.status = 'INVALIDATED';
       else if (toStatus === 'EXPIRED') updated.watchPlan.status = 'EXPIRED';
       else if (toStatus === 'CANCELLED') updated.watchPlan.status = 'CANCELLED';
+      else if (toStatus === 'COMPLETED') updated.watchPlan.status = 'COMPLETED';
       else if (toStatus === 'IN_ZONE' || toStatus === 'REVALIDATION_REQUESTED') updated.watchPlan.status = 'TRIGGERED';
       else if (toStatus === 'AI_REVALIDATING') updated.watchPlan.status = 'REVALIDATING';
       this.db.saveWatchPlan(updated.watchPlan);
     }
 
     // If final status, remove from active map
-    if (['INVALIDATED', 'EXPIRED', 'CANCELLED', 'SIGNAL_GENERATED'].includes(toStatus)) {
+    if (['INVALIDATED', 'EXPIRED', 'CANCELLED', 'COMPLETED', 'DISCARDED', 'SIGNAL_GENERATED'].includes(toStatus)) {
       this.scenarios.delete(id);
     } else {
       this.scenarios.set(id, updated);

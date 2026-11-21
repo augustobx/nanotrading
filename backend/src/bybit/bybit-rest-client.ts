@@ -67,6 +67,7 @@ export class BybitRestClient {
             'Content-Type': 'application/json',
             'User-Agent': 'NanoLabs-AI-Trading/1.0',
           },
+          signal: AbortSignal.timeout(12000),
         });
 
         if (res.status === 429) {
@@ -127,7 +128,11 @@ export class BybitRestClient {
       close: parseFloat(item[4]),
       volume: parseFloat(item[5]),
       turnover: parseFloat(item[6]),
-      confirmed: true, // historical klines returned from REST are confirmed
+      // Bybit REST also includes the still-open most recent candle.
+      confirmed: Number(item[0]) + ({
+        '1m': 60000, '5m': 300000, '15m': 900000,
+        '1h': 3600000, '4h': 14400000, '1d': 86400000,
+      } as Record<string, number>)[timeframe] <= Date.now(),
     }));
 
     candles.sort((a, b) => a.timestamp - b.timestamp);

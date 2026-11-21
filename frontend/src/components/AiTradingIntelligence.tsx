@@ -25,7 +25,7 @@ import {
   HelpCircle,
   Zap,
 } from 'lucide-react';
-import { getApiBaseUrl, getWebSocketLiveUrl } from '../utils/api-config';
+import { getApiBaseUrl, getWebSocketLiveUrl, getAdminMutationHeaders } from '../utils/api-config';
 
 export interface ObservableLevel {
   price: number;
@@ -229,7 +229,8 @@ export function AiTradingIntelligence() {
     try {
       const res = await fetch(`${apiBase}/api/v1/discovery/trigger`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAdminMutationHeaders(),
+        credentials: 'include',
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -257,7 +258,8 @@ export function AiTradingIntelligence() {
     try {
       const res = await fetch(`${apiBase}/api/v1/discovery/scenarios/${id}/revalidate`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAdminMutationHeaders(),
+        credentials: 'include',
       });
       const data = await res.json();
       if (res.ok && data.success) {

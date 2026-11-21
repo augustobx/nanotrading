@@ -90,6 +90,20 @@ export class RiskCalculator {
       minRequiredRR = 4.0,
     } = input;
 
+    if (!Number.isFinite(input.entryPrice) || input.entryPrice <= 0 ||
+        !Number.isFinite(input.stopLossPrice) || input.stopLossPrice <= 0 ||
+        !Number.isFinite(input.takeProfitPrice) || input.takeProfitPrice <= 0 ||
+        !Number.isFinite(accountBalance) || accountBalance <= 0 ||
+        !Number.isFinite(riskPercent) || riskPercent <= 0 ||
+        !Number.isFinite(tickSize) || tickSize <= 0 ||
+        !Number.isFinite(qtyStep) || qtyStep <= 0 ||
+        !Number.isFinite(minOrderQty) || minOrderQty <= 0 ||
+        !Number.isFinite(spread) || spread < 0 ||
+        !Number.isFinite(slippageRate) || slippageRate < 0) {
+      return this.invalidResult(direction, input.entryPrice, input.stopLossPrice, input.takeProfitPrice,
+        'Parámetros financieros inválidos, ausentes o no finitos');
+    }
+
     // Apply tickSize precision
     const entryPrice = this.roundToTick(input.entryPrice, tickSize);
     const stopLossPrice = this.roundToTick(input.stopLossPrice, tickSize);
@@ -146,8 +160,11 @@ export class RiskCalculator {
       positionSizeBTC = parseFloat(maxAllowedQty.toFixed(4));
     }
 
+    // Fail closed. Raising a calculated quantity to the exchange minimum would
+    // exceed the configured loss/margin ceilings for small accounts.
     if (positionSizeBTC < minOrderQty) {
-      positionSizeBTC = minOrderQty;
+      return this.invalidResult(direction, entryPrice, stopLossPrice, takeProfitPrice,
+        'Capital o riesgo insuficiente para cubrir el lote mínimo sin exceder el límite');
     }
 
     const notionalValueUSDT = parseFloat((positionSizeBTC * entryPrice).toFixed(2));
@@ -191,13 +208,21 @@ export class RiskCalculator {
 
     const netRR = netLossUSDT > 0 ? parseFloat((netRewardUSDT / netLossUSDT).toFixed(2)) : 0;
 
-    const isValid = netRR >= minRequiredRR && positionSizeBTC >= minOrderQty;
+    const worstCaseLossUsdt = positionSizeBTC * totalRiskPerUnit;
+    const withinRisk = Number.isFinite(worstCaseLossUsdt) &&
+      worstCaseLossUsdt <= targetRiskUSDT + 1e-8;
+    const withinLeverage = Number.isFinite(notionalValueUSDT) &&
+      notionalValueUSDT <= maxNotional + 1e-8;
+    const isValid = netRR >= minRequiredRR && positionSizeBTC >= minOrderQty &&
+      withinRisk && withinLeverage;
     let rejectionReason: string | undefined;
 
     if (netRR < minRequiredRR) {
       rejectionReason = `Ratio R:R neto insuficiente: ${netRR.toFixed(2)} (requerido >= ${minRequiredRR.toFixed(1)} neto con comisiones y spread)`;
     } else if (positionSizeBTC < minOrderQty) {
       rejectionReason = `Tamaño de posición (${positionSizeBTC} BTC) inferior al mínimo permitido por Bybit (${minOrderQty} BTC)`;
+    } else if (!withinRisk || !withinLeverage) {
+      rejectionReason = `Riesgo o apalancamiento excedidos (pérdida potencial ${worstCaseLossUsdt.toFixed(4)} frente a ${targetRiskUSDT.toFixed(4)} USDT autorizados)`;
     }
 
     return {

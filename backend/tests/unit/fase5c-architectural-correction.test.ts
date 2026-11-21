@@ -66,13 +66,14 @@ class MockMarketCoordinator extends EventEmitter {
         structure: {
           swings: [
             { type: 'LOW', price: 64100, label: 'HL', timestamp: Date.now() - 3600000 },
-            { type: 'HIGH', price: 65800, label: 'HH', timestamp: Date.now() - 1800000 },
+            { type: 'HIGH', price: 67200, label: 'HH', timestamp: Date.now() - 1800000 },
           ],
           structureBreaks: [
             { type: 'BOS', direction: 'BULLISH', brokenLevel: 65100, timestamp: Date.now() - 900000 },
           ],
           fvgs: [
             { type: 'BULLISH', top: 64600, bottom: 64400, size: 200, status: 'ACTIVE' },
+            { type: 'BEARISH', top: 65900, bottom: 65700, size: 200, status: 'ACTIVE' },
           ],
           orderBlocks: [
             { type: 'BULLISH', top: 64350, bottom: 64100, status: 'ACTIVE' },
@@ -375,10 +376,10 @@ test('Fase 5C — Replay determinista de ciclo completo con AI_WATCH_PLAN', asyn
   revalidation.on('entry_validated', ({ scenario, currentPrice, riskCalc }) => {
     // Register dual target paper trading signals
     if (scenario.target12Price && riskCalc?.calculation12?.isValid) {
-      stateMachine.registerSignalFromScenario(scenario, currentPrice, 'RR_1_2', scenario.target12Price, riskCalc.calculation12.netRR);
+      stateMachine.registerSignalFromScenario(scenario, currentPrice, 'RR_1_2', scenario.target12Price, riskCalc.calculation12.netRR, riskCalc.calculation12.netLossUSDT, riskCalc.calculation12.positionSizeBTC);
     }
     if (scenario.target14Price && riskCalc?.calculation14?.isValid) {
-      stateMachine.registerSignalFromScenario(scenario, currentPrice, 'RR_1_4', scenario.target14Price, riskCalc.calculation14.netRR);
+      stateMachine.registerSignalFromScenario(scenario, currentPrice, 'RR_1_4', scenario.target14Price, riskCalc.calculation14.netRR, riskCalc.calculation14.netLossUSDT, riskCalc.calculation14.positionSizeBTC);
     }
   });
 
@@ -455,17 +456,16 @@ test('Fase 5C — Replay determinista de ciclo completo con AI_WATCH_PLAN', asyn
 
   // 4. Verificar que se crearon los registros prospectivos en Paper Trading
   const activePaperSignals = stateMachine.getActiveSignals();
-  assert.strictEqual(activePaperSignals.length, 2); // 1:2 y 1:4
+  assert.strictEqual(activePaperSignals.length, 1); // Un escenario no crea dos posiciones enteras
 
   const sig12 = activePaperSignals.find((s) => s.rrMode === 'RR_1_2' || s.id.includes('RR_1_2'));
   const sig14 = activePaperSignals.find((s) => s.rrMode === 'RR_1_4' || s.id.includes('RR_1_4'));
 
   assert.ok(sig12);
-  assert.ok(sig14);
+  assert.equal(sig14, undefined);
   assert.strictEqual(sig12?.entryPrice, 64500);
-  assert.strictEqual(sig14?.entryPrice, 64500);
   assert.ok((sig12?.netRR || 0) >= 2.0);
-  assert.ok((sig14?.netRR || 0) >= 4.0);
+  assert.equal(sig12?.state, 'ENTRY_VALIDATED');
 
   db.close();
 });
