@@ -26,6 +26,8 @@ export interface SchedulerStatus {
   totalScenariosFound: number;
   activeWatchedScenarios: number;
   discoveryInFlight: boolean;
+  providerFailureBackoffUntil: number | null;
+  consecutiveProviderFailures: number;
 }
 
 export class AutonomousDiscoveryScheduler extends EventEmitter {
@@ -44,6 +46,8 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
   private totalScenariosFound: number = 0;
   private discoveryInFlight = false;
   private lastStructuralFingerprint: string | null = null;
+  private consecutiveProviderFailures = 0;
+  private providerFailureBackoffUntil: number | null = null;
   private readonly candleHandler = (candle: Candle): void => this.handleCandleClosed(candle);
   private readonly stateHandler = (state: any): void => {
     const price = state.ticker?.lastPrice;
@@ -189,6 +193,9 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
 
     if (this.discoveryInFlight) return false;
     if (!isManual && (!this.isRunning || !this.config.enabled)) return false;
+    if (!isManual && this.providerFailureBackoffUntil && now < this.providerFailureBackoffUntil) {
+      return false;
+    }
     if (!isManual && this.hasWatchableScenario()) {
       // The watcher is already monitoring a valid hypothesis at zero token cost.
       return false;
@@ -231,11 +238,20 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
         forceManual: reason.startsWith('MANUAL'),
       });
       if (result.skippedReason) {
+        if (result.skippedReason === 'AI_PROVIDERS_FAILED_NO_VALID_ANALYSIS') {
+          this.consecutiveProviderFailures++;
+          const cooldown = Math.min(4 * 3600000,
+            30 * 60000 * Math.pow(2, Math.min(3, this.consecutiveProviderFailures - 1)));
+          this.providerFailureBackoffUntil = Date.now() + cooldown;
+        }
         this.db.logEvent('INFO', 'DiscoveryScheduler', 'Discovery skipped without new scenarios', {
           reason: result.skippedReason, trigger: reason,
+          retryNotBefore: this.providerFailureBackoffUntil,
         });
         return false;
       }
+      this.consecutiveProviderFailures = 0;
+      this.providerFailureBackoffUntil = null;
       this.totalAutonomousRuns++;
       this.totalScenariosFound += result.scenarios.length;
       if (fingerprint) this.lastStructuralFingerprint = fingerprint;
@@ -292,6 +308,8 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
           !['COMPLETED', 'CANCELLED', 'EXPIRED', 'INVALIDATED', 'DISCARDED'].includes(sc.status))
         .length || 0,
       discoveryInFlight: this.discoveryInFlight,
+      providerFailureBackoffUntil: this.providerFailureBackoffUntil,
+      consecutiveProviderFailures: this.consecutiveProviderFailures,
     };
   }
 }
