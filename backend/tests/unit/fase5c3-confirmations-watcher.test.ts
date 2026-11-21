@@ -20,7 +20,7 @@ describe('Fase 5C.3: Algorithmic Confirmation Operators & Sequential Watcher', (
       }),
     }),
     getCandleManager: () => ({
-      getCandles: () => [],
+      getCandles: () => mockCoordinator.historicalCandles || [],
       getLastClosedCandle: () => null,
     }),
     getDiscoveryScheduler: () => ({
@@ -318,10 +318,14 @@ describe('Fase 5C.3: Algorithmic Confirmation Operators & Sequential Watcher', (
     // A single tick/wick outside the range is not a confirmed breakout.
     watcher.evaluateTick(51050);
     assert.equal(registry.getScenario(neutralId)?.status, 'NO_TRADE_OBSERVATION');
-    // Only a closed 15m candle after discovery may complete the observation.
+    // A real confirmed breakout also needs a 1.2x volume expansion.
+    mockCoordinator.historicalCandles = Array.from({ length: 20 }, (_, i) => ({
+      open: 50500, high: 50900, low: 50100, close: 50500, volume: 10,
+      timestamp: now - (i + 1) * 900000, confirmed: true,
+    }));
     watcher.evaluateCandleClose({
       timeframe: '15m', timestamp: now + 1000, confirmed: true,
-      open: 50800, high: 51100, low: 50700, close: 51050, volume: 10,
+      open: 50800, high: 51100, low: 50700, close: 51050, volume: 15,
     });
 
     const updated = registry.getScenario(neutralId);

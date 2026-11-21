@@ -44,12 +44,12 @@ test('Fase 4.6 - GPT-6 Luna Cost Calculation (Cached Read & Reasoning Tokens)', 
   // Prompt: 20,000 total tokens, of which 15,000 cached and 5,000 uncached
   // Uncached: 5,000 * 0.10 / 1,000,000 = $0.0005
   // Cached read: 15,000 * 0.01 / 1,000,000 = $0.00015
-  // Completion: 1,000 visible + 3,000 internal reasoning tokens = 4,000 total output tokens
+  // API completionTokens reports 4,000 TOTAL output tokens, including 3,000 reasoning tokens
   // Output: 4,000 * 0.50 / 1,000,000 = $0.002
   // Total = $0.0005 + $0.00015 + $0.002 = $0.00265
   const cost = calculateCallCost('gpt-6-luna', {
     promptTokens: 20000,
-    completionTokens: 1000,
+    completionTokens: 4000,
     cachedTokens: 15000,
     reasoningTokens: 3000,
   });

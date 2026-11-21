@@ -44,9 +44,10 @@ class MockMarketCoordinator extends EventEmitter {
   constructor() {
     super();
     this.candleManager = {
-      getCandles: () => [
-        { open: 60000, high: 60200, low: 59900, close: 60000, volume: 1500, timestamp: Date.now() - 900000 },
-      ],
+      getCandles: () => Array.from({ length: 20 }, (_, i) => ({
+        open: 60000, high: 60200, low: 59900, close: 60000, volume: 100,
+        timestamp: Date.now() - (i + 1) * 900000, confirmed: true,
+      })),
       getLastClosedCandle: () => ({ open: 60000, high: 60200, low: 59900, close: 60000, volume: 1500, timestamp: Date.now() - 900000 }),
       getCurrentCandle: () => ({ open: 60000, high: 60200, low: 59900, close: 60000, volume: 1200, timestamp: Date.now() }),
     };
@@ -274,7 +275,7 @@ test('Fase 5C.2 — NEUTRAL_OBSERVATION never triggers entry revalidation and tr
   watcher.evaluateCandleClose({
     timeframe: neutralSc.timeframe, timestamp: neutralSc.discoveryTimestamp + 1000,
     confirmed: true, open: ceiling - 50, high: ceiling + 110,
-    low: ceiling - 70, close: ceiling + 100, volume: 100,
+    low: ceiling - 70, close: ceiling + 100, volume: 150,
   });
 
   assert.strictEqual(breakoutEventFired, true);
