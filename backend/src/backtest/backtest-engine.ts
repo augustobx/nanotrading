@@ -253,7 +253,9 @@ export class BacktestEngine {
     if (onProgress) onProgress('Calculando métricas estadísticas y desgloses...', 90);
 
     // Realistic Portfolio Simulation: Max 1 concurrent trade in BTCUSDT, dynamic capital, margin halt protection
-    const portfolioSim = this.simulateCombinedPortfolio(simulatedTrades, accountBalance, 30);
+    const portfolioSim = this.simulateCombinedPortfolio(
+      simulatedTrades, accountBalance, 30, riskPercent, makerFee, takerFee, spread, slippageRate
+    );
     const combinedTrades = portfolioSim.executedTrades;
     const combinedMetrics = portfolioSim.metrics;
 
@@ -325,9 +327,7 @@ export class BacktestEngine {
     for (const t of simulatedTrades) {
       const match = executedMap.get(t.id);
       if (match) {
-        t.isExecutedInPortfolio = true;
-        t.capitalBeforeUsdt = match.capitalBeforeUsdt;
-        t.capitalAfterUsdt = match.capitalAfterUsdt;
+        Object.assign(t, match); // Persist the real dynamic portfolio sizing, PnL and equity.
       }
     }
 
@@ -647,7 +647,12 @@ export class BacktestEngine {
   private simulateCombinedPortfolio(
     trades: BacktestTradeResult[],
     initialCapital: number = 10000,
-    maxAllowedDrawdownPct: number = 30
+    maxAllowedDrawdownPct: number = 30,
+    riskPercent: number = 1,
+    makerFee: number = 0.0002,
+    takerFee: number = 0.00055,
+    spread: number = 0.1,
+    slippageRate: number = 0.0002,
   ): { executedTrades: BacktestTradeResult[]; metrics: MetricGroup } {
     // Sort chronologically by entryTimestamp
     const sorted = [...trades].sort((a, b) => a.entryTimestamp - b.entryTimestamp);
@@ -682,15 +687,58 @@ export class BacktestEngine {
       // Capital tracking before trade
       const capitalBefore = Number(currentCapital.toFixed(2));
 
-      // Calculate realized outcome on this trade
-      const tradeNetPnl = chosen.realizedNetPnlUsdt;
-      const capitalAfter = Number((capitalBefore + tradeNetPnl).toFixed(2));
+      // Recalculate quantity from ACTUAL current portfolio equity. The
+      // instrument price path is already simulated, but size/fees must not be
+      // borrowed from a 10,000-USDT fixed-capital hypothetical run.
+      const calc = RiskCalculator.calculate({
+        direction: chosen.direction,
+        entryPrice: chosen.entryPrice,
+        stopLossPrice: chosen.stopLossPrice,
+        takeProfitPrice: chosen.takeProfitPrice,
+        accountBalance: capitalBefore,
+        riskPercent,
+        feeStructure: { makerFeeRate: makerFee, takerFeeRate: takerFee },
+        spread, slippageRate, minRequiredRR: 0,
+      });
+      if (!calc.isValid || calc.netLossUSDT <= 0) continue;
 
-      // Clone trade and assign portfolio execution fields
+      let grossPnl = 0;
+      let fees = calc.totalFeesUSDT;
+      let spreadCost = calc.spreadCostUSDT;
+      let slippageCost = calc.slippageCostUSDT;
+      let tradeNetPnl: number;
+      if (chosen.outcome === 'TAKE_PROFIT') {
+        grossPnl = calc.grossRewardUSDT;
+        tradeNetPnl = calc.netRewardUSDT;
+      } else if (chosen.outcome === 'STOP_LOSS') {
+        grossPnl = -calc.grossRiskUSDT;
+        tradeNetPnl = -calc.netLossUSDT;
+        fees = calc.entryFeeUSDT + calc.exitFeeSLUSDT;
+        spreadCost = calc.positionSizeBTC * spread * 0.5;
+        slippageCost = calc.notionalValueUSDT * slippageRate;
+      } else {
+        const direction = chosen.direction === 'LONG' ? 1 : -1;
+        grossPnl = direction * (chosen.exitPrice - chosen.entryPrice) * calc.positionSizeBTC;
+        fees = (chosen.entryPrice + chosen.exitPrice) * calc.positionSizeBTC * takerFee;
+        spreadCost = calc.positionSizeBTC * spread;
+        slippageCost = calc.notionalValueUSDT * slippageRate * 2;
+        tradeNetPnl = grossPnl - fees - spreadCost - slippageCost;
+      }
+      tradeNetPnl = Number(tradeNetPnl.toFixed(2));
+      const capitalAfter = Number(Math.max(0, capitalBefore + tradeNetPnl).toFixed(2));
+
       const executed: BacktestTradeResult = {
         ...chosen,
+        grossPnlUsdt: Number(grossPnl.toFixed(2)),
+        realizedNetPnlUsdt: tradeNetPnl,
+        realizedNetR: Number((tradeNetPnl / calc.netLossUSDT).toFixed(4)),
+        initialRiskUsdt: calc.netLossUSDT,
+        positionSizeBtc: calc.positionSizeBTC,
+        feesUsdt: Number(fees.toFixed(3)),
+        spreadCostUsdt: Number(spreadCost.toFixed(3)),
+        slippageCostUsdt: Number(slippageCost.toFixed(3)),
         capitalBeforeUsdt: capitalBefore,
-        capitalAfterUsdt: Math.max(0, capitalAfter),
+        capitalAfterUsdt: capitalAfter,
         isExecutedInPortfolio: true,
       };
 
@@ -786,7 +834,23 @@ export class BacktestEngine {
     const avgDurationHours = Number((totalDurationMs / total / 3600000).toFixed(1));
     const avgMfeR = Number((totalMfeR / total).toFixed(2));
     const avgMaeR = Number((totalMaeR / total).toFixed(2));
-    const maxDrawdownPct = Number(((maxDrawdownUsdt / 10000) * 100).toFixed(2));
+    // Portfolio returns use the live equity peak, never a hard-coded 10k
+    // denominator. Standalone scenario summaries retain the nominal base.
+    let peakEquity = trades[0].capitalBeforeUsdt || 10000;
+    let maxEquityDrawdownPct = 0;
+    const hasPortfolioEquity = trades.some((t) => t.capitalAfterUsdt !== undefined);
+    if (hasPortfolioEquity) {
+      for (const t of trades) {
+        if (t.capitalAfterUsdt === undefined) continue;
+        peakEquity = Math.max(peakEquity, t.capitalBeforeUsdt || 0, t.capitalAfterUsdt);
+        if (peakEquity > 0) {
+          maxEquityDrawdownPct = Math.max(maxEquityDrawdownPct,
+            (peakEquity - t.capitalAfterUsdt) / peakEquity * 100);
+        }
+      }
+    }
+    const maxDrawdownPct = Number((hasPortfolioEquity ?
+      maxEquityDrawdownPct : (maxDrawdownUsdt / 10000) * 100).toFixed(2));
 
     return {
       totalTrades: total,
