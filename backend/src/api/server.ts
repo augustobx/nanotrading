@@ -116,7 +116,7 @@ export class ApiServer {
       } else if (pathname === '/api/v1/market/analysis' && req.method === 'GET') {
         this.sendMarketAnalysis(res);
       } else if (pathname === '/api/v1/market/setups' && req.method === 'GET') {
-        this.sendActiveSetups(res);
+        this.sendActiveSetups(res, url);
       } else if (pathname === '/api/v1/ai/status' && req.method === 'GET') {
         this.sendAiStatus(res);
       } else if (pathname === '/api/v1/ai/reviews' && req.method === 'GET') {
@@ -347,10 +347,29 @@ export class ApiServer {
     res.end(JSON.stringify({ success: true, data: analyses }));
   }
 
-  private sendActiveSetups(res: http.ServerResponse): void {
-    const setups = this.coordinator.getActiveSetups();
+  private sendActiveSetups(res: http.ServerResponse, url?: URL): void {
+    const historical = url?.searchParams?.get('historical') === 'true';
+    if (historical) {
+      const limit = parseInt(url?.searchParams?.get('limit') || '50', 10);
+      const setups = this.db.getSetups(limit);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true, count: setups.length, data: setups, isHistorical: true }));
+      return;
+    }
+
+    // PR 4.1: Autonomous architecture consolidation.
+    // Live operative setups originate exclusively from autonomous AI discovery scenarios (/api/v1/discovery/scenarios).
+    // Historical setups remain queryable with ?historical=true for audit and compliance.
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true, count: setups.length, data: setups }));
+    res.end(
+      JSON.stringify({
+        success: true,
+        count: 0,
+        data: [],
+        notice:
+          'Operative setups originate exclusively from autonomous AI discovery scenarios (/api/v1/discovery/scenarios). Historical records are accessible via ?historical=true.',
+      })
+    );
   }
 
   private sendEvents(res: http.ServerResponse, limit: number): void {
@@ -554,9 +573,6 @@ export class ApiServer {
   }
 
   private handleEvaluateSetup(req: http.IncomingMessage, res: http.ServerResponse): void {
-    const clientIp =
-      (req.headers['x-forwarded-for'] as string)?.split(',')[0].trim() || req.socket.remoteAddress || '127.0.0.1';
-
     // 1. Authentication check
     if (!this.isAuthenticated(req)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -566,76 +582,17 @@ export class ApiServer {
       return;
     }
 
-    // 2. Rate limiting check
-    if (!this.checkRateLimit(clientIp)) {
-      res.writeHead(429, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          error: `Límite de solicitudes de evaluación excedido (máximo ${config.security.rateLimitPerMinute} por minuto)`,
-        })
-      );
-      return;
-    }
-
-    let body = '';
-    req.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 50000) req.destroy();
-    });
-
-    req.on('end', async () => {
-      try {
-        const payload = JSON.parse(body || '{}');
-        const setupId = payload.setupId;
-
-        // 3. Input validation
-        if (!setupId || typeof setupId !== 'string' || !/^[a-zA-Z0-9_\-]+$/.test(setupId)) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Parámetro setupId inválido o ausente' }));
-          return;
-        }
-
-        // 4. Deduplication
-        if (this.evaluationsInProgress.has(setupId)) {
-          res.writeHead(409, { 'Content-Type': 'application/json' });
-          res.end(
-            JSON.stringify({
-              error: `Evaluación de IA ya en progreso para el setup ${setupId}. Evitando costo duplicado.`,
-            })
-          );
-          return;
-        }
-
-        // 5. Budget guard check
-        const costTracker = this.coordinator.getConsensusEngine().getCostTracker();
-        if (!costTracker.canMakeCalls(2)) {
-          res.writeHead(429, { 'Content-Type': 'application/json' });
-          res.end(
-            JSON.stringify({
-              error: 'Límite de presupuesto diario o mensual de IA alcanzado. Evaluación bloqueada.',
-            })
-          );
-          return;
-        }
-
-        // PR 4.1: Autonomous architecture consolidation.
-        // Legacy manual setup evaluation is permanently disabled. Operative signals originate strictly from autonomous AI discovery.
-        res.writeHead(410, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          error: 'LEGACY_EVALUATOR_DISABLED',
-          message: 'La evaluación manual de setups legados está deshabilitada en la arquitectura autónoma consolidada. Las oportunidades y señales operativas son gestionadas exclusivamente a través del ciclo autónomo (descubrimiento -> vigilancia -> revalidación).'
-        }));
-        return;
-      } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            error: 'Error durante la evaluación de consenso',
-            message: 'Fallo interno controlado en evaluación',
-          })
-        );
-      }
-    });
+    // PR 4.1: Autonomous architecture consolidation.
+    // Legacy manual setup evaluation is permanently disabled with HTTP 410 Gone.
+    // Reject immediately after authentication without budget checks, deduplication, body parsing, or AI calls.
+    res.writeHead(410, { 'Content-Type': 'application/json' });
+    res.end(
+      JSON.stringify({
+        error: 'LEGACY_EVALUATOR_DISABLED',
+        message:
+          'La evaluación manual de setups legados está deshabilitada en la arquitectura autónoma consolidada. Las oportunidades y señales operativas son gestionadas exclusivamente a través del ciclo autónomo (descubrimiento -> vigilancia -> revalidación).',
+      })
+    );
   }
 
   private parseJsonBody<T>(req: http.IncomingMessage, maxBytes = 50000): Promise<T> {
@@ -1906,11 +1863,6 @@ export class ApiServer {
     // Broadcast state updates
     this.coordinator.on('state_updated', (state) => {
       this.broadcast({ type: 'state', data: state });
-    });
-
-    // Broadcast detected setups
-    this.coordinator.on('setup_detected', (setup) => {
-      this.broadcast({ type: 'setup_detected', data: setup });
     });
 
     // Broadcast consensus signals

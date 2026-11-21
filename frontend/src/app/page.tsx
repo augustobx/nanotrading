@@ -86,7 +86,7 @@ export default function DashboardPage() {
 
   // Phase 2 Quantitative Engine State
   const [analyses, setAnalyses] = useState<Record<string, any>>({});
-  const [setups, setSetups] = useState<any[]>([]);
+  const [scenarios, setScenarios] = useState<any[]>([]);
 
   // Phase 3 Dual AI & Consensus State
   const [aiStatus, setAiStatus] = useState<any | null>(null);
@@ -191,9 +191,9 @@ export default function DashboardPage() {
 
   const fetchAnalysisAndSetups = async () => {
     try {
-      const [anRes, setRes, aiRes, sigRes, revRes, actSigRes, stRes] = await Promise.all([
+      const [anRes, scRes, aiRes, sigRes, revRes, actSigRes, stRes] = await Promise.all([
         fetch(`${getApiBase()}/api/v1/market/analysis`),
-        fetch(`${getApiBase()}/api/v1/market/setups`),
+        fetch(`${getApiBase()}/api/v1/discovery/scenarios`),
         fetch(`${getApiBase()}/api/v1/ai/status`),
         fetch(`${getApiBase()}/api/v1/signals`),
         fetch(`${getApiBase()}/api/v1/ai/reviews`),
@@ -204,9 +204,9 @@ export default function DashboardPage() {
         const anData = await anRes.json();
         if (anData.success) setAnalyses(anData.data);
       }
-      if (setRes.ok) {
-        const setData = await setRes.json();
-        if (setData.success) setSetups(setData.data);
+      if (scRes.ok) {
+        const scData = await scRes.json();
+        if (scData.success) setScenarios(scData.data || []);
       }
       if (aiRes.ok) {
         const aiData = await aiRes.json();
@@ -328,8 +328,25 @@ export default function DashboardPage() {
               if (msg.data?.killSwitchActive !== undefined) {
                 setKillSwitchActive(msg.data.killSwitchActive);
               }
-            } else if (msg.type === 'setup_detected') {
-              setSetups((prev) => [msg.data, ...prev]);
+            } else if (msg.type === 'scenario_registered') {
+              setScenarios((prev) => [msg.data, ...prev.filter((s) => s.id !== msg.data.id)]);
+            } else if (
+              msg.type === 'scenario_status_changed' ||
+              msg.type === 'scenario_updated' ||
+              msg.type === 'scenario_entry_validated'
+            ) {
+              const updated = msg.data?.scenario || msg.data;
+              if (updated && updated.id) {
+                setScenarios((prev) => {
+                  const idx = prev.findIndex((s) => s.id === updated.id);
+                  if (idx >= 0) {
+                    const next = [...prev];
+                    next[idx] = { ...next[idx], ...updated };
+                    return next;
+                  }
+                  return [updated, ...prev];
+                });
+              }
             } else if (msg.type === 'signal_evaluated') {
               setSignals((prev) => [msg.data, ...prev.filter((s) => s.id !== msg.data.id)]);
             } else if (msg.type === 'signal_state_changed') {
@@ -662,7 +679,7 @@ export default function DashboardPage() {
               swings={swings}
               structureBreaks={structureBreaks}
               fvgs={fvgs}
-              setups={setups}
+              scenarios={scenarios}
               symbol="BTCUSDT"
               isDark={isDark}
             />

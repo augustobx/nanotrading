@@ -1,15 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { DatabaseService } from '../../src/storage/database.js';
 import { SetupEngine } from '../../src/engine/setup-engine.js';
 import { CandleManager } from '../../src/market/candle-manager.js';
+import { OrderBookManager } from '../../src/market/orderbook-manager.js';
+import { BybitRestClient } from '../../src/bybit/bybit-rest-client.js';
+import { BybitWsClient } from '../../src/bybit/bybit-ws-client.js';
+import { MarketCoordinator } from '../../src/market/market-coordinator.js';
+import { ApiServer } from '../../src/api/server.js';
 import { ScenarioRegistry } from '../../src/engine/scenario-registry.js';
 import { AlgorithmicWatcher } from '../../src/engine/algorithmic-watcher.js';
-import { AutonomousDiscoveryScheduler } from '../../src/ai/autonomous-discovery-scheduler.js';
-import { SignalStateMachine } from '../../src/engine/signal-state-machine.js';
 import { Candle, Timeframe } from '../../src/types/market.js';
 import { Scenario, AiWatchPlan } from '../../src/ai/scenario-types.js';
+import { config } from '../../src/config/index.js';
 
 function makeCandle(tf: Timeframe, i: number, open: number, high: number, low: number, close: number, vol = 100): Candle {
   const base = 1_700_000_000_000;
@@ -107,14 +113,61 @@ function makeWatchPlan(scenarioId: string, min = 59800, max = 60200): AiWatchPla
   };
 }
 
+function createTestCoordinator(db: DatabaseService) {
+  const restClient = new BybitRestClient();
+  const wsClient = new BybitWsClient();
+  const candleManager = new CandleManager('BTCUSDT', db);
+  const orderBookManager = new OrderBookManager('BTCUSDT');
+
+  // Stub network I/O
+  wsClient.isConnected = () => true;
+  wsClient.getLastMessageTime = () => Date.now();
+  wsClient.connect = () => {};
+
+  orderBookManager.handleSnapshot(
+    [['60000.0', '1.0']],
+    [['60000.1', '1.0']],
+    100,
+    Date.now(),
+    1
+  );
+
+  const coordinator = new MarketCoordinator(
+    restClient,
+    wsClient,
+    candleManager,
+    orderBookManager,
+    db,
+    'BTCUSDT'
+  );
+
+  (coordinator as any).currentTicker = {
+    symbol: 'BTCUSDT',
+    lastPrice: 60000,
+    markPrice: 60000,
+    indexPrice: 60000,
+    bid1Price: 59999.9,
+    ask1Price: 60000.1,
+    bid1Size: 1.0,
+    ask1Size: 1.0,
+    spread: 0.2,
+    spreadPcnt: 0.0003,
+    highPrice24h: 61000,
+    lowPrice24h: 59000,
+    turnover24h: 1000000,
+    volume24h: 100,
+  };
+
+  return { coordinator, db, candleManager, orderBookManager };
+}
+
 // --------------------------------------------------------------------------
-// TEST 1: Ninguna estrategia A/B genera señales nuevas en el flujo operativo
+// TEST 1: SetupEngine no evalúa ni registra Estrategias A/B en vivo
 // --------------------------------------------------------------------------
 test('PR 4.1 Integration 1: SetupEngine does not evaluate or register A/B strategies during live operation', () => {
   const db = new DatabaseService(':memory:');
   const candleManager = new CandleManager('BTCUSDT', db);
 
-  // Feed perfect A/B setup conditions across timeframes
   const c4h: Candle[] = [];
   const c1h: Candle[] = [];
   const c15m: Candle[] = [];
@@ -143,7 +196,7 @@ test('PR 4.1 Integration 1: SetupEngine does not evaluate or register A/B strate
   assert.ok(fullAnalysisResult.analyses['15m'], '15m quantitative analysis should exist');
   assert.ok(fullAnalysisResult.analyses['1h'], '1h quantitative analysis should exist');
 
-  // But setups list is strictly empty
+  // But live setups list is strictly empty
   assert.equal(fullAnalysisResult.setups.length, 0, 'No live A/B setups should be emitted');
   assert.equal(setupEngine.getActiveSetups().length, 0, 'activeSetups must remain empty');
   assert.equal(setupDetectedEmitted, false, 'setup_detected must not be emitted');
@@ -156,59 +209,70 @@ test('PR 4.1 Integration 1: SetupEngine does not evaluate or register A/B strate
 });
 
 // --------------------------------------------------------------------------
-// TEST 2: Deshabilitar el scheduler no reactiva funcionalidades antiguas
+// TEST 2: Rutas reales: Bloqueo de consenso legado y rechazo HTTP 410 en API
 // --------------------------------------------------------------------------
-test('PR 4.1 Integration 2: Disabling discoveryScheduler does not trigger legacy consensus fallback', async () => {
+test('PR 4.1 Integration 2: Real coordinator blocks legacy consensus when scheduler disabled; /api/v1/ai/evaluate returns HTTP 410', async () => {
   const db = new DatabaseService(':memory:');
-  const emitter = new EventEmitter() as EventEmitter & Record<string, any>;
+  const { coordinator } = createTestCoordinator(db);
 
-  let legacyConsensusCalls = 0;
-  emitter.getConsensusEngine = () => ({
-    evaluateSetup: async () => {
-      legacyConsensusCalls++;
-      return { verdict: 'DISCARDED' };
+  // Disable discovery scheduler
+  coordinator.getDiscoveryScheduler().updateConfig({ enabled: false });
+  assert.equal(coordinator.getDiscoveryScheduler().getConfig().enabled, false);
+
+  let legacyConsensusEmitted = false;
+  coordinator.on('signal_evaluated', () => {
+    legacyConsensusEmitted = true;
+  });
+
+  // Emit a mock legacy setup through the real coordinator setup engine
+  coordinator.getSetupEngine().emit('setup_detected', {
+    id: 'test_legacy_setup',
+    strategy: 'STRATEGY_A_TREND_CONTINUATION',
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  // Legacy consensus must NEVER be triggered
+  assert.equal(legacyConsensusEmitted, false, 'Legacy consensus must NEVER be triggered on real coordinator');
+  assert.equal(db.getSignals(10).length, 0, 'Zero signals should exist in database');
+
+  // Start real ApiServer and verify /api/v1/ai/evaluate returns HTTP 410 immediately
+  const server = new ApiServer(coordinator, db, 0, '127.0.0.1');
+  await server.start();
+  const port = server.getPort();
+
+  // 1. Unauthorized request gets 401
+  const unauthRes = await fetch(`http://127.0.0.1:${port}/api/v1/ai/evaluate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ setupId: 'any_setup' }),
+  });
+  assert.equal(unauthRes.status, 401, 'Unauthenticated request must get 401');
+
+  // 2. Authenticated request gets HTTP 410 Gone immediately without budget checks
+  const authRes = await fetch(`http://127.0.0.1:${port}/api/v1/ai/evaluate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-admin-key': config.security.adminApiKey,
     },
+    body: JSON.stringify({ setupId: 'any_setup' }),
   });
+  assert.equal(authRes.status, 410, 'Authenticated request to legacy evaluator must receive HTTP 410');
+  const authBody: any = await authRes.json();
+  assert.equal(authBody.error, 'LEGACY_EVALUATOR_DISABLED');
 
-  // Mock scheduler with enabled: false
-  const scheduler = new AutonomousDiscoveryScheduler({
-    coordinator: emitter as any,
-    db,
-    hardBudgetManager: { isBlocked: () => false } as any,
-    discoveryEngine: { runDiscovery: async () => ({ scenarios: [], summary: {}, aiCostUsd: 0 }) } as any,
-  });
-
-  scheduler.updateConfig({ enabled: false });
-  assert.equal(scheduler.getConfig().enabled, false);
-
-  // Even when a mock setup is emitted on a legacy emitter, no consensus call is triggered
-  const candleManager = new CandleManager('BTCUSDT', db);
-  const setupEngine = new SetupEngine(candleManager, db);
-
-  // Simulating coordinator listener behavior under PR 4.1
-  setupEngine.on('setup_detected', (setup) => {
-    // In PR 4.1, this listener only logs for legacy research; it NEVER calls consensusEngine
-    db.logEvent('INFO', 'Coordinator', 'Technical setup observed (legacy research); no operative signal generated', { setupId: setup.id });
-  });
-
-  // Emit a mock legacy setup
-  setupEngine.emit('setup_detected', { id: 'test_legacy_setup', strategy: 'STRATEGY_A_TREND_CONTINUATION' });
-
-  assert.equal(legacyConsensusCalls, 0, 'Legacy consensus must NEVER be triggered when scheduler is disabled');
-
-  // Signals table must have 0 records
-  const signals = db.getSignals(10);
-  assert.equal(signals.length, 0, 'Zero signals should exist');
-
+  await server.stop();
   db.close();
 });
 
 // --------------------------------------------------------------------------
-// TEST 3: Las oportunidades provienen exclusivamente del descubrimiento autónomo
+// TEST 3: Oportunidades provienen exclusivamente del descubrimiento autónomo
 // --------------------------------------------------------------------------
-test('PR 4.1 Integration 3: Active opportunities originate exclusively from autonomous AI discovery scenarios', () => {
+test('PR 4.1 Integration 3: Active opportunities originate exclusively from autonomous AI discovery scenarios in real registry', () => {
   const db = new DatabaseService(':memory:');
-  const registry = new ScenarioRegistry(db);
+  const { coordinator } = createTestCoordinator(db);
+  const registry = coordinator.getScenarioRegistry();
 
   const autonomousScenario = makeScenario('sc_auto_001', 'LONG', 59800, 60200);
   registry.registerScenario(autonomousScenario);
@@ -233,7 +297,9 @@ test('PR 4.1 Integration 3: Active opportunities originate exclusively from auto
 // --------------------------------------------------------------------------
 test('PR 4.1 Integration 4: AlgorithmicWatcher consumes exactly zero AI tokens/calls during routine tick watching', () => {
   const db = new DatabaseService(':memory:');
-  const registry = new ScenarioRegistry(db);
+  const { coordinator } = createTestCoordinator(db);
+  const registry = coordinator.getScenarioRegistry();
+  const watcher = coordinator.getAlgorithmicWatcher();
 
   const scenario = makeScenario('sc_watcher_001', 'LONG', 59800, 60200);
   const plan = makeWatchPlan('sc_watcher_001', 59800, 60200);
@@ -242,11 +308,6 @@ test('PR 4.1 Integration 4: AlgorithmicWatcher consumes exactly zero AI tokens/c
   db.saveWatchPlan(plan);
 
   let aiCallsTriggered = 0;
-  const mockCoordinator = new EventEmitter() as EventEmitter & Record<string, any>;
-  mockCoordinator.getSetupEngine = () => ({ getAnalysis: () => undefined });
-  mockCoordinator.getMarketState = () => ({ ticker: { lastPrice: 60100 } });
-
-  const watcher = new AlgorithmicWatcher(mockCoordinator as any, registry);
   watcher.on('revalidation_requested', () => {
     aiCallsTriggered++;
   });
@@ -255,7 +316,7 @@ test('PR 4.1 Integration 4: AlgorithmicWatcher consumes exactly zero AI tokens/c
 
   // Simulate 100 price updates/ticks within the observation range without meeting the pattern condition
   for (let price = 59850; price <= 60150; price += 3) {
-    mockCoordinator.emit('state_updated', {
+    coordinator.emit('state_updated', {
       ticker: {
         lastPrice: price,
         spreadPcnt: 0.001,
@@ -273,14 +334,15 @@ test('PR 4.1 Integration 4: AlgorithmicWatcher consumes exactly zero AI tokens/c
 });
 
 // --------------------------------------------------------------------------
-// TEST 5: No existen revalidaciones duplicadas
+// TEST 5: Deduplicación: Cooldown e in-flight guard evitan revalidaciones duplicadas
 // --------------------------------------------------------------------------
-test('PR 4.1 Integration 5: Cooldown and in-flight guard strictly prevent duplicate revalidations', () => {
+test('PR 4.1 Integration 5: Cooldown and in-flight guard strictly prevent duplicate revalidations on real watcher', () => {
   const db = new DatabaseService(':memory:');
-  const registry = new ScenarioRegistry(db);
+  const { coordinator } = createTestCoordinator(db);
+  const registry = coordinator.getScenarioRegistry();
+  const watcher = coordinator.getAlgorithmicWatcher();
 
   const scenario = makeScenario('sc_cooldown_001', 'LONG', 59800, 60200);
-  // Watch plan requiring only price in range
   const plan: AiWatchPlan = {
     ...makeWatchPlan('sc_cooldown_001', 59800, 60200),
     observableConditions: [
@@ -298,11 +360,6 @@ test('PR 4.1 Integration 5: Cooldown and in-flight guard strictly prevent duplic
   db.saveWatchPlan(plan);
 
   let revalidationEvents = 0;
-  const mockCoordinator = new EventEmitter() as EventEmitter & Record<string, any>;
-  mockCoordinator.getSetupEngine = () => ({ getAnalysis: () => undefined });
-  mockCoordinator.getMarketState = () => ({ ticker: { lastPrice: 60000, spreadPcnt: 0.001 } });
-
-  const watcher = new AlgorithmicWatcher(mockCoordinator as any, registry);
   watcher.on('revalidation_requested', () => {
     revalidationEvents++;
   });
@@ -310,135 +367,190 @@ test('PR 4.1 Integration 5: Cooldown and in-flight guard strictly prevent duplic
   watcher.start();
 
   // First trigger: price in zone triggers revalidation
-  mockCoordinator.emit('state_updated', { ticker: { lastPrice: 60000, spreadPcnt: 0.001 } });
+  coordinator.emit('state_updated', { ticker: { lastPrice: 60000, spreadPcnt: 0.001 } });
   assert.equal(revalidationEvents, 1, 'First revalidation should be emitted');
 
   // Immediately bombard with 50 subsequent ticks while in cooldown
   for (let i = 0; i < 50; i++) {
-    mockCoordinator.emit('state_updated', { ticker: { lastPrice: 60005, spreadPcnt: 0.001 } });
+    coordinator.emit('state_updated', { ticker: { lastPrice: 60005, spreadPcnt: 0.001 } });
   }
 
   // Must still be exactly 1
   assert.equal(revalidationEvents, 1, 'Subsequent ticks during cooldown must NOT fire duplicate revalidations');
+
+  // Also test ScenarioRegistry deduplication: registering same scenario again does not duplicate
+  registry.registerScenario(scenario);
+  assert.equal(registry.getAllActive().length, 1, 'Registry must not duplicate active scenario');
 
   watcher.stop();
   db.close();
 });
 
 // --------------------------------------------------------------------------
-// TEST 6: Las señales solo se validan con confirmaciones suficientes y R:R >= 4.0
+// TEST 6: Registro de señales real tras revalidación con R:R >= 4.0
 // --------------------------------------------------------------------------
-test('PR 4.1 Integration 6: Signal registration strictly requires Net R:R >= 4.0 and authorized verdict', () => {
+test('PR 4.1 Integration 6: Real coordinator pipeline registers signal only when Net R:R >= 4.0 after revalidation', () => {
   const db = new DatabaseService(':memory:');
-  const signalStateMachine = new SignalStateMachine(db);
+  const { coordinator } = createTestCoordinator(db);
 
-  const scenario = makeScenario('sc_risk_001', 'LONG', 59800, 60200);
+  const scenario = makeScenario('sc_pipe_001', 'LONG', 59800, 60200);
+  scenario.target14Price = 64500;
+  scenario.stopLossPrice = 59000;
+  scenario.status = 'ENTRY_VALIDATED';
 
-  // 1. Setup with Net R:R < 4.0 (e.g. 2.5R) must not be qualified for 1:4 execution
-  const disqualifiedTarget14 = 61000; // Too close, Net RR ~ 2.0
-  const lowRR = 2.0;
-
-  // Emulating coordinator validation logic in PR 4.1
-  const policyMinRR = 4.0;
-  let signalCreated = false;
-  signalStateMachine.on('signal_created', () => {
-    signalCreated = true;
+  // 1. Revalidation with Net R:R < 4.0 (disqualified)
+  coordinator.getAiRevalidation().emit('entry_validated', {
+    scenario,
+    currentPrice: 60000,
+    riskCalc: {
+      calculation14: {
+        isValid: true,
+        netRR: 2.5,
+        netLossUSDT: 100,
+        positionSizeBTC: 0.05,
+      },
+    },
   });
 
-  if (lowRR >= policyMinRR) {
-    const qualifiedScenario = { ...scenario, status: 'ENTRY_VALIDATED' as const };
-    signalStateMachine.registerSignalFromScenario(qualifiedScenario, 60000, 'RR_1_4', disqualifiedTarget14, lowRR, 100, 0.05);
-  }
+  // Must NOT create signal because Net R:R is below policy minimum (4.0)
+  assert.equal(coordinator.getSignalStateMachine().getActiveSignals().length, 0, 'Net R:R < 4.0 must not register signal');
+  assert.equal(db.getSignals(10).length, 0, 'No signal in SQLite');
 
-  assert.equal(signalCreated, false, 'Signal with Net R:R < 4.0 must not be registered');
-  assert.equal(db.getSignals(10).length, 0);
+  // 2. Revalidation with Net R:R >= 4.0 and risk within policy (<= 50 USDT)
+  let signalCreatedEventEmitted = false;
+  coordinator.on('scenario_entry_validated', () => {
+    signalCreatedEventEmitted = true;
+  });
 
-  // 2. Setup with Net R:R >= 4.0 (e.g. 4.2R) is successfully registered
-  const qualifiedTarget14 = 64500;
-  const highRR = 4.2;
+  coordinator.getAiRevalidation().emit('entry_validated', {
+    scenario,
+    currentPrice: 60000,
+    riskCalc: {
+      calculation14: {
+        isValid: true,
+        netRR: 4.2,
+        netLossUSDT: 45,
+        positionSizeBTC: 0.05,
+      },
+    },
+  });
 
-  if (highRR >= policyMinRR) {
-    const qualifiedScenario = { ...scenario, status: 'ENTRY_VALIDATED' as const };
-    signalStateMachine.registerSignalFromScenario(qualifiedScenario, 60000, 'RR_1_4', qualifiedTarget14, highRR, 100, 0.05);
-  }
+  assert.equal(signalCreatedEventEmitted, true, 'scenario_entry_validated should be emitted by coordinator');
+  const activeSignals = coordinator.getSignalStateMachine().getActiveSignals();
+  assert.equal(activeSignals.length, 1, 'Exactly one signal should be registered');
+  assert.equal(activeSignals[0].state, 'ENTRY_VALIDATED');
+  assert.equal(activeSignals[0].netRR, 4.2);
 
-  assert.equal(signalCreated, true, 'Signal with Net R:R >= 4.0 should be registered');
-  const activeSignals = db.getSignals(10);
-  assert.equal(activeSignals.length, 1);
-  assert.equal(activeSignals[0].status, 'ENTRY_VALIDATED');
-  assert.equal(activeSignals[0].rrNet, 4.2);
+  // Check persisted in SQLite
+  const dbSignals = db.getSignals(10);
+  assert.equal(dbSignals.length, 1, 'Signal must be persisted in SQLite');
+  assert.equal(dbSignals[0].status, 'ENTRY_VALIDATED');
+  assert.equal(dbSignals[0].rrNet, 4.2);
 
   db.close();
 });
 
 // --------------------------------------------------------------------------
-// TEST 7: Los escenarios sobreviven a reinicios del proceso
+// TEST 7: Persistencia ante cierre y reapertura REAL de SQLite en disco
 // --------------------------------------------------------------------------
-test('PR 4.1 Integration 7: Autonomous scenarios and watch plans survive process and database restarts', () => {
-  const db = new DatabaseService(':memory:');
-  const registry1 = new ScenarioRegistry(db);
+test('PR 4.1 Integration 7: Autonomous scenarios and watch plans survive real SQLite file close and reopen', () => {
+  const tmpDbPath = path.join(os.tmpdir(), `nanotrading-pr41-persistence-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
 
-  const originalScenario = makeScenario('sc_restart_001', 'SHORT', 61500, 62000);
-  const originalPlan = makeWatchPlan('sc_restart_001', 61500, 62000);
+  try {
+    // 1. Create real database on disk and populate with scenario and watch plan
+    const db1 = new DatabaseService(tmpDbPath);
+    const reg1 = new ScenarioRegistry(db1);
 
-  registry1.registerScenario(originalScenario);
-  db.saveWatchPlan(originalPlan);
-  assert.equal(registry1.getAllActive().length, 1);
+    const originalScenario = makeScenario('sc_disk_001', 'SHORT', 61500, 62000);
+    const originalPlan = makeWatchPlan('sc_disk_001', 61500, 62000);
 
-  // Simulate process shutdown and reboot: create a new registry from the same DB
-  const registry2 = new ScenarioRegistry(db);
+    reg1.registerScenario(originalScenario);
+    db1.saveWatchPlan(originalPlan);
+    assert.equal(reg1.getAllActive().length, 1);
 
-  const recovered = registry2.getAllActive();
-  assert.equal(recovered.length, 1, 'Recovered scenarios count must match');
-  assert.equal(recovered[0].id, 'sc_restart_001');
-  assert.equal(recovered[0].direction, 'SHORT');
-  assert.equal(recovered[0].entryZoneMin, 61500);
-  assert.equal(recovered[0].entryZoneMax, 62000);
+    // 2. CLOSE real database connection on disk
+    db1.close();
 
-  const recoveredPlan = db.getWatchPlanByScenarioId('sc_restart_001');
-  assert.ok(recoveredPlan, 'Watch plan must be recovered');
-  assert.equal(recoveredPlan.watchZone.minPrice, 61500);
-  assert.equal(recoveredPlan.watchZone.maxPrice, 62000);
+    // 3. REOPEN real database from disk
+    const db2 = new DatabaseService(tmpDbPath);
+    const reg2 = new ScenarioRegistry(db2);
 
-  db.close();
+    const recoveredScenarios = reg2.getAllActive();
+    assert.equal(recoveredScenarios.length, 1, 'Recovered scenarios count from disk must match');
+    assert.equal(recoveredScenarios[0].id, 'sc_disk_001');
+    assert.equal(recoveredScenarios[0].direction, 'SHORT');
+    assert.equal(recoveredScenarios[0].entryZoneMin, 61500);
+    assert.equal(recoveredScenarios[0].entryZoneMax, 62000);
+    assert.equal(recoveredScenarios[0].structureType, 'SMC_DISCRETIONARY_DISCOVERY');
+
+    const recoveredPlan = db2.getWatchPlanByScenarioId('sc_disk_001');
+    assert.ok(recoveredPlan, 'Watch plan must be recovered from disk');
+    assert.equal(recoveredPlan.watchZone.minPrice, 61500);
+    assert.equal(recoveredPlan.watchZone.maxPrice, 62000);
+
+    db2.close();
+  } finally {
+    if (fs.existsSync(tmpDbPath)) {
+      try {
+        fs.unlinkSync(tmpDbPath);
+      } catch {}
+    }
+  }
 });
 
 // --------------------------------------------------------------------------
-// TEST 8: El historial legado sigue disponible sin intervenir en decisiones
+// TEST 8: Protecciones reales: Kill Switch y límites de presupuesto en coordinator
 // --------------------------------------------------------------------------
-test('PR 4.1 Integration 8: Legacy history is accessible for auditing but isolated from live decisions', () => {
+test('PR 4.1 Integration 8: Real Kill Switch and Hard Budget Guards enforce strict security', () => {
   const db = new DatabaseService(':memory:');
+  const { coordinator } = createTestCoordinator(db);
 
-  // Insert a historical legacy setup from Phase 2
-  db.saveSetup({
-    id: 'historical_legacy_setup_phase2',
-    timestamp: 1700000000000,
-    symbol: 'BTCUSDT',
-    strategy: 'STRATEGY_A_TREND_CONTINUATION',
-    direction: 'LONG',
-    timeframe: '15m',
-    entryPrice: 58000,
-    stopLoss: 57500,
-    takeProfit: 60500,
-    rrRatio: 5.0,
-    status: 'COMPLETED_TP',
-    evidence: { triggerReason: 'Historical test fixture' },
+  // 1. Test Kill Switch real
+  assert.equal(coordinator.getMarketState().killSwitchActive, false);
+
+  // Register a signal
+  const scenario = makeScenario('sc_ks_001', 'LONG', 59800, 60200);
+  scenario.status = 'ENTRY_VALIDATED';
+  coordinator.getSignalStateMachine().registerSignalFromScenario(
+    scenario, 60000, 'RR_1_4', 64500, 4.2, 100, 0.05
+  );
+  assert.equal(coordinator.getSignalStateMachine().getActiveSignals().length, 1);
+
+  // Trigger Kill Switch on coordinator
+  coordinator.setKillSwitch(true, 'Emergency test halt');
+
+  // Assert signal cancelled, state updated, persisted in DB
+  assert.equal(coordinator.getMarketState().killSwitchActive, true);
+  assert.equal(coordinator.getSignalStateMachine().getActiveSignals().length, 0);
+  assert.equal(db.getKillSwitchState(), true, 'Kill switch state must be persisted in SQLite');
+
+  // Restore Kill Switch
+  coordinator.setKillSwitch(false, 'Test reset');
+  assert.equal(coordinator.getMarketState().killSwitchActive, false);
+
+  // 2. Test Hard Budget Guard real
+  const hardBudget = (coordinator.getConsensusEngine() as any).hardBudgetManager;
+  hardBudget.updateConfig({
+    dailyBudgetLimitUsd: 0.01,
+    monthlyBudgetLimitUsd: 100,
+    maxCostPerRequestUsd: 1,
   });
 
-  // Verify historical setup is readable for audit / backtest reporting
-  const historicalSetups = db.getSetups(10);
-  assert.equal(historicalSetups.length, 1);
-  assert.equal(historicalSetups[0].id, 'historical_legacy_setup_phase2');
-  assert.equal(historicalSetups[0].strategy, 'STRATEGY_A_TREND_CONTINUATION');
+  // Record direct usage exceeding daily budget limit ($0.05 > $0.01)
+  hardBudget.recordDirectUsage('openai', 'gpt-4o', 'MARKET_DISCOVERY', 0.05, {
+    prompt: 4000,
+    completion: 1000,
+  });
 
-  // Verify live SetupEngine returns zero active setups and does not touch historical records
-  const candleManager = new CandleManager('BTCUSDT', db);
-  const setupEngine = new SetupEngine(candleManager, db);
-  assert.equal(setupEngine.getActiveSetups().length, 0, 'Live activeSetups must not include historical rows');
-
-  // Verify AlgorithmicWatcher only tracks scenarios, never legacy setups
-  const registry = new ScenarioRegistry(db);
-  assert.equal(registry.getAllActive().length, 0, 'Registry must not load historical setups as scenarios');
+  assert.equal(hardBudget.isBlocked(), true, 'Hard budget must be blocked when daily limit exceeded');
+  const reservation = hardBudget.reserveBudget({
+    provider: 'openai',
+    model: 'gpt-4o',
+    task: 'MARKET_DISCOVERY',
+    maxEstimatedCostUsd: 0.005,
+  });
+  assert.equal(reservation.allowed, false, 'Further reservations must be denied by budget manager');
+  assert.equal(reservation.status, 'AI_BUDGET_EXCEEDED');
 
   db.close();
 });

@@ -87,7 +87,7 @@ test('ApiServer - Security: Kill Switch endpoint requires authentication', async
   db.close();
 });
 
-test('ApiServer - Security: Input validation on setupId format', async () => {
+test('ApiServer - PR 4.1: POST /api/v1/ai/evaluate is permanently disabled with HTTP 410', async () => {
   const { db, server } = setupApiTest();
   await server.start();
   const port = server.getPort();
@@ -98,12 +98,12 @@ test('ApiServer - Security: Input validation on setupId format', async () => {
       'Content-Type': 'application/json',
       'x-admin-key': config.security.adminApiKey,
     },
-    body: JSON.stringify({ setupId: 'malicious/id;<script>' }),
+    body: JSON.stringify({ setupId: 'any_legacy_setup' }),
   });
 
-  assert.equal(res.status, 400);
+  assert.equal(res.status, 410);
   const data: any = await res.json();
-  assert.match(data.error, /setupId inválido/);
+  assert.equal(data.error, 'LEGACY_EVALUATOR_DISABLED');
 
   await server.stop();
   db.close();

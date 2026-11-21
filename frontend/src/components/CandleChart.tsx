@@ -70,7 +70,7 @@ interface CandleChartProps {
   swings?: SwingData[];
   structureBreaks?: BreakData[];
   fvgs?: FvgData[];
-  setups?: SetupData[];
+  scenarios?: any[];
   symbol?: string;
   isDark?: boolean;
 }
@@ -85,7 +85,7 @@ export function CandleChart({
   swings = [],
   structureBreaks = [],
   fvgs = [],
-  setups = [],
+  scenarios = [],
   symbol = 'BTCUSDT',
   isDark = true,
 }: CandleChartProps) {
@@ -101,7 +101,7 @@ export function CandleChart({
   const [showSwings, setShowSwings] = useState(false);
   const [showBreaks, setShowBreaks] = useState(false);
   const [showFvg, setShowFvg] = useState(true);
-  const [showSetups, setShowSetups] = useState(true);
+  const [showScenarios, setShowScenarios] = useState(true);
 
   // Initialize Lightweight Chart
   useEffect(() => {
@@ -352,45 +352,53 @@ export function CandleChart({
       }
     }
 
-    // Setups Lines (Entry, SL, TP 1:4)
-    if (showSetups && setups && setups.length > 0) {
-      const activeSetup = [...setups].reverse().find(s =>
-        (s.status === 'QUALIFIED' || s.status === 'PENDING_CONFIRMATION') &&
-        Number.isFinite(s.riskReward?.netRR) && s.riskReward!.netRR >= 4); 
-      if (activeSetup) {
-      try {
-        const entryLine = candleSeriesRef.current.createPriceLine({
-          price: activeSetup.entryPrice,
-          color: '#3b82f6', // Blue
-          lineWidth: 2,
-          lineStyle: 0, // Solid
-          axisLabelVisible: true,
-          title: `ENTRADA ($${activeSetup.entryPrice})`,
-        });
+    // Scenarios Lines (Autonomous AI Entry, SL, TP 1:4)
+    if (showScenarios && scenarios && scenarios.length > 0) {
+      const activeScenario = [...scenarios].reverse().find(
+        (s) =>
+          ['SCENARIO_MONITORING', 'APPROACHING_ZONE', 'IN_ZONE', 'REVALIDATION_REQUESTED', 'AI_REVALIDATING', 'ENTRY_VALIDATED'].includes(s.status) &&
+          s.direction !== 'NEUTRAL' &&
+          Number.isFinite(s.targetEntry) &&
+          Number.isFinite(s.stopLossPrice)
+      );
+      if (activeScenario) {
+        try {
+          const entryLine = candleSeriesRef.current.createPriceLine({
+            price: activeScenario.targetEntry,
+            color: '#3b82f6', // Blue
+            lineWidth: 2,
+            lineStyle: 0, // Solid
+            axisLabelVisible: true,
+            title: `ENTRADA IA ($${activeScenario.targetEntry.toFixed(1)})`,
+          });
 
-        const slLine = candleSeriesRef.current.createPriceLine({
-          price: activeSetup.stopLossPrice,
-          color: '#ef4444', // Red
-          lineWidth: 2,
-          lineStyle: 0,
-          axisLabelVisible: true,
-          title: `SL ($${activeSetup.stopLossPrice})`,
-        });
+          const slLine = candleSeriesRef.current.createPriceLine({
+            price: activeScenario.stopLossPrice,
+            color: '#ef4444', // Red
+            lineWidth: 2,
+            lineStyle: 0,
+            axisLabelVisible: true,
+            title: `SL ESTRUCTURAL ($${activeScenario.stopLossPrice.toFixed(1)})`,
+          });
 
-        const tpLine = candleSeriesRef.current.createPriceLine({
-          price: activeSetup.takeProfitPrice,
-          color: '#10b981', // Green
-          lineWidth: 2,
-          lineStyle: 0,
-          axisLabelVisible: true,
-          title: `TP (${activeSetup.riskReward!.netRR.toFixed(2)}R neto)`,
-        });
+          const tpPrice = activeScenario.target14Price || activeScenario.target12Price;
+          if (tpPrice && Number.isFinite(tpPrice)) {
+            const tpLine = candleSeriesRef.current.createPriceLine({
+              price: tpPrice,
+              color: '#10b981', // Green
+              lineWidth: 2,
+              lineStyle: 0,
+              axisLabelVisible: true,
+              title: `TP 1:4 IA ($${tpPrice.toFixed(1)})`,
+            });
+            priceLinesRef.current.push(tpLine);
+          }
 
-        priceLinesRef.current.push(entryLine, slLine, tpLine);
-      } catch {}
+          priceLinesRef.current.push(entryLine, slLine);
+        } catch {}
       }
     }
-  }, [fvgs, setups, showFvg, showSetups]);
+  }, [fvgs, scenarios, showFvg, showScenarios]);
 
   const activeCandle = hoverData || currentCandle || (candles.length > 0 ? candles[candles.length - 1] : null);
   const priceColor =
@@ -490,14 +498,14 @@ export function CandleChart({
             ● FVG / Zonas
           </button>
           <button
-            onClick={() => setShowSetups(!showSetups)}
+            onClick={() => setShowScenarios(!showScenarios)}
             className={`px-2 py-0.5 rounded-md border transition-all ${
-              showSetups
+              showScenarios
                 ? 'border-[var(--color-brand,#FF6600)] bg-[var(--color-brand,#FF6600)]/10 text-[var(--color-brand,#FF6600)] font-bold'
                 : 'border-slate-800 text-slate-500 hover:text-slate-300'
             }`}
           >
-            ● Setups 1:4 (SL/TP)
+            ● Escenario IA (SL/TP)
           </button>
         </div>
       </div>

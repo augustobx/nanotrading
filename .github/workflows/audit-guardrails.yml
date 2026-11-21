@@ -59,6 +59,27 @@ jobs:
           done
           exit "$failed"
 
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NODE_ENV: test
+      CONFIG_MASTER_KEY: audit-ci-only-ephemeral-key-never-use-in-production-2026
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Run autonomous architecture consolidation integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::autonomous-architecture-consolidation.test.ts"
+          cd backend && npx --no-install tsx --test tests/integration/autonomous-architecture-consolidation.test.ts
+          echo "::endgroup::"
+
   docker-images:
     runs-on: ubuntu-latest
     timeout-minutes: 20
