@@ -43,7 +43,8 @@ services:
       NODE_ENV: production
       PORT: 3001
       TIMEZONE: America/Argentina/Buenos_Aires
-      DB_TYPE: postgres
+      DB_TYPE: sqlite
+      DB_SQLITE_PATH: /app/data/trading.db
       DB_HOST: postgres
       DB_PORT: 5432
       DB_NAME: ${DB_NAME:-nanolabs_trading}
@@ -61,6 +62,8 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - nanolabs_trading_data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -111,3 +114,5 @@ volumes:
     name: nanolabs_trading_pgdata
   nanolabs_trading_redisdata:
     name: nanolabs_trading_redisdata
+  nanolabs_trading_data:
+    name: nanolabs_trading_data

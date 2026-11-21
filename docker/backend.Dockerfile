@@ -28,6 +28,8 @@ COPY --from=builder /app/backend/package.json ./backend/
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/backend/dist ./backend/dist
 
+RUN mkdir -p /app/data
+
 EXPOSE 3001
 
 CMD ["node", "backend/dist/index.js"]

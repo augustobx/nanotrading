@@ -29,15 +29,23 @@ export class DatabaseService {
   private selectNotifLogStmt: any;
   private selectActiveSignalsStmt: any;
   private updateSignalMetricsStmt: any;
+  private dbPath: string;
 
   constructor(customPath?: string) {
     const dbPath = customPath || config.storage.sqlitePath;
+    this.dbPath = dbPath;
 
     // Ensure directory exists if not memory
     if (dbPath !== ':memory:') {
       const dir = path.dirname(dbPath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
+      }
+      // Create automatic rolling safety backup if database exists
+      if (fs.existsSync(dbPath)) {
+        try {
+          fs.copyFileSync(dbPath, `${dbPath}.bak`);
+        } catch { }
       }
     }
 
@@ -2587,8 +2595,29 @@ export class DatabaseService {
     }
   }
 
+  public checkpoint(): void {
+    if (this.isClosed) return;
+    try {
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
+    } catch { }
+  }
+
+  public backup(targetPath?: string): boolean {
+    if (this.isClosed || this.dbPath === ':memory:') return false;
+    try {
+      this.checkpoint();
+      const dest = targetPath || `${this.dbPath}.bak`;
+      fs.copyFileSync(this.dbPath, dest);
+      return true;
+    } catch (err) {
+      console.warn('[Database] Error al crear backup de SQLite:', err);
+      return false;
+    }
+  }
+
   public close(): void {
     this.isClosed = true;
+    this.checkpoint();
     this.db.close();
   }
 }
