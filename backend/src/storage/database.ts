@@ -41,17 +41,15 @@ export class DatabaseService {
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
       }
-      // Create automatic rolling safety backup if database exists
-      if (fs.existsSync(dbPath)) {
-        try {
-          fs.copyFileSync(dbPath, `${dbPath}.bak`);
-        } catch { }
-      }
+      // Back up only AFTER SQLite opens and recovers WAL; copying now can
+      // silently omit transactions that still live in the WAL sidecar.
     }
 
     this.db = new DatabaseSync(dbPath);
     this.init();
     this.prepareStatements();
+    this.db.exec('CREATE TABLE IF NOT EXISTS runtime_flags (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    if (dbPath !== ':memory:' && fs.existsSync(dbPath)) this.backup();
   }
 
   private init(): void {
@@ -2607,29 +2605,51 @@ export class DatabaseService {
     }
   }
 
-  public checkpoint(): void {
-    if (this.isClosed) return;
+  public getKillSwitchState(): boolean | null {
+    const row = this.db.prepare("SELECT value FROM runtime_flags WHERE key='kill_switch'").get() as
+      { value: string } | undefined;
+    return row ? row.value === 'true' : null;
+  }
+
+  public saveKillSwitchState(active: boolean): void {
+    if (this.isClosed) throw new Error('No se puede persistir Kill Switch con DB cerrada');
+    this.db.prepare(`
+      INSERT INTO runtime_flags (key, value) VALUES ('kill_switch', ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    `).run(active ? 'true' : 'false');
+  }
+
+  public checkpoint(): boolean {
+    if (this.isClosed) return false;
     try {
-      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE);');
-    } catch { }
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   public backup(targetPath?: string): boolean {
     if (this.isClosed || this.dbPath === ':memory:') return false;
+    const dest = targetPath || `${this.dbPath}.bak`;
+    const temp = `${dest}.tmp`;
     try {
-      this.checkpoint();
-      const dest = targetPath || `${this.dbPath}.bak`;
-      fs.copyFileSync(this.dbPath, dest);
+      if (!this.checkpoint()) return false;
+      fs.copyFileSync(this.dbPath, temp);
+      fs.renameSync(temp, dest);
       return true;
     } catch (err) {
-      console.warn('[Database] Error al crear backup de SQLite:', err);
+      try { fs.rmSync(temp, { force: true }); } catch {}
+      console.warn('[Database] Error al crear backup consistente de SQLite:', err);
       return false;
     }
   }
 
   public close(): void {
-    this.isClosed = true;
+    if (this.isClosed) return;
     this.checkpoint();
+    this.isClosed = true;
     this.db.close();
   }
+
 }

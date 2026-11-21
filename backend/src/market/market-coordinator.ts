@@ -119,6 +119,8 @@ export class MarketCoordinator extends EventEmitter {
       }
     }
 
+    // A persisted emergency stop must survive process/container restarts.
+    config.security.killSwitchActive = config.security.killSwitchActive || this.db.getKillSwitchState() === true;
     this.riskPolicyManager = new RiskPolicyManager(this.db.getActiveRiskPolicy() || undefined);
     this.bybitCredentialsManager = new BybitCredentialsManager(this.db.getBybitCredentials() || undefined);
     this.aiRouter = new AiModelRouter(this.db.getRouterConfig() || undefined);
@@ -546,6 +548,7 @@ export class MarketCoordinator extends EventEmitter {
   }
 
   public setKillSwitch(active: boolean, reason?: string): void {
+    this.db.saveKillSwitchState(active);
     config.security.killSwitchActive = active;
     this.db.logEvent('WARN', 'Security', `Kill Switch ${active ? 'ACTIVATED' : 'DEACTIVATED'}: ${reason || 'Acción administrativa'}`);
     if (active) {
