@@ -426,6 +426,70 @@ Responde estrictamente en JSON:
         return { scenario: updated, reason };
       }
 
+      // Portfolio-wide limits apply to AI decisions too, not just preset strategies.
+      // This check is deliberately after recalculating at the LATEST market price.
+      if (!this.mockEvaluator) {
+        const limits = riskPolicy;
+        const now = Date.now();
+        const day = new Date(now);
+        day.setUTCHours(0, 0, 0, 0);
+        const dayStart = day.getTime();
+        const weekStart = now - 7 * 86400000;
+        const existing = this.db.getSignals(5000);
+        const closed = existing.filter((t: any) =>
+          ['COMPLETED_TP', 'COMPLETED_SL'].includes(t.status) &&
+          Number.isFinite(t.exitTime) && Number.isFinite(t.realizedNetPnlUsdt)
+        );
+        const todayLoss = -closed.filter((t: any) => t.exitTime >= dayStart)
+          .reduce((total: number, t: any) => total + Number(t.realizedNetPnlUsdt), 0);
+        const weeklyLoss = -closed.filter((t: any) => t.exitTime >= weekStart)
+          .reduce((total: number, t: any) => total + Number(t.realizedNetPnlUsdt), 0);
+        const entriesToday = existing.filter((t: any) =>
+          Number.isFinite(t.simulatedEntryTime) && t.simulatedEntryTime >= dayStart).length;
+        const closedMostRecent = closed.sort((a: any, b: any) => b.exitTime - a.exitTime);
+        let lossStreak = 0;
+        for (const trade of closedMostRecent) {
+          if (trade.realizedNetPnlUsdt >= 0) break;
+          lossStreak++;
+        }
+        const active = this.coordinator.getSignalStateMachine().getActiveSignals();
+        const activeNotional = active.reduce((sum, signal) =>
+          sum + Math.max(0, signal.positionSizeBTC || 0) * signal.entryPrice, 0);
+        const eligible = [riskCalc.calculation12, riskCalc.calculation14]
+          .filter((r) => r?.isValid);
+        const proposedNotional = Math.max(0, ...eligible.map((r) => r!.notionalValueUSDT));
+        const nextLoss = Math.max(0, ...eligible.map((r) => r!.netLossUSDT));
+        const dayMax = Math.min(limits.maxDailyLossUsdt,
+          limits.capitalUsdt * limits.maxDailyLossPercent / 100);
+        const weekMax = Math.min(limits.maxWeeklyLossUsdt,
+          limits.capitalUsdt * limits.maxWeeklyLossPercent / 100);
+        const slUsdt = Math.abs(currentPrice - scenario.stopLossPrice);
+        const capUsdt = limits.stopLossCeilings.maxSlDistanceUsdt;
+        const monetaryCap = limits.stopLossCeilings.maxMonetaryLossUsdt;
+        const atrCap = limits.stopLossCeilings.maxSlDistanceAtrMultiplier;
+        const atr15m = this.coordinator.getSetupEngine?.()?.getAnalysis?.('15m')?.atr;
+        const violations = [
+          todayLoss + nextLoss > dayMax + 1e-8 && 'Límite diario de pérdidas',
+          weeklyLoss + nextLoss > weekMax + 1e-8 && 'Límite semanal de pérdidas',
+          entriesToday >= limits.maxDailyEntries && 'Máximo de entradas diarias',
+          lossStreak >= limits.maxConsecutiveLosses && 'Racha máxima de pérdidas',
+          activeNotional + proposedNotional > limits.maxSimultaneousExposureUsdt &&
+            'Exposición máxima de cartera',
+          capUsdt.enabled && slUsdt > capUsdt.value && 'Distancia máxima SL en USDT',
+          monetaryCap.enabled && nextLoss > monetaryCap.value && 'Pérdida monetaria máxima de SL',
+          atrCap.enabled && (!Number.isFinite(atr15m) ||
+            slUsdt > (atr15m as number) * atrCap.value) && 'Distancia máxima SL en ATR',
+        ].filter(Boolean);
+        if (violations.length) {
+          const reason = 'Restricciones de riesgo: ' + violations.join('; ');
+          const updated = this.scenarioRegistry.transitionStatus(
+            scenario.id, 'CANCELLED', reason, { currentPrice })!;
+          if (watchPlan) watchPlan.status = 'CANCELLED';
+          this.notifyCancelled(scenario, reason);
+          return { scenario: updated, reason };
+        }
+      }
+
       const updated = this.scenarioRegistry.transitionStatus(
         scenario.id,
         'ENTRY_VALIDATED',
