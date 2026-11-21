@@ -128,6 +128,10 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
   private startTimer(): void {
     if (this.timer) {
       clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (!this.isRunning || !this.config.enabled) {
+      return;
     }
     const intervalMs = Math.max(1, this.config.intervalMinutes) * 60 * 1000;
     this.timer = setInterval(() => {
@@ -282,7 +286,12 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       updatedAt: Date.now(),
     };
     this.db.saveDiscoverySchedulerConfig(this.config);
-    this.startTimer(); // Restart timer with new interval
+    if (this.isRunning && this.config.enabled) {
+      this.startTimer(); // Restart timer with new interval
+    } else if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
     return { ...this.config };
   }
 
