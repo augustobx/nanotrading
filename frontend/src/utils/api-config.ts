@@ -51,3 +51,14 @@ export function getWebSocketLiveUrl(): string {
 
   return 'ws://localhost:3001/ws/live';
 }
+
+/** Admin mutations require a validated session AND the session-bound CSRF token. */
+export async function getAdminMutationHeaders(): Promise<Record<string, string>> {
+  const response = await fetch(`${getApiBaseUrl()}/api/v1/auth/status`, { credentials: 'include' });
+  if (!response.ok) throw new Error('No se pudo validar la sesión administrativa');
+  const session = await response.json();
+  if (!session.authenticated || !session.csrfToken) {
+    throw new Error('Iniciá sesión como administrador antes de ejecutar esta acción');
+  }
+  return { 'Content-Type': 'application/json', 'x-csrf-token': session.csrfToken };
+}

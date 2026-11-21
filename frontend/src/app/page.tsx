@@ -50,7 +50,7 @@ interface TickerData {
   openInterest: number;
 }
 
-import { getApiBaseUrl, getWebSocketLiveUrl } from '../utils/api-config';
+import { getApiBaseUrl, getWebSocketLiveUrl, getAdminMutationHeaders } from '../utils/api-config';
 
 const getApiBase = getApiBaseUrl;
 const getWsUrl = getWebSocketLiveUrl;
@@ -129,13 +129,12 @@ export default function DashboardPage() {
 
   const handleCancelSignal = async (signalId: string) => {
     try {
-      await fetch(`${getApiBase()}/api/v1/signals/${signalId}/cancel`, {
+      const response = await fetch(`${getApiBase()}/api/v1/signals/${signalId}/cancel`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: await getAdminMutationHeaders(),
         credentials: 'include',
       });
+      if (!response.ok) throw new Error('No se pudo cancelar la señal');
       setActiveSignals((prev) => prev.filter((s) => s.id !== signalId));
     } catch {}
   };
@@ -151,9 +150,7 @@ export default function DashboardPage() {
     try {
       const res = await fetch(`${getApiBase()}/api/v1/kill-switch`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: await getAdminMutationHeaders(),
         credentials: 'include',
         body: JSON.stringify({ active: nextState, reason: 'Acción manual panel usuario' }),
       });

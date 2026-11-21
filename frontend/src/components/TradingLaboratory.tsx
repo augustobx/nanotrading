@@ -20,7 +20,7 @@ import {
   ArrowDownRight,
   Filter,
 } from 'lucide-react';
-import { getApiBaseUrl } from '../utils/api-config';
+import { getApiBaseUrl, getAdminMutationHeaders } from '../utils/api-config';
 
 interface MetricGroup {
   totalTrades: number;
@@ -159,7 +159,8 @@ export default function TradingLaboratory() {
     try {
       const res = await fetch(`${apiBase}/api/v1/backtest/run`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAdminMutationHeaders(),
+        credentials: 'include',
         body: JSON.stringify({
           symbol: 'BTCUSDT',
           days,
@@ -192,7 +193,8 @@ export default function TradingLaboratory() {
     try {
       const res = await fetch(`${apiBase}/api/v1/backtest/data/import`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await getAdminMutationHeaders(),
+        credentials: 'include',
         body: JSON.stringify({ days }),
       });
       if (res.ok) {
