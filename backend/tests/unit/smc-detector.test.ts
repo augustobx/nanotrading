@@ -25,9 +25,9 @@ test('SmcDetector - Swing detection strictly prevents look-ahead bias', () => {
     createCandle(1, 102, 108, 100, 106),
     createCandle(2, 106, 112, 104, 110),
     createCandle(3, 110, 125, 108, 120), // Peak (Swing High)
-    createCandle(4, 120, 118, 112, 115),
-    createCandle(5, 115, 114, 108, 110),
-    createCandle(6, 110, 108, 102, 105), // rightBars = 3 ends here
+    createCandle(4, 116, 118, 112, 115),
+    createCandle(5, 113, 114, 108, 110),
+    createCandle(6, 105, 108, 102, 105), // rightBars = 3 ends here
     createCandle(7, 105, 104, 98, 100),
   ];
 
@@ -79,7 +79,7 @@ test('SmcDetector - Break of Structure (BOS) and Liquidity Sweep', () => {
     createCandle(3, 110, 120, 108, 115), // Swing High at 120
     createCandle(4, 115, 116, 110, 112),
     createCandle(5, 112, 113, 106, 108),
-    createCandle(6, 108, 107, 101, 104), // Swing confirmed here (idx 6)
+    createCandle(6, 105, 107, 101, 104), // Swing confirmed here (idx 6)
     // Candle 7: Liquidity Sweep (pokes above 120 to 123, but closes at 117 with top rejection wick)
     createCandle(7, 104, 123, 103, 117),
     // Candle 8: Full break and close above 120 -> BOS
