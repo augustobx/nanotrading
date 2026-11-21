@@ -733,8 +733,8 @@ export function AiTradingIntelligence() {
                     <th className="pb-2">Zona Operativa</th>
                     <th className="pb-2">Niveles Verif.</th>
                     <th className="pb-2">Stop Loss</th>
-                    <th className="pb-2">Target 1:2</th>
-                    <th className="pb-2">Target 1:4</th>
+                    <th className="pb-2">Objetivo cercano (R neto)</th>
+                    <th className="pb-2">Objetivo extendido (R neto)</th>
                     <th className="pb-2">Distancia</th>
                     <th className="pb-2">Estado</th>
                     <th className="pb-2">Modelos / Costo</th>
@@ -836,7 +836,10 @@ export function AiTradingIntelligence() {
                           ) : sc.target14Price ? (
                             <div>
                               <span className="text-emerald-300 font-bold">${sc.target14Price.toFixed(1)}</span>
-                              <span className="text-[10px] text-emerald-400/80 ml-1">({sc.netRR14}R)</span>
+                              <span className="text-[10px] text-emerald-400/80 ml-1">({sc.netRR14 ?? '—'}R)</span>
+                              {typeof sc.netRR14 === 'number' && sc.netRR14 < 4 && (
+                                <div className="text-[9px] text-amber-400 mt-0.5" title="El objetivo histórico no alcanza un R:R neto de 4.0">No califica 4R</div>
+                              )}
                             </div>
                           ) : (
                             <span className="text-slate-600">---</span>
