@@ -123,7 +123,17 @@ export function AiTradingIntelligence() {
   const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
   const [scenarioDetail, setScenarioDetail] = useState<ScenarioDetail | null>(null);
   const [filterRR, setFilterRR] = useState<'ALL' | 'RR_BOTH' | 'RR_1_2' | 'RR_1_4'>('ALL');
-  const [filterKind, setFilterKind] = useState<'ALL' | 'TRADE_SCENARIO' | 'NEUTRAL_OBSERVATION' | 'COMPLETED' | 'INACTIVE'>('ALL');
+  const [filterCategory, setFilterCategory] = useState<
+    | 'ALL'
+    | 'HIPOTESIS'
+    | 'EN_VIGILANCIA'
+    | 'SENALES_VALIDADAS'
+    | 'PAPER_ABIERTAS'
+    | 'PAPER_CERRADAS'
+    | 'DESCARTADAS'
+    | 'OBSERVACIONES_NEUTRALES'
+  >('ALL');
+  const [filterPeriod, setFilterPeriod] = useState<'ALL' | 'POST_FIXES' | 'HISTORIC_PRE_FIXES'>('ALL');
   const [showCostAudit, setShowCostAudit] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isDiscovering, setIsDiscovering] = useState(false);
@@ -279,22 +289,84 @@ export function AiTradingIntelligence() {
     }
   };
 
-  // Filter scenarios
-  const filteredScenarios = scenarios.filter((s) => {
-    const isNeutral = s.kind === 'NEUTRAL_OBSERVATION' || s.direction === 'NEUTRAL';
-    const isCompleted = s.status === 'COMPLETED';
-    const isInactive = ['INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status);
+  const PR41_DEPLOY_TIMESTAMP = 1795294311000; // 2026-11-21 17:51:51 ART (Despliegue commit dd23db1)
 
-    if (filterKind === 'TRADE_SCENARIO') {
-      if (isNeutral || isCompleted || isInactive) return false;
-    } else if (filterKind === 'NEUTRAL_OBSERVATION') {
-      if (!isNeutral || isCompleted || isInactive) return false;
-    } else if (filterKind === 'COMPLETED') {
-      if (!isCompleted) return false;
-    } else if (filterKind === 'INACTIVE') {
-      if (!isInactive) return false;
+  const getScenarioCategory = (s: Scenario): 'HIPOTESIS' | 'EN_VIGILANCIA' | 'SENALES_VALIDADAS' | 'PAPER_ABIERTAS' | 'PAPER_CERRADAS' | 'DESCARTADAS' | 'OBSERVACIONES_NEUTRALES' => {
+    const isNeutral = s.kind === 'NEUTRAL_OBSERVATION' || s.direction === 'NEUTRAL';
+    if (isNeutral) return 'OBSERVACIONES_NEUTRALES';
+    if (['INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)) return 'DESCARTADAS';
+    if (['COMPLETED', 'COMPLETED_TP', 'COMPLETED_SL'].includes(s.status)) return 'PAPER_CERRADAS';
+    if (['TRACKING', 'ENTRY_TRIGGERED'].includes(s.status)) return 'PAPER_ABIERTAS';
+    if (['ENTRY_VALIDATED', 'ALERT_SENT'].includes(s.status)) return 'SENALES_VALIDADAS';
+    if (['SCENARIO_MONITORING', 'APPROACHING_ZONE', 'IN_ZONE', 'WAITING_CONFIRMATION', 'REVALIDATION_REQUESTED', 'AI_REVALIDATING', 'SCENARIO_REGISTERED'].includes(s.status)) return 'EN_VIGILANCIA';
+    return 'HIPOTESIS';
+  };
+
+  const getNaturalLanguageExplanation = (s: Scenario) => {
+    const isPostFix = s.discoveryTimestamp >= PR41_DEPLOY_TIMESTAMP;
+    const isNeutral = s.direction === 'NEUTRAL' || s.kind === 'NEUTRAL_OBSERVATION';
+    
+    let quePaso = '';
+    let queFalta = '';
+    let queHaceAhora = '';
+    let resultado = '';
+
+    if (isNeutral) {
+      quePaso = `Descubierto ${isPostFix ? 'bajo PR 4.1' : 'en versión previa'}. La IA identificó consolidación en rango sin ventaja técnica direccional.`;
+      if (s.status === 'COMPLETED') {
+        queFalta = 'Ninguna. La observación concluyó.';
+        queHaceAhora = 'Archivado. Ruptura de rango confirmada que activó nuevo ciclo de descubrimiento.';
+        resultado = 'OBSERVACIÓN FINALIZADA · SIN OPERACIÓN (0.00 USDT arriesgados).';
+      } else if (s.status === 'NO_TRADE_OBSERVATION') {
+        queFalta = `Ruptura del techo ($${s.entryZoneMax.toFixed(1)}) o piso ($${s.entryZoneMin.toFixed(1)}) en vela cerrada de ${s.timeframe}.`;
+        queHaceAhora = 'Vigilancia algorítmica 24/7 sin consumo de tokens de IA.';
+        resultado = 'EN VIGILANCIA · SIN OPERACIÓN';
+      } else {
+        queFalta = 'Vigencia temporal agotada sin ruptura.';
+        queHaceAhora = 'Inactivo.';
+        resultado = `DESCARTADA: ${s.rejectionReason || s.status} · SIN OPERACIÓN`;
+      }
+    } else {
+      quePaso = `Hipótesis ${s.direction} descubierta para ${s.timeframe} basada en ${s.structureType}.`;
+      if (['INVALIDATED', 'CANCELLED', 'EXPIRED'].includes(s.status)) {
+        queFalta = 'No alcanzó validación de entrada o fue invalidado antes.';
+        queHaceAhora = 'Archivado en historial de hipótesis.';
+        resultado = `SIN OPERACIÓN · Descartado antes de entrada (${s.rejectionReason || s.status})`;
+      } else if (['ENTRY_VALIDATED', 'ALERT_SENT'].includes(s.status)) {
+        queFalta = `Precio de mercado alcanzando zona de entrada [${s.entryZoneMin.toFixed(1)} - ${s.entryZoneMax.toFixed(1)}].`;
+        queHaceAhora = 'Autorizado por IA · Esperando tick de mercado para iniciar paper trade.';
+        resultado = 'SEÑAL AUTORIZADA · ENTRADA PENDIENTE';
+      } else if (['TRACKING', 'ENTRY_TRIGGERED'].includes(s.status)) {
+        queFalta = 'Evolución del precio hacia TP o SL.';
+        queHaceAhora = 'En seguimiento activo de papel con $100 USDT de riesgo de referencia.';
+        resultado = 'OPERACIÓN SIMULADA EN CURSO';
+      } else {
+        queFalta = `Aproximación a zona operativa [${s.entryZoneMin.toFixed(1)} - ${s.entryZoneMax.toFixed(1)}] y reevaluación dual.`;
+        queHaceAhora = 'Vigilando precio de mercado 24/7 sin llamadas de IA.';
+        resultado = 'EN VIGILANCIA · SIN OPERACIÓN';
+      }
     }
 
+    return { quePaso, queFalta, queHaceAhora, resultado, isPostFix };
+  };
+
+  // Filter scenarios
+  const filteredScenarios = scenarios.filter((s) => {
+    // 1. Period filter (Antes / Después de fixes)
+    if (filterPeriod === 'POST_FIXES' && s.discoveryTimestamp < PR41_DEPLOY_TIMESTAMP) {
+      return false;
+    }
+    if (filterPeriod === 'HISTORIC_PRE_FIXES' && s.discoveryTimestamp >= PR41_DEPLOY_TIMESTAMP) {
+      return false;
+    }
+
+    // 2. Operational category filter
+    if (filterCategory !== 'ALL') {
+      const cat = getScenarioCategory(s);
+      if (cat !== filterCategory) return false;
+    }
+
+    // 3. R:R mode filter
     if (filterRR === 'ALL') return true;
     if (filterRR === 'RR_BOTH') return s.rrModeAvailable === 'RR_BOTH';
     if (filterRR === 'RR_1_2') return s.rrModeAvailable === 'RR_1_2' || s.rrModeAvailable === 'RR_BOTH';
@@ -310,30 +382,39 @@ export function AiTradingIntelligence() {
   // and connection tests must still be counted by the persisted database.
   const totalAiCost: number | null = configSummary?.aiAccounting?.lifetimeGrossSpendUsd ?? null;
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string, direction?: string) => {
+    const isNeutral = direction === 'NEUTRAL';
     switch (status) {
       case 'NO_TRADE_OBSERVATION':
         return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-700/60 text-slate-200 border border-slate-500/60">OBSERVACIÓN: ESPERAR (NEUTRAL)</span>;
       case 'COMPLETED':
-        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40">COMPLETADO · RUPTURA CONFIRMADA</span>;
+        return isNeutral ? (
+          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-500/20 text-cyan-300 border border-cyan-500/40" title="Observación neutral finalizada por ruptura de rango. No es un trade ejecutado.">
+            RUPTURA DE RANGO · OBSERVACIÓN FINALIZADA (SIN TRADE)
+          </span>
+        ) : (
+          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+            PAPER CERRADA (TP)
+          </span>
+        );
       case 'APPROACHING_ZONE':
-        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">APROXIMÁNDOSE (≤0.35%)</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">EN VIGILANCIA · APROXIMÁNDOSE (≤0.35%)</span>;
       case 'IN_ZONE':
       case 'REVALIDATION_REQUESTED':
-        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40 animate-pulse">EN ZONA · REEVALUANDO</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40 animate-pulse">EN ZONA · REEVALUANDO POR IA</span>;
       case 'ENTRY_VALIDATED':
-        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">ENTRADA VALIDADA</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">SEÑAL VALIDADA · PENDIENTE DE ENTRADA</span>;
       case 'SCENARIO_REGISTERED':
       case 'SCENARIO_MONITORING':
-        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30">EN VIGILANCIA</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30">EN VIGILANCIA (ESPERANDO PRECIO)</span>;
       case 'WAITING_CONFIRMATION':
-        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">ESPERANDO CONFIRMACIÓN</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">EN VIGILANCIA · ESPERANDO CONFIRMACIÓN</span>;
       case 'INVALIDATED':
-        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30">INVALIDADO (SL TOCADO)</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-400 border border-rose-500/30" title="Estructura rota antes de entrada. Cero riesgo ejecutado.">DESCARTADA: INVALIDACIÓN ESTRUCTURAL (PRE-ENTRADA)</span>;
       case 'EXPIRED':
-        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-700/40 text-slate-400 border border-slate-700">CADUCADO (TIEMPO)</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-700/40 text-slate-400 border border-slate-700" title="Vigencia agotada sin llegar a zona. Cero riesgo ejecutado.">DESCARTADA: TIEMPO AGOTADO (SIN TRADE)</span>;
       case 'CANCELLED':
-        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/20">CANCELADO</span>;
+        return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/15 text-rose-300 border border-rose-500/20" title="Descartada por IA ante falta de confluencia o riesgo. Cero trade.">DESCARTADA: CANCELADA POR IA (SIN TRADE)</span>;
       default:
         return <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300">{status}</span>;
     }
@@ -547,46 +628,114 @@ export function AiTradingIntelligence() {
           </button>
         </div>
 
-        {/* Filter by Kind and R:R Mode in Scenarios tab */}
+        {/* Filter by Category, Period and R:R Mode in Scenarios tab */}
         {activeTab === 'scenarios' && (
-          <div className="space-y-1.5 pb-1.5">
-            <div className="flex items-center flex-wrap gap-2.5">
+          <div className="space-y-2 pb-2">
+            {/* Operational Categories Filter */}
+            <div className="flex items-center flex-wrap gap-1.5">
+              <span className="text-[11px] text-slate-400 font-mono font-semibold mr-1">Categoría:</span>
+              <button
+                onClick={() => setFilterCategory('ALL')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                  filterCategory === 'ALL' ? 'bg-orange-500 text-white shadow-sm' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+              >
+                TODOS ({scenarios.length})
+              </button>
+              <button
+                onClick={() => setFilterCategory('HIPOTESIS')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                  filterCategory === 'HIPOTESIS' ? 'bg-blue-600 text-white shadow-sm' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+                title="Descubiertas por IA, todavía no operables"
+              >
+                HIPÓTESIS ({scenarios.filter((s) => getScenarioCategory(s) === 'HIPOTESIS').length})
+              </button>
+              <button
+                onClick={() => setFilterCategory('EN_VIGILANCIA')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                  filterCategory === 'EN_VIGILANCIA' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+                title="Esperando precio o condiciones"
+              >
+                EN VIGILANCIA ({scenarios.filter((s) => getScenarioCategory(s) === 'EN_VIGILANCIA').length})
+              </button>
+              <button
+                onClick={() => setFilterCategory('SENALES_VALIDADAS')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                  filterCategory === 'SENALES_VALIDADAS' ? 'bg-amber-600 text-white shadow-sm' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+                title="IA autorizó, pero aún no necesariamente hubo entrada simulada"
+              >
+                SEÑALES VALIDADAS ({scenarios.filter((s) => getScenarioCategory(s) === 'SENALES_VALIDADAS').length})
+              </button>
+              <button
+                onClick={() => setFilterCategory('PAPER_ABIERTAS')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                  filterCategory === 'PAPER_ABIERTAS' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+                title="Entrada simulada registrada, en seguimiento"
+              >
+                PAPER ABIERTAS ({scenarios.filter((s) => getScenarioCategory(s) === 'PAPER_ABIERTAS').length})
+              </button>
+              <button
+                onClick={() => setFilterCategory('PAPER_CERRADAS')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                  filterCategory === 'PAPER_CERRADAS' ? 'bg-teal-600 text-white shadow-sm' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+                title="TP o SL alcanzado con resultado neto realizado"
+              >
+                PAPER CERRADAS ({scenarios.filter((s) => getScenarioCategory(s) === 'PAPER_CERRADAS').length})
+              </button>
+              <button
+                onClick={() => setFilterCategory('DESCARTADAS')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                  filterCategory === 'DESCARTADAS' ? 'bg-rose-700 text-white shadow-sm' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+                title="Invalidadas, expiradas o canceladas sin entrar al mercado"
+              >
+                DESCARTADAS SIN ENTRADA ({scenarios.filter((s) => getScenarioCategory(s) === 'DESCARTADAS').length})
+              </button>
+              <button
+                onClick={() => setFilterCategory('OBSERVACIONES_NEUTRALES')}
+                className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                  filterCategory === 'OBSERVACIONES_NEUTRALES' ? 'bg-amber-600 text-white shadow-sm' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                }`}
+                title="Vigilancia de mercado sin dirección operativa"
+              >
+                OBSERVACIONES NEUTRALES ({scenarios.filter((s) => getScenarioCategory(s) === 'OBSERVACIONES_NEUTRALES').length})
+              </button>
+            </div>
+
+            {/* Sub-toolbar: Period & R:R */}
+            <div className="flex items-center flex-wrap gap-3 pt-1 border-t border-slate-800/60">
               <div className="flex items-center gap-1">
-                <span className="text-[11px] text-slate-500 font-mono">Filtro:</span>
+                <span className="text-[11px] text-slate-400 font-mono font-semibold mr-1">Período:</span>
                 <button
-                  onClick={() => setFilterKind('ALL')}
-                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterKind === 'ALL' ? 'bg-orange-500 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
+                  onClick={() => setFilterPeriod('ALL')}
+                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                    filterPeriod === 'ALL' ? 'bg-slate-200 text-slate-900 font-extrabold' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
                 >
                   TODOS ({scenarios.length})
                 </button>
                 <button
-                  onClick={() => setFilterKind('TRADE_SCENARIO')}
-                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterKind === 'TRADE_SCENARIO' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
+                  onClick={() => setFilterPeriod('POST_FIXES')}
+                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                    filterPeriod === 'POST_FIXES' ? 'bg-emerald-500 text-slate-950 font-extrabold' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
+                  title="Escenarios descubiertos tras el despliegue del PR 4.1 (commit dd23db1)"
                 >
-                  TRADES ({scenarios.filter((s) => s.kind !== 'NEUTRAL_OBSERVATION' && s.direction !== 'NEUTRAL' && !['COMPLETED', 'INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)).length})
+                  PR 4.1+ ACTUAL ({scenarios.filter((s) => s.discoveryTimestamp >= PR41_DEPLOY_TIMESTAMP).length})
                 </button>
                 <button
-                  onClick={() => setFilterKind('NEUTRAL_OBSERVATION')}
-                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterKind === 'NEUTRAL_OBSERVATION' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
+                  onClick={() => setFilterPeriod('HISTORIC_PRE_FIXES')}
+                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold transition-colors ${
+                    filterPeriod === 'HISTORIC_PRE_FIXES' ? 'bg-slate-600 text-white font-extrabold' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
+                  }`}
+                  title="Escenarios descubiertos bajo versiones anteriores a los fixes"
                 >
-                  OBSERVACIONES ({scenarios.filter((s) => (s.kind === 'NEUTRAL_OBSERVATION' || s.direction === 'NEUTRAL') && !['COMPLETED', 'INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)).length})
-                </button>
-                <button
-                  onClick={() => setFilterKind('COMPLETED')}
-                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterKind === 'COMPLETED' ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
-                >
-                  COMPLETADOS ({scenarios.filter((s) => s.status === 'COMPLETED').length})
-                </button>
-                <button
-                  onClick={() => setFilterKind('INACTIVE')}
-                  className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterKind === 'INACTIVE' ? 'bg-rose-800 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
-                >
-                  INVALIDADOS ({scenarios.filter((s) => ['INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)).length})
+                  HISTÓRICO PREVIO ({scenarios.filter((s) => s.discoveryTimestamp < PR41_DEPLOY_TIMESTAMP).length})
                 </button>
               </div>
 
@@ -724,19 +873,19 @@ export function AiTradingIntelligence() {
         <div className="space-y-4">
           {filteredScenarios.length > 0 ? (
             <div className="overflow-x-auto custom-scrollbar">
-              <table className="w-full text-left font-mono text-xs min-w-[1050px]">
+              <table className="w-full text-left font-mono text-xs min-w-[1100px]">
                 <thead>
                   <tr className="border-b border-slate-800 text-slate-500 text-[11px]">
                     <th className="pb-2">ID / Hora</th>
-                    <th className="pb-2">Tipo / Origen</th>
-                    <th className="pb-2">Dirección</th>
+                    <th className="pb-2">Período / Origen</th>
+                    <th className="pb-2">Categoría / Dir</th>
                     <th className="pb-2">Zona Operativa</th>
                     <th className="pb-2">Niveles Verif.</th>
                     <th className="pb-2">Stop Loss</th>
-                    <th className="pb-2">Objetivo cercano (R neto)</th>
-                    <th className="pb-2">Objetivo extendido (R neto)</th>
+                    <th className="pb-2">Obj. Cercano (R)</th>
+                    <th className="pb-2">Obj. Extendido (R)</th>
                     <th className="pb-2">Distancia</th>
-                    <th className="pb-2">Estado</th>
+                    <th className="pb-2">Estado Operativo</th>
                     <th className="pb-2">Modelos / Costo</th>
                     <th className="pb-2 text-right">Acción</th>
                   </tr>
@@ -748,131 +897,181 @@ export function AiTradingIntelligence() {
                     const isSelected = selectedScenarioId === sc.id;
                     const trigger = sc.triggerSource || 'AUTOMATIC_SCHEDULER';
                     const verifiedCount = sc.verifiedLevels?.length || 0;
+                    const exp = getNaturalLanguageExplanation(sc);
 
                     return (
-                      <tr
-                        key={sc.id}
-                        className={`hover:bg-slate-900/60 transition-colors ${isSelected ? 'bg-slate-900/80 border-l-2 border-orange-500' : ''
+                      <React.Fragment key={sc.id}>
+                        <tr
+                          className={`hover:bg-slate-900/60 transition-colors ${
+                            isSelected ? 'bg-slate-900/80 border-l-2 border-orange-500' : ''
                           }`}
-                      >
-                        <td className="py-2.5 text-slate-300">
-                          <div className="font-bold">{sc.id}</div>
-                          <div className="text-[10px] text-slate-500">
-                            {new Date(sc.discoveryTimestamp).toLocaleTimeString('es-AR')}
-                          </div>
-                        </td>
-                        <td className="py-2.5">
-                          <div className="flex flex-col gap-0.5">
-                            <span
-                              className={`px-1.5 py-0.2 rounded text-[9px] font-bold inline-block w-fit ${isNeutral
-                                ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
-                                : 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                                }`}
-                            >
-                              {isNeutral ? 'NEUTRAL_WATCH' : 'TRADE'}
-                            </span>
-                            <span className="text-[9px] text-slate-500">
-                              {trigger === 'MANUAL_TRIGGER'
-                                ? 'MANUAL'
-                                : trigger === 'NEUTRAL_BREAKOUT'
-                                  ? 'BREAKOUT'
-                                  : 'AUTO'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="py-2.5">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${isNeutral
-                              ? 'bg-slate-700/50 text-slate-300'
-                              : isLong
-                                ? 'bg-emerald-500/15 text-emerald-400'
-                                : 'bg-rose-500/15 text-rose-400'
-                              }`}
-                          >
-                            {sc.direction} · {sc.timeframe}
-                          </span>
-                        </td>
-                        <td className="py-2.5 text-slate-200 font-semibold">
-                          {isNeutral ? (
-                            <span className="text-amber-300 font-mono text-[11px]">
-                              Rango [${sc.entryZoneMin.toFixed(1)} - ${sc.entryZoneMax.toFixed(1)}]
-                            </span>
-                          ) : (
-                            <span>${sc.entryZoneMin.toFixed(1)} - ${sc.entryZoneMax.toFixed(1)}</span>
-                          )}
-                        </td>
-                        <td className="py-2.5">
-                          {verifiedCount > 0 ? (
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30 flex items-center gap-1 w-fit">
-                              <ShieldCheck className="w-3 h-3 text-blue-400" />
-                              {verifiedCount} Verif.
-                            </span>
-                          ) : (
-                            <span className="text-slate-600 text-[10px]">---</span>
-                          )}
-                        </td>
-                        <td className="py-2.5">
-                          {isNeutral ? (
-                            <span className="text-slate-500 font-bold text-[10px]">N/A (Observación)</span>
-                          ) : (
-                            <span className="text-rose-400 font-semibold">${sc.stopLossPrice.toFixed(1)}</span>
-                          )}
-                        </td>
-                        <td className="py-2.5">
-                          {isNeutral ? (
-                            <span className="text-slate-600">---</span>
-                          ) : sc.target12Price ? (
-                            <div>
-                              <span className="text-blue-300 font-bold">${sc.target12Price.toFixed(1)}</span>
-                              <span className="text-[10px] text-blue-400/80 ml-1">({sc.netRR12}R)</span>
+                        >
+                          <td className="py-2.5 text-slate-300">
+                            <div className="font-bold">{sc.id}</div>
+                            <div className="text-[10px] text-slate-500">
+                              {new Date(sc.discoveryTimestamp).toLocaleTimeString('es-AR')}
                             </div>
-                          ) : (
-                            <span className="text-slate-600">---</span>
-                          )}
-                        </td>
-                        <td className="py-2.5">
-                          {isNeutral ? (
-                            <span className="text-slate-600">---</span>
-                          ) : sc.target14Price ? (
-                            <div>
-                              <span className="text-emerald-300 font-bold">${sc.target14Price.toFixed(1)}</span>
-                              <span className="text-[10px] text-emerald-400/80 ml-1">({sc.netRR14 ?? '—'}R)</span>
-                              {typeof sc.netRR14 === 'number' && sc.netRR14 < 4 && (
-                                <div className="text-[9px] text-amber-400 mt-0.5" title="El objetivo histórico no alcanza un R:R neto de 4.0">No califica 4R</div>
+                          </td>
+                          <td className="py-2.5">
+                            <div className="flex flex-col gap-1">
+                              {sc.discoveryTimestamp >= PR41_DEPLOY_TIMESTAMP ? (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 w-fit">
+                                  PR 4.1+ (ACTUAL)
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-slate-800 text-slate-400 border border-slate-700 w-fit">
+                                  HISTÓRICO PREVIO
+                                </span>
                               )}
+                              <span className="text-[9px] text-slate-500">
+                                {trigger === 'MANUAL_TRIGGER'
+                                  ? 'MANUAL'
+                                  : trigger === 'NEUTRAL_BREAKOUT'
+                                  ? 'RUPTURA RANGO'
+                                  : 'AUTO SCHEDULER'}
+                              </span>
                             </div>
-                          ) : (
-                            <span className="text-slate-600">---</span>
-                          )}
-                        </td>
-                        <td className="py-2.5">
-                          <div className="flex items-center gap-1.5">
-                            <div className="w-16 bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                              <div
-                                className={`h-full ${(sc.distanceToZonePct || 0) <= 0.35 ? 'bg-amber-400' : 'bg-blue-400'
-                                  }`}
-                                style={{ width: `${Math.min(100, Math.max(5, 100 - (sc.distanceToZonePct || 0) * 20))}%` }}
-                              />
+                          </td>
+                          <td className="py-2.5">
+                            <div className="flex flex-col gap-1">
+                              <span
+                                className={`px-1.5 py-0.2 rounded text-[9px] font-bold inline-block w-fit ${
+                                  isNeutral
+                                    ? 'bg-amber-500/15 text-amber-300 border border-amber-500/30'
+                                    : ['INVALIDATED', 'CANCELLED', 'EXPIRED'].includes(sc.status)
+                                    ? 'bg-rose-500/15 text-rose-300 border border-rose-500/30'
+                                    : 'bg-blue-500/15 text-blue-300 border border-blue-500/30'
+                                }`}
+                              >
+                                {isNeutral
+                                  ? 'OBSERVACIÓN NEUTRAL'
+                                  : ['INVALIDATED', 'CANCELLED', 'EXPIRED'].includes(sc.status)
+                                  ? 'DESCARTADA SIN ENTRADA'
+                                  : ['ENTRY_VALIDATED', 'ALERT_SENT'].includes(sc.status)
+                                  ? 'SEÑAL VALIDADA'
+                                  : ['TRACKING', 'ENTRY_TRIGGERED'].includes(sc.status)
+                                  ? 'PAPER EN CURSO'
+                                  : 'HIPÓTESIS'}
+                              </span>
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold w-fit ${
+                                  isNeutral
+                                    ? 'bg-slate-700/50 text-slate-300'
+                                    : isLong
+                                    ? 'bg-emerald-500/15 text-emerald-400'
+                                    : 'bg-rose-500/15 text-rose-400'
+                                }`}
+                              >
+                                {sc.direction} · {sc.timeframe}
+                              </span>
                             </div>
-                            <span className="text-[11px] text-slate-300">
-                              {sc.distanceToZonePct !== undefined ? `${sc.distanceToZonePct.toFixed(2)}%` : '---'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="py-2.5">{getStatusBadge(sc.status)}</td>
-                        <td className="py-2.5 text-[11px] text-slate-400">
-                          <div>{sc.modelsUsed.join(', ')}</div>
-                          <div className="text-[10px] text-slate-500">${(sc.aiCostUsd || 0).toFixed(4)} USD</div>
-                        </td>
-                        <td className="py-2.5 text-right">
-                          <button
-                            onClick={() => setSelectedScenarioId(isSelected ? null : sc.id)}
-                            className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-orange-400 hover:text-orange-300 font-bold text-xs transition-colors cursor-pointer"
-                          >
-                            {isSelected ? 'Cerrar' : 'Ver Detalle'}
-                          </button>
-                        </td>
-                      </tr>
+                          </td>
+                          <td className="py-2.5 text-slate-200 font-semibold">
+                            {isNeutral ? (
+                              <span className="text-amber-300 font-mono text-[11px]">
+                                Rango [${sc.entryZoneMin.toFixed(1)} - ${sc.entryZoneMax.toFixed(1)}]
+                              </span>
+                            ) : (
+                              <span>${sc.entryZoneMin.toFixed(1)} - ${sc.entryZoneMax.toFixed(1)}</span>
+                            )}
+                          </td>
+                          <td className="py-2.5">
+                            {verifiedCount > 0 ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-500/15 text-blue-300 border border-blue-500/30 flex items-center gap-1 w-fit">
+                                <ShieldCheck className="w-3 h-3 text-blue-400" />
+                                {verifiedCount} Verif.
+                              </span>
+                            ) : (
+                              <span className="text-slate-600 text-[10px]">---</span>
+                            )}
+                          </td>
+                          <td className="py-2.5">
+                            {isNeutral ? (
+                              <span className="text-slate-500 font-bold text-[10px]">N/A (Observación)</span>
+                            ) : (
+                              <span className="text-rose-400 font-semibold">${sc.stopLossPrice.toFixed(1)}</span>
+                            )}
+                          </td>
+                          <td className="py-2.5">
+                            {isNeutral ? (
+                              <span className="text-slate-600">---</span>
+                            ) : sc.target12Price ? (
+                              <div>
+                                <span className="text-blue-300 font-bold">${sc.target12Price.toFixed(1)}</span>
+                                <span className="text-[10px] text-blue-400/80 ml-1">({sc.netRR12}R)</span>
+                              </div>
+                            ) : (
+                              <span className="text-slate-600">---</span>
+                            )}
+                          </td>
+                          <td className="py-2.5">
+                            {isNeutral ? (
+                              <span className="text-slate-600">---</span>
+                            ) : sc.target14Price ? (
+                              <div>
+                                <span className="text-emerald-300 font-bold">${sc.target14Price.toFixed(1)}</span>
+                                <span className="text-[10px] text-emerald-400/80 ml-1">({sc.netRR14 ?? '—'}R)</span>
+                                {typeof sc.netRR14 === 'number' && sc.netRR14 < 4 && (
+                                  <div className="text-[9px] text-amber-400 mt-0.5" title="El objetivo histórico no alcanza un R:R neto de 4.0">No califica 4R</div>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-slate-600">---</span>
+                            )}
+                          </td>
+                          <td className="py-2.5">
+                            <div className="flex items-center gap-1.5">
+                              <div className="w-16 bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full ${(sc.distanceToZonePct || 0) <= 0.35 ? 'bg-amber-400' : 'bg-blue-400'}`}
+                                  style={{ width: `${Math.min(100, Math.max(5, 100 - (sc.distanceToZonePct || 0) * 20))}%` }}
+                                />
+                              </div>
+                              <span className="text-[11px] text-slate-300">
+                                {sc.distanceToZonePct !== undefined ? `${sc.distanceToZonePct.toFixed(2)}%` : '---'}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-2.5">{getStatusBadge(sc.status, sc.direction)}</td>
+                          <td className="py-2.5 text-[11px] text-slate-400">
+                            <div>{sc.modelsUsed.join(', ')}</div>
+                            <div className="text-[10px] text-slate-500">${(sc.aiCostUsd || 0).toFixed(4)} USD</div>
+                          </td>
+                          <td className="py-2.5 text-right">
+                            <button
+                              onClick={() => setSelectedScenarioId(isSelected ? null : sc.id)}
+                              className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-orange-400 hover:text-orange-300 font-bold text-xs transition-colors cursor-pointer"
+                            >
+                              {isSelected ? 'Cerrar' : 'Ver Detalle'}
+                            </button>
+                          </td>
+                        </tr>
+                        {/* Natural Language Explanation Row */}
+                        <tr className="bg-slate-950/40 border-b border-slate-800/80">
+                          <td colSpan={12} className="py-2 px-3">
+                            <div className="grid grid-cols-1 md:grid-cols-4 gap-2.5 text-[11px] font-mono leading-relaxed">
+                              <div className="text-slate-400">
+                                <span className="text-orange-400 font-bold mr-1">Qué pasó:</span>
+                                {exp.quePaso}
+                              </div>
+                              <div className="text-slate-400">
+                                <span className="text-sky-400 font-bold mr-1">Qué falta:</span>
+                                {exp.queFalta}
+                              </div>
+                              <div className="text-slate-400">
+                                <span className="text-amber-400 font-bold mr-1">Qué hace ahora:</span>
+                                {exp.queHaceAhora}
+                              </div>
+                              <div>
+                                <span className="text-slate-300 font-bold mr-1">Resultado:</span>
+                                <span className={exp.resultado.includes('SIN OPERACIÓN') ? 'text-slate-400 font-medium' : 'text-emerald-400 font-bold'}>
+                                  {exp.resultado}
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
@@ -1349,112 +1548,229 @@ export function AiTradingIntelligence() {
           </div>
 
           {paperTab === 'ACTIVE' ? (
-            activeSignals.length === 0 ? (
-              <div className="p-8 text-center text-slate-500 font-mono text-xs border border-dashed border-slate-800 rounded-xl bg-slate-950/40">
-                No hay posiciones virtuales activas en seguimiento en este momento. Las posiciones se inician automáticamente al validar una hipótesis en zona.
-              </div>
-            ) : (
-              <div className="overflow-x-auto custom-scrollbar">
-                <table className="w-full text-left text-xs font-mono text-slate-300">
-                  <thead className="bg-[#0b0e17] text-slate-400 text-[11px] uppercase tracking-wider border-b border-slate-800">
-                    <tr>
-                      <th className="py-2.5 px-3">ID Señal</th>
-                      <th className="py-2.5 px-2">Dir</th>
-                      <th className="py-2.5 px-3 text-right">Entrada</th>
-                      <th className="py-2.5 px-3 text-right">Stop Loss</th>
-                      <th className="py-2.5 px-3 text-right">Take Profit</th>
-                      <th className="py-2.5 px-3 text-right">R:R Neto</th>
-                      <th className="py-2.5 px-3 text-right">MFE (R)</th>
-                      <th className="py-2.5 px-3 text-right">MAE (R)</th>
-                      <th className="py-2.5 px-3 text-center">Estado</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/60">
-                    {activeSignals.map((sig: any) => (
-                      <tr key={sig.id} className="hover:bg-slate-900/60 transition-colors">
-                        <td className="py-2.5 px-3 text-slate-300 font-sans text-xs">{sig.id}</td>
-                        <td className="py-2.5 px-2">
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${sig.direction === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {sig.direction}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-3 text-right text-slate-100">${sig.entryPrice?.toFixed(1)}</td>
-                        <td className="py-2.5 px-3 text-right text-rose-400/80">${sig.stopLossPrice?.toFixed(1)}</td>
-                        <td className="py-2.5 px-3 text-right text-emerald-400/80">${sig.takeProfitPrice?.toFixed(1)}</td>
-                        <td className="py-2.5 px-3 text-right text-amber-400 font-bold">+{sig.netRR?.toFixed(2)}R</td>
-                        <td className="py-2.5 px-3 text-right text-slate-300">+{sig.mfeR?.toFixed(2)}R</td>
-                        <td className="py-2.5 px-3 text-right text-slate-400">-{sig.maeR?.toFixed(2)}R</td>
-                        <td className="py-2.5 px-3 text-center">
-                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40">
-                            {sig.state}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )
+            (() => {
+              const openPaper = activeSignals.filter((s: any) => s.simulatedEntryTime && ['TRACKING', 'ENTRY_TRIGGERED'].includes(s.state));
+              const authorizedPending = activeSignals.filter((s: any) => !s.simulatedEntryTime && ['ENTRY_VALIDATED', 'ALERT_SENT'].includes(s.state));
+
+              return (
+                <div className="space-y-4">
+                  {/* Real Simulated Open Positions */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono font-bold text-emerald-400 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        POSICIONES PAPER EN SEGUIMIENTO ACTIVO ({openPaper.length})
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-500">Con entrada simulada y riesgo virtual activo</span>
+                    </div>
+                    {openPaper.length === 0 ? (
+                      <div className="p-6 text-center text-slate-500 font-mono text-xs border border-dashed border-slate-800 rounded-xl bg-slate-950/40">
+                        No hay posiciones virtuales abiertas en este momento. Las posiciones se inician únicamente cuando el precio de mercado ejecuta la entrada simulada.
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full text-left text-xs font-mono text-slate-300">
+                          <thead className="bg-[#0b0e17] text-slate-400 text-[11px] uppercase tracking-wider border-b border-slate-800">
+                            <tr>
+                              <th className="py-2.5 px-3">ID Señal</th>
+                              <th className="py-2.5 px-2">Dir</th>
+                              <th className="py-2.5 px-3 text-right">Entrada</th>
+                              <th className="py-2.5 px-3 text-right">Stop Loss</th>
+                              <th className="py-2.5 px-3 text-right">Take Profit</th>
+                              <th className="py-2.5 px-3 text-right">R:R Neto Proyectado</th>
+                              <th className="py-2.5 px-3 text-right">MFE (R)</th>
+                              <th className="py-2.5 px-3 text-right">MAE (R)</th>
+                              <th className="py-2.5 px-3 text-center">Estado</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {openPaper.map((sig: any) => (
+                              <tr key={sig.id} className="hover:bg-slate-900/60 transition-colors">
+                                <td className="py-2.5 px-3 text-slate-300 font-sans text-xs">{sig.id}</td>
+                                <td className="py-2.5 px-2">
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${sig.direction === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {sig.direction}
+                                  </span>
+                                </td>
+                                <td className="py-2.5 px-3 text-right text-slate-100">${sig.entryPrice?.toFixed(1)}</td>
+                                <td className="py-2.5 px-3 text-right text-rose-400/80">${sig.stopLossPrice?.toFixed(1)}</td>
+                                <td className="py-2.5 px-3 text-right text-emerald-400/80">${sig.takeProfitPrice?.toFixed(1)}</td>
+                                <td className="py-2.5 px-3 text-right text-amber-400 font-bold">+{sig.netRR?.toFixed(2)}R</td>
+                                <td className="py-2.5 px-3 text-right text-slate-300">+{sig.mfeR?.toFixed(2)}R</td>
+                                <td className="py-2.5 px-3 text-right text-slate-400">-{sig.maeR?.toFixed(2)}R</td>
+                                <td className="py-2.5 px-3 text-center">
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                    TRACKING ACTIVO
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Authorized Signals Waiting For Entry */}
+                  {authorizedPending.length > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-slate-800/60">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-mono font-bold text-amber-400 flex items-center gap-1.5">
+                          <span className="w-2 h-2 rounded-full bg-amber-400" />
+                          SEÑALES AUTORIZADAS · ESPERANDO ENTRADA ({authorizedPending.length})
+                        </span>
+                        <span className="text-[10px] font-mono text-slate-500">Validadas por IA · Sin operación ni riesgo iniciado aún</span>
+                      </div>
+                      <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full text-left text-xs font-mono text-slate-300">
+                          <thead className="bg-[#0b0e17] text-slate-400 text-[11px] uppercase tracking-wider border-b border-slate-800">
+                            <tr>
+                              <th className="py-2 px-3">ID Señal</th>
+                              <th className="py-2 px-2">Dir</th>
+                              <th className="py-2 px-3 text-right">Precio Entrada Esperado</th>
+                              <th className="py-2 px-3 text-right">Stop Loss</th>
+                              <th className="py-2 px-3 text-right">Take Profit</th>
+                              <th className="py-2 px-3 text-right">R:R Neto Objetivo</th>
+                              <th className="py-2 px-3 text-center">Estado Operativo</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {authorizedPending.map((sig: any) => (
+                              <tr key={sig.id} className="hover:bg-slate-900/60 transition-colors">
+                                <td className="py-2 px-3 text-slate-300 font-sans text-xs">{sig.id}</td>
+                                <td className="py-2 px-2">
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${sig.direction === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {sig.direction}
+                                  </span>
+                                </td>
+                                <td className="py-2 px-3 text-right text-amber-300 font-bold">${sig.entryPrice?.toFixed(1)}</td>
+                                <td className="py-2 px-3 text-right text-rose-400/80">${sig.stopLossPrice?.toFixed(1)}</td>
+                                <td className="py-2 px-3 text-right text-emerald-400/80">${sig.takeProfitPrice?.toFixed(1)}</td>
+                                <td className="py-2 px-3 text-right text-amber-400 font-bold">+{sig.netRR?.toFixed(2)}R</td>
+                                <td className="py-2 px-3 text-center">
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                                    AUTORIZADA · ESPERANDO TICK
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()
           ) : (
             (() => {
-              const closed = allSignals.filter((s: any) => ['COMPLETED_TP', 'COMPLETED_SL', 'EXPIRED', 'INVALIDATED', 'CANCELLED'].includes(s.state || s.status));
-              return closed.length === 0 ? (
-                <div className="p-8 text-center text-slate-500 font-mono text-xs border border-dashed border-slate-800 rounded-xl bg-slate-950/40">
-                  Sin historial de posiciones cerradas aún.
-                </div>
-              ) : (
-                <div className="overflow-x-auto custom-scrollbar">
-                  <table className="w-full text-left text-xs font-mono text-slate-300">
-                    <thead className="bg-[#0b0e17] text-slate-400 text-[11px] uppercase tracking-wider border-b border-slate-800">
-                      <tr>
-                        <th className="py-2.5 px-3">ID Señal</th>
-                        <th className="py-2.5 px-2">Dir</th>
-                        <th className="py-2.5 px-3 text-right">Entrada</th>
-                        <th className="py-2.5 px-3 text-right">Stop Loss</th>
-                        <th className="py-2.5 px-3 text-right">Take Profit</th>
-                        <th className="py-2.5 px-3 text-right">Resultado</th>
-                        <th className="py-2.5 px-3 text-center">Estado Final</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60">
-                      {closed.map((sig: any) => {
-                        const st = sig.state || sig.status;
-                        const isTp = st === 'COMPLETED_TP';
-                        const isSl = st === 'COMPLETED_SL';
-                        return (
-                          <tr key={sig.id} className="hover:bg-slate-900/60 transition-colors">
-                            <td className="py-2.5 px-3 text-slate-300 font-sans text-xs">{sig.id}</td>
-                            <td className="py-2.5 px-2">
-                              <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${sig.direction === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                {sig.direction}
-                              </span>
-                            </td>
-                            <td className="py-2.5 px-3 text-right text-slate-100">${sig.entryPrice?.toFixed(1)}</td>
-                            <td className="py-2.5 px-3 text-right text-rose-400/80">${sig.stopLossPrice?.toFixed(1)}</td>
-                            <td className="py-2.5 px-3 text-right text-emerald-400/80">${sig.takeProfitPrice?.toFixed(1)}</td>
-                            <td className="py-2.5 px-3 text-right font-bold">
-                              {isTp ? (
-                                <span className="text-emerald-400">+{sig.netRR?.toFixed(2) || '2.00'}R</span>
-                              ) : isSl ? (
-                                <span className="text-rose-400">-1.00R</span>
-                              ) : (
-                                <span className="text-slate-500">0.00R</span>
-                              )}
-                            </td>
-                            <td className="py-2.5 px-3 text-center">
-                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                isTp ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' :
-                                isSl ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' :
-                                'bg-slate-800 text-slate-400'
-                              }`}>
-                                {st}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
+              const closedTrades = allSignals.filter((s: any) => ['COMPLETED_TP', 'COMPLETED_SL'].includes(s.state || s.status));
+              const discardedSetups = allSignals.filter((s: any) => ['EXPIRED', 'INVALIDATED', 'CANCELLED'].includes(s.state || s.status));
+
+              return (
+                <div className="space-y-4">
+                  {/* Real Closed Trades with Realized PnL */}
+                  <div className="space-y-2">
+                    <span className="text-xs font-mono font-bold text-slate-200">
+                      OPERACIONES SIMULADAS EJECUTADAS Y CERRADAS ({closedTrades.length})
+                    </span>
+                    {closedTrades.length === 0 ? (
+                      <div className="p-6 text-center text-slate-500 font-mono text-xs border border-dashed border-slate-800 rounded-xl bg-slate-950/40">
+                        Sin operaciones de paper trading cerradas aún.
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full text-left text-xs font-mono text-slate-300">
+                          <thead className="bg-[#0b0e17] text-slate-400 text-[11px] uppercase tracking-wider border-b border-slate-800">
+                            <tr>
+                              <th className="py-2.5 px-3">ID Señal</th>
+                              <th className="py-2.5 px-2">Dir</th>
+                              <th className="py-2.5 px-3 text-right">Entrada</th>
+                              <th className="py-2.5 px-3 text-right">Salida</th>
+                              <th className="py-2.5 px-3 text-right">PnL Neto Realizado</th>
+                              <th className="py-2.5 px-3 text-right">R Neto Realizado</th>
+                              <th className="py-2.5 px-3 text-center">Resultado</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {closedTrades.map((sig: any) => {
+                              const isTp = (sig.state || sig.status) === 'COMPLETED_TP';
+                              return (
+                                <tr key={sig.id} className="hover:bg-slate-900/60 transition-colors">
+                                  <td className="py-2.5 px-3 text-slate-300 font-sans text-xs">{sig.id}</td>
+                                  <td className="py-2.5 px-2">
+                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${sig.direction === 'LONG' ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                      {sig.direction}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-right text-slate-100">${sig.entryPrice?.toFixed(1)}</td>
+                                  <td className="py-2.5 px-3 text-right text-slate-100">${sig.exitPrice?.toFixed(1) || '—'}</td>
+                                  <td className="py-2.5 px-3 text-right font-bold">
+                                    <span className={isTp ? 'text-emerald-400' : 'text-rose-400'}>
+                                      {sig.realizedNetPnlUsdt !== undefined ? `${sig.realizedNetPnlUsdt > 0 ? '+' : ''}$${sig.realizedNetPnlUsdt.toFixed(2)} USD` : '—'}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-right font-bold">
+                                    <span className={isTp ? 'text-emerald-400' : 'text-rose-400'}>
+                                      {sig.realizedNetR !== undefined ? `${sig.realizedNetR > 0 ? '+' : ''}${sig.realizedNetR.toFixed(2)}R` : (isTp ? '+2.00R' : '-1.00R')}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-center">
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                      isTp ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                    }`}>
+                                      {isTp ? 'TAKE PROFIT' : 'STOP LOSS'}
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Discarded Setups without Trade */}
+                  {discardedSetups.length > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-slate-800/60">
+                      <span className="text-xs font-mono font-bold text-slate-400">
+                        SEÑALES DESCARTADAS ANTES DE ENTRADA · SIN OPERACIÓN ({discardedSetups.length})
+                      </span>
+                      <div className="overflow-x-auto custom-scrollbar">
+                        <table className="w-full text-left text-xs font-mono text-slate-400">
+                          <thead className="bg-[#0b0e17] text-slate-500 text-[11px] uppercase tracking-wider border-b border-slate-800">
+                            <tr>
+                              <th className="py-2 px-3">ID Señal</th>
+                              <th className="py-2 px-2">Dir</th>
+                              <th className="py-2 px-3 text-right">Precio Entrada</th>
+                              <th className="py-2 px-3 text-right">Stop Loss</th>
+                              <th className="py-2 px-3 text-right">PnL / R</th>
+                              <th className="py-2 px-3 text-center">Motivo de Fin</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60">
+                            {discardedSetups.map((sig: any) => (
+                              <tr key={sig.id} className="hover:bg-slate-900/60 transition-colors">
+                                <td className="py-2 px-3 text-slate-400 font-sans text-xs">{sig.id}</td>
+                                <td className="py-2 px-2">{sig.direction}</td>
+                                <td className="py-2 px-3 text-right">${sig.entryPrice?.toFixed(1)}</td>
+                                <td className="py-2 px-3 text-right">${sig.stopLossPrice?.toFixed(1)}</td>
+                                <td className="py-2 px-3 text-right font-mono italic text-slate-500">
+                                  SIN OPERACIÓN
+                                </td>
+                                <td className="py-2 px-3 text-center">
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-400">
+                                    {sig.state || sig.status} (PRE-ENTRADA)
+                                  </span>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })()

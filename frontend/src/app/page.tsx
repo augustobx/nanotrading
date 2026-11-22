@@ -455,9 +455,24 @@ export default function DashboardPage() {
     }
   }
 
-  // Count longs / shorts in active scenarios
-  const longScenariosCount = scenarios.filter((s) => s.direction === 'LONG').length;
-  const shortScenariosCount = scenarios.filter((s) => s.direction === 'SHORT').length;
+  // Count longs / shorts / neutral in ACTIVE scenarios (excluding completed, invalidated, expired, cancelled)
+  const activeScenariosList = scenarios.filter(
+    (s) => !['COMPLETED', 'INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)
+  );
+  const activeLongsCount = activeScenariosList.filter((s) => s.direction === 'LONG').length;
+  const activeShortsCount = activeScenariosList.filter((s) => s.direction === 'SHORT').length;
+  const activeNeutralCount = activeScenariosList.filter(
+    (s) => s.direction === 'NEUTRAL' || s.status === 'NO_TRADE_OBSERVATION'
+  ).length;
+  const historicDiscardedCount = scenarios.filter((s) =>
+    ['INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)
+  ).length;
+
+  // Paper tracking signals separation
+  const openPaperSignals = activeSignals.filter((s) => s.simulatedEntryTime && s.state === 'TRACKING');
+  const validatedPendingSignals = activeSignals.filter(
+    (s) => !s.simulatedEntryTime && ['ENTRY_VALIDATED', 'ALERT_SENT'].includes(s.state)
+  );
 
   // Filtered system events for audit tab
   const filteredEvents = systemEvents.filter((ev) => {
@@ -670,14 +685,16 @@ export default function DashboardPage() {
                 <Brain className="w-3.5 h-3.5 text-purple-500" />
               </div>
               <div className="text-sm font-display font-extrabold text-slate-900 dark:text-white truncate">
-                {longScenariosCount > shortScenariosCount
+                {activeLongsCount > activeShortsCount
                   ? 'Sesgo Alza (Bullish)'
-                  : shortScenariosCount > longScenariosCount
+                  : activeShortsCount > activeLongsCount
                   ? 'Sesgo Baja (Bearish)'
-                  : 'Consenso Neutral'}
+                  : activeNeutralCount > 0
+                  ? 'Consenso Neutral (Rango)'
+                  : 'Sin hipótesis activas'}
               </div>
               <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1 truncate">
-                {longScenariosCount} Long · {shortScenariosCount} Short detectados
+                {activeLongsCount} Long · {activeShortsCount} Short · {activeNeutralCount} Rango activo ({historicDiscardedCount} archivadas sin trade)
               </p>
             </div>
 
@@ -730,10 +747,10 @@ export default function DashboardPage() {
                 <TrendingUp className="w-3.5 h-3.5 text-indigo-500" />
               </div>
               <div className="text-sm font-display font-extrabold text-slate-900 dark:text-white truncate">
-                {activeSignals.length} en Tracking
+                {openPaperSignals.length} en Tracking
               </div>
               <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1 truncate">
-                {signals.length} señales registradas históricas
+                {openPaperSignals.length} abiertas · {validatedPendingSignals.length} autorizadas sin entrar · {signals.length} históricas
               </p>
             </div>
           </div>
