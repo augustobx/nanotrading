@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { effectiveRRMinimums } from '../engine/effective-rr.js';
 import {
   MarketState,
   Ticker,
@@ -279,13 +280,13 @@ export class MarketCoordinator extends EventEmitter {
       if (scenario && scenario.direction !== 'NEUTRAL') {
         // Alternative targets do NOT allocate two independently sized positions.
         const policy = this.riskPolicyManager.getPolicy();
-        const modes = policy.rrTargetMode === 'RR_1_2' ?
-          ['RR_1_2', 'RR_1_4'] : ['RR_1_4', 'RR_1_2'];
+        const modes = policy.rrTargetMode === 'RR_1_2' ? ['RR_1_2'] :
+          policy.rrTargetMode === 'RR_1_4' ? ['RR_1_4'] : ['RR_1_4', 'RR_1_2'];
         for (const mode of modes) {
           const calc = mode === 'RR_1_4' ? riskCalc?.calculation14 : riskCalc?.calculation12;
           const target = mode === 'RR_1_4' ? scenario.target14Price : scenario.target12Price;
-          const requiredRR = Math.max(policy.minNetRR,
-            mode === 'RR_1_4' ? policy.minRRExtended : policy.minRRShort);
+          const minimums = effectiveRRMinimums(policy);
+          const requiredRR = mode === 'RR_1_4' ? minimums.extended : minimums.short;
           if (!target || !calc?.isValid || calc.netRR < requiredRR ||
               calc.netLossUSDT <= 0 ||
               calc.netLossUSDT > Math.min(policy.maxRiskPerTradeUsdt,

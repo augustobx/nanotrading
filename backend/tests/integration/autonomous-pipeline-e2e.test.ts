@@ -7,6 +7,7 @@ import { BybitRestClient } from '../../src/bybit/bybit-rest-client.js';
 import { BybitWsClient } from '../../src/bybit/bybit-ws-client.js';
 import { MarketCoordinator } from '../../src/market/market-coordinator.js';
 import { Scenario, AiWatchPlan } from '../../src/ai/scenario-types.js';
+import { MarketMonitorWorker } from '../../src/engine/market-monitor-worker.js';
 
 function makeScenario(
   id: string,
@@ -557,4 +558,50 @@ test('PR 4.1 E2E Pipeline: AlgorithmicWatcher -> AiEntryRevalidation -> MarketCo
     coordinator.stop();
     db.close();
   }
+});
+
+test('Audit fix: authorized scenario reaches a persisted paper fill', async () => {
+  const { coordinator, db } = createPipelineTestRig();
+  const watcher = coordinator.getAlgorithmicWatcher();
+  const machine = coordinator.getSignalStateMachine();
+  const notify = async () => {};
+  const worker = new MarketMonitorWorker({ coordinator, stateMachine: machine, db,
+    telegramNotifier: { notifyApproachingZone: notify, notifyInZone: notify, notifyEntryTriggered: notify } as any,
+    webPushNotifier: {} as any });
+  try {
+    watcher.start(); worker.start();
+    coordinator.getAiRevalidation().setMockEvaluator(() => ({
+      openaiVerdict: 'APPROVE', geminiVerdict: 'APPROVE', reasoning: 'Offline fixture',
+    }));
+    const scenario = makeScenario('audit_paper_fill', 'LONG', 59900, 60100, 60000, 59500, 61200, 62500);
+    scenario.watchPlan = makeWatchPlan(scenario.id, 'LONG', 59900, 60100, 60000, 59500, 61200, 62500);
+    coordinator.getScenarioRegistry().registerScenario(scenario);
+    coordinator.emit('state_updated', { ticker: { lastPrice: 60000, markPrice: 60000, spread: 0.1, spreadPcnt: 0.0001 } });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(machine.getActiveSignals()[0]?.state, 'ENTRY_VALIDATED');
+    coordinator.emit('ticker_updated', { lastPrice: 60000, timestamp: Date.now() });
+    assert.equal(machine.getActiveSignals()[0]?.state, 'TRACKING');
+    assert.ok(db.getSignals(10)[0].simulatedEntryTime);
+    const funnel = db.getDiscoveryFunnel() as any;
+    assert.equal(funnel.authorizedSignals, 1);
+    assert.equal(funnel.paperEntries, 1);
+    assert.equal(funnel.paperClosed, 0);
+
+  } finally { worker.stop(); watcher.stop(); coordinator.stop(); db.close(); }
+});
+
+
+test('Audit fix: selected short target cannot fall back to the extended target below its effective floor', async () => {
+  const { coordinator, db } = createPipelineTestRig();
+  try {
+    coordinator.getRiskPolicyManager().updatePolicy({ rrTargetMode: 'RR_1_2' });
+    coordinator.getAiRevalidation().setMockEvaluator(() => ({ openaiVerdict: 'APPROVE', geminiVerdict: 'APPROVE', reasoning: 'Offline fixture' }));
+    const scenario = makeScenario('audit_disallowed_target', 'LONG', 59900, 60100, 60000, 59500, 61200, 62500);
+    scenario.watchPlan = makeWatchPlan(scenario.id, 'LONG', 59900, 60100, 60000, 59500, 61200, 62500);
+    coordinator.getScenarioRegistry().registerScenario(scenario);
+    const result = await coordinator.getAiRevalidation().revalidate(scenario, 60000);
+    assert.equal(result.scenario.status, 'CANCELLED');
+    assert.match(result.reason!, /R:R neto/);
+    assert.equal(db.getSignals(10).length, 0);
+  } finally { coordinator.stop(); db.close(); }
 });

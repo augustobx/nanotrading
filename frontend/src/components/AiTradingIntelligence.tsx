@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
+import DiscoveryAuditPanel from './DiscoveryAuditPanel';
 import {
   Brain,
   Radar,
@@ -421,7 +422,7 @@ export function AiTradingIntelligence() {
             <span className="text-emerald-400 font-bold flex items-center gap-1">
               <Activity className="w-3.5 h-3.5 text-emerald-400" />
               {schedulerStatus.activeWatchedScenarios > 0
-                ? `VIGILANDO ${schedulerStatus.activeWatchedScenarios} ZONA(S) · SIN IA`
+                ? `VIGILANDO ${schedulerStatus.activeWatchedScenarios} ZONA(S)`
                 : schedulerStatus.discoveryInFlight ? 'DESCUBRIENDO...'
                 : schedulerStatus.providerFailureBackoffUntil &&
                     schedulerStatus.providerFailureBackoffUntil > Date.now()
@@ -458,6 +459,7 @@ export function AiTradingIntelligence() {
       )}
 
       {/* Metrics Ribbon */}
+      <DiscoveryAuditPanel apiBase={apiBase} />
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5">
         <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
           <p className="text-[10px] font-mono text-slate-500 uppercase tracking-wider">Escenarios Activos</p>
@@ -565,7 +567,7 @@ export function AiTradingIntelligence() {
                   className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterKind === 'TRADE_SCENARIO' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
                     }`}
                 >
-                  TRADES ({scenarios.filter((s) => s.kind !== 'NEUTRAL_OBSERVATION' && s.direction !== 'NEUTRAL' && !['COMPLETED', 'INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)).length})
+                  HIPÓTESIS ({scenarios.filter((s) => s.kind !== 'NEUTRAL_OBSERVATION' && s.direction !== 'NEUTRAL' && !['COMPLETED', 'INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)).length})
                 </button>
                 <button
                   onClick={() => setFilterKind('NEUTRAL_OBSERVATION')}
@@ -579,7 +581,7 @@ export function AiTradingIntelligence() {
                   className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${filterKind === 'COMPLETED' ? 'bg-cyan-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
                     }`}
                 >
-                  COMPLETADOS ({scenarios.filter((s) => s.status === 'COMPLETED').length})
+                  RUPTURAS OBSERVADAS ({scenarios.filter((s) => s.status === 'COMPLETED').length})
                 </button>
                 <button
                   onClick={() => setFilterKind('INACTIVE')}
