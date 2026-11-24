@@ -249,7 +249,7 @@ test('Fase 5A - ScenarioRegistry: deduplicates and groups similar proposals from
   }
 });
 
-test('Fase 5A - AI Market Discovery: detects valid scenarios with dual 1:2 and 1:4 targets', async () => {
+test('Fase 5A - AI Market Discovery: preserves both targets but exposes only the target meeting the global 4R floor', async () => {
   const h = createTestHarness();
   try {
     // The production verifier MUST see actual structural anchors; mock-only
@@ -297,8 +297,9 @@ test('Fase 5A - AI Market Discovery: detects valid scenarios with dual 1:2 and 1
     assert.strictEqual(result.scenarios.length, 1);
     const sc = result.scenarios[0];
     assert.strictEqual(sc.direction, 'LONG');
-    assert.strictEqual(sc.rrModeAvailable, 'RR_BOTH');
+    assert.strictEqual(sc.rrModeAvailable, 'RR_1_4');
     assert.ok((sc.netRR12 || 0) >= 2.0);
+    assert.ok((sc.netRR12 || 0) < 4.0);
     assert.ok((sc.netRR14 || 0) >= 4.0);
     assert.strictEqual(result.summary.openaiBias, 'BULLISH');
     assert.strictEqual(result.summary.geminiBias, 'BULLISH');

@@ -26,6 +26,8 @@ import {
 } from './scenario-types.js';
 import { SUPPORTED_TIMEFRAMES, Timeframe } from '../types/market.js';
 import { TechnicalIndicators } from '../engine/indicators.js';
+import { effectiveRRMinimums } from '../engine/effective-rr.js';
+import { classifyDiscovery, type CandidateDecision, type DiscoveryAudit } from './discovery-audit.js';
 
 export interface DiscoveryOptions {
   forceManual?: boolean;
@@ -462,14 +464,25 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     }
 
     this.isDiscovering = true;
+    let audit: DiscoveryAudit | undefined;
     try {
       const triggerSource: TriggerSource = options.triggerSource || (options.forceManual ? 'MANUAL_TRIGGER' : 'AUTOMATIC_SCHEDULER');
       const summary = this.buildMarketIntelligenceSummary();
       const snapshotId = `snap_disc_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+      audit = {
+        id: snapshotId, timestamp: Date.now(), triggerSource, outcome: 'RUNNING',
+        snapshot: structuredClone(summary),
+        policy: structuredClone(this.coordinator.getRiskPolicyManager?.()?.getPolicy?.() || null) as any,
+        providers: { OPENAI: { status: 'NOT_REQUESTED' }, GEMINI: { status: 'NOT_REQUESTED' } }, candidates: [], scenarioIds: [],
+      };
+      // Persist the exact input before spending tokens, including its stable ID.
+      this.db.saveDiscoveryAudit?.(audit);
 
       // Check Hard Budget Limit
       if (this.hardBudgetManager.isBlocked()) {
         const reason = this.hardBudgetManager.getBlockedReason() || 'AI_BUDGET_EXCEEDED';
+        audit.outcome = 'BUDGET_BLOCKED';
+        audit.reason = reason;
         return { scenarios: [], summary, aiCostUsd: 0, skippedReason: reason };
       }
 
@@ -489,23 +502,26 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         ];
 
         for (const cand of candidateScenarios) {
-          const validated = this.validateAndBuildScenario(cand, summary, snapshotId, 0.001);
+          const validated = this.validateAndBuildScenario(cand, summary, snapshotId, 0.001, audit.candidates, audit.policy);
           if (validated) {
-            this.scenarioRegistry.registerScenario(validated);
-            registered.push(validated);
+            this.retireNeutralObservations(snapshotId);
+            this.registerAuditedScenario(validated, audit, registered);
           }
         }
 
-        // If no candidate scenarios were passed and bias is NEUTRAL
-        if (registered.length === 0 && candidateScenarios.length === 0) {
+        audit.outcome = classifyDiscovery(audit.candidates, !!(mockResult.openai || mockResult.gemini));
+        if (registered.length === 0 && (mockResult.openai || mockResult.gemini)) {
           const neutralScenario = this.buildNeutralObservationScenario(summary, snapshotId, 0.001, mockResult.openai, mockResult.gemini, triggerSource);
           if (neutralScenario) {
-            this.scenarioRegistry.registerScenario(neutralScenario);
-            registered.push(neutralScenario);
+            this.annotateObservation(neutralScenario, audit);
+            this.retireNeutralObservations(snapshotId);
+            this.registerAuditedScenario(neutralScenario, audit, registered);
           }
         }
 
         summary.lastDiscoveryTimestamp = Date.now();
+        audit.scenarioIds = registered.map(s => s.id);
+        this.lastSummary = summary;
         this.emit('discovery_completed', { scenarios: registered, summary });
         return { scenarios: registered, summary, aiCostUsd: 0.001 };
       }
@@ -515,6 +531,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       const geminiConfigured = this.geminiAdapter.isConfigured();
 
       if (!openaiConfigured && !geminiConfigured && !options.forceManual) {
+        audit.outcome = 'PROVIDER_UNAVAILABLE';
+        audit.reason = 'NO_AI_PROVIDERS_CONFIGURED';
         return { scenarios: [], summary, aiCostUsd: 0, skippedReason: 'NO_AI_PROVIDERS_CONFIGURED' };
       }
 
@@ -532,9 +550,12 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         this.openaiAdapter.getModel();
       const geminiModel = router?.routeModel('MARKET_DISCOVERY', 'GEMINI', remainingUsd).selectedModel ||
         this.geminiAdapter.getModel();
+      const geminiHealth = this.geminiAdapter.getDiscoveryHealth?.(geminiModel);
+      const geminiPaused = !!geminiHealth && geminiHealth.retryNotBefore > Date.now();
       if (openaiConfigured) providersToQuery.push({ provider: 'OPENAI', model: openaiModel });
-      if (geminiConfigured) providersToQuery.push({ provider: 'GEMINI', model: geminiModel });
+      if (geminiConfigured && !geminiPaused) providersToQuery.push({ provider: 'GEMINI', model: geminiModel });
       if (!summary.dataAvailability.allCriticalDataPresent) {
+        audit.outcome = 'DATA_UNAVAILABLE';
         return { scenarios: [], summary, aiCostUsd: 0, skippedReason: 'MARKET_DATA_NOT_READY' };
       }
       for (const provider of providersToQuery) {
@@ -543,6 +564,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
           task: 'MARKET_DISCOVERY', estimatedTokens: 3500,
         });
         if (!held.allowed || !held.reservationId) {
+          audit.outcome = 'BUDGET_BLOCKED';
+          audit.reason = held.reason || 'AI_BUDGET_EXCEEDED';
           for (const prior of reservations) this.hardBudgetManager.releaseReservation(prior.reservationId);
           return { scenarios: [], summary, aiCostUsd: 0, skippedReason: held.reason || 'AI_BUDGET_EXCEEDED' };
         }
@@ -558,7 +581,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         // Query OpenAI and Gemini for autonomous discovery
         const [resOpenai, resGemini] = await Promise.all([
           openaiConfigured ? this.queryOpenAiDiscovery(summary, openaiModel) : Promise.resolve(null),
-          geminiConfigured ? this.queryGeminiDiscovery(summary, geminiModel) : Promise.resolve(null),
+          geminiConfigured && !geminiPaused ? this.queryGeminiDiscovery(summary, geminiModel) : Promise.resolve(null),
         ]);
         openaiDiscovery = resOpenai;
         geminiDiscovery = resGemini;
@@ -568,7 +591,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
           if (openaiDiscovery.marketAnalysis) summary.openaiAnalysis = openaiDiscovery.marketAnalysis;
           totalCostUsd += openaiDiscovery.costUsd || 0;
           for (const cand of (openaiDiscovery.scenarios || [])) {
-            const sc = this.validateAndBuildScenario({ ...cand, triggerSource }, summary, snapshotId, (openaiDiscovery.costUsd || 0) / Math.max(1, (openaiDiscovery.scenarios || []).length));
+            const sc = this.validateAndBuildScenario({ ...cand, proposedBy: 'OPENAI', triggerSource }, summary, snapshotId, (openaiDiscovery.costUsd || 0) / Math.max(1, (openaiDiscovery.scenarios || []).length), audit.candidates, audit.policy);
             if (sc) {
               sc.openaiInterpretation = {
                 provider: 'OPENAI',
@@ -590,7 +613,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
           if (geminiDiscovery.marketAnalysis) summary.geminiAnalysis = geminiDiscovery.marketAnalysis;
           totalCostUsd += geminiDiscovery.costUsd || 0;
           for (const cand of (geminiDiscovery.scenarios || [])) {
-            const sc = this.validateAndBuildScenario({ ...cand, triggerSource }, summary, snapshotId, (geminiDiscovery.costUsd || 0) / Math.max(1, (geminiDiscovery.scenarios || []).length));
+            const sc = this.validateAndBuildScenario({ ...cand, proposedBy: 'GEMINI', triggerSource }, summary, snapshotId, (geminiDiscovery.costUsd || 0) / Math.max(1, (geminiDiscovery.scenarios || []).length), audit.candidates, audit.policy);
             if (sc) {
               sc.geminiInterpretation = {
                 provider: 'GEMINI',
@@ -608,6 +631,22 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
 
         }
       } finally {
+        for (const [provider, configured, result, model] of [
+          ['OPENAI', openaiConfigured, openaiDiscovery, openaiModel],
+          ['GEMINI', geminiConfigured, geminiDiscovery, geminiModel],
+        ] as const) {
+          audit.providers[provider] = {
+            status: result ? 'SUCCESS' : configured ? 'UNAVAILABLE' : 'NOT_CONFIGURED',
+            model, bias: result?.bias, candidateCount: result?.scenarios?.length,
+            failure: configured && !result ? 'NO_VALID_RESPONSE' : undefined,
+          };
+          if (provider === 'GEMINI' && configured && !result) {
+            const health = this.geminiAdapter.getDiscoveryHealth?.(model);
+            audit.providers[provider].status = geminiPaused ? 'PAUSED' : 'UNAVAILABLE';
+            audit.providers[provider].failure = health?.failureCode || 'NO_VALID_RESPONSE';
+            audit.providers[provider].retryNotBefore = health?.retryNotBefore;
+          }
+        }
         for (const reservation of reservations) {
           const result = reservation.provider === 'OPENAI' ? openaiDiscovery : geminiDiscovery;
           // Missing/invalid responses are uncertain: keep the reserved amount
@@ -626,6 +665,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         }
       }
 
+      audit.outcome = classifyDiscovery(audit.candidates, !!(openaiDiscovery || geminiDiscovery));
       if (!openaiDiscovery && !geminiDiscovery) {
         // Do NOT manufacture a neutral "AI consensus" when both API calls
         // failed or timed out. Budget reservations were already reconciled.
@@ -639,23 +679,60 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       // register a formal NEUTRAL observation scenario (preserving "no operar es una decisión válida")
       if (discoveredScenarios.length === 0) {
         const neutralScenario = this.buildNeutralObservationScenario(summary, snapshotId, totalCostUsd, openaiDiscovery, geminiDiscovery, triggerSource);
-        if (neutralScenario) discoveredScenarios.push(neutralScenario);
+        if (neutralScenario) {
+          this.annotateObservation(neutralScenario, audit);
+          discoveredScenarios.push(neutralScenario);
+        }
       }
 
       // Register all valid scenarios in registry
+      if (discoveredScenarios.length) this.retireNeutralObservations(snapshotId);
       const registered: Scenario[] = [];
       for (const sc of discoveredScenarios) {
-        const saved = this.scenarioRegistry.registerScenario(sc);
-        registered.push(saved);
+        this.registerAuditedScenario(sc, audit, registered);
       }
 
       summary.lastDiscoveryTimestamp = Date.now();
       this.lastSummary = summary;
+      audit.scenarioIds = registered.map(s => s.id);
       this.emit('discovery_completed', { scenarios: registered, summary });
       return { scenarios: registered, summary, aiCostUsd: totalCostUsd };
     } finally {
       this.isDiscovering = false;
+      if (audit) {
+        audit.completedAt = Date.now();
+        if (audit.outcome === 'RUNNING') { audit.outcome = 'ERROR'; audit.reason = 'EXECUTION_FAILED'; }
+        this.db.saveDiscoveryAudit?.(audit);
+      }
     }
+  }
+
+  private registerAuditedScenario(scenario: Scenario, audit: DiscoveryAudit, registered: Scenario[]): void {
+    const saved = this.scenarioRegistry.registerScenario(scenario);
+    // Registry deduplication can replace the proposed ID with a durable existing ID.
+    for (const decision of audit.candidates) {
+      if (decision.scenarioId === scenario.id) decision.scenarioId = saved.id;
+    }
+    const existing = registered.findIndex(s => s.id === saved.id);
+    if (existing >= 0) registered[existing] = saved;
+    else registered.push(saved);
+  }
+
+  private retireNeutralObservations(snapshotId: string): void {
+    for (const old of this.scenarioRegistry.getAllActive()) {
+      if (old.direction === 'NEUTRAL' || old.kind === 'NEUTRAL_OBSERVATION') {
+        this.scenarioRegistry.transitionStatus(old.id, 'CANCELLED',
+          'Observación sustituida por un análisis más reciente', { replacementSnapshotId: snapshotId });
+      }
+    }
+  }
+
+  private annotateObservation(scenario: Scenario, audit: DiscoveryAudit): void {
+    if (audit.outcome !== 'CANDIDATES_REJECTED') return;
+    const reasons = [...new Set(audit.candidates.filter(c => !c.accepted).map(c => c.reason))].join(', ');
+    scenario.rejectionReason = `Candidatos descartados por validación: ${reasons}. Observación algorítmica; no equivale a una conclusión NEUTRAL de la IA.`;
+    scenario.aiMarketThesis = scenario.rejectionReason;
+    if (scenario.watchPlan) scenario.watchPlan.marketThesis = scenario.rejectionReason;
   }
 
   private buildNeutralObservationScenario(
@@ -847,15 +924,28 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     },
     summary: MarketIntelligenceSummary,
     snapshotId: string,
-    aiCostUsd: number
+    aiCostUsd: number,
+    decisions?: CandidateDecision[],
+    policySnapshot?: Record<string, unknown> | null
   ): Scenario | null {
     const symbol = summary.symbol || 'BTCUSDT';
     const currentPrice = summary.currentPrice;
     const direction = candidate.direction;
-    if (!direction || (direction !== 'LONG' && direction !== 'SHORT')) return null;
+    const decision: CandidateDecision = {
+      provider: candidate.proposedBy || 'UNKNOWN', direction,
+      levels: Object.fromEntries(['entryZoneMin', 'entryZoneMax', 'targetEntry', 'stopLossPrice',
+        'structuralStopLoss', 'target12Price', 'target14Price', 'candidateTarget12', 'candidateTarget14']
+        .map(key => [key, Number.isFinite((candidate as any)[key]) ? (candidate as any)[key] : null])),
+      accepted: false, reason: 'UNVALIDATED',
+    };
+    const reject = (reason: string, details?: Record<string, unknown>): null => {
+      decisions?.push({ ...decision, reason, details });
+      return null;
+    };
+    if (!direction || (direction !== 'LONG' && direction !== 'SHORT')) return reject('INVALID_DIRECTION');
 
     const levelCheck = verifyProposedLevels(candidate, summary);
-    if (!levelCheck.isValid) return null;
+    if (!levelCheck.isValid) return reject('UNVERIFIED_STRUCTURAL_LEVELS', { ...levelCheck });
 
     const entryMin = Number(candidate.entryZoneMin);
     const entryMax = Number(candidate.entryZoneMax);
@@ -864,15 +954,15 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
 
     if (![currentPrice, entryMin, entryMax, targetEntry, stopLoss].every(
       (n) => Number.isFinite(n) && n > 0
-    ) || entryMin > entryMax || targetEntry < entryMin || targetEntry > entryMax) return null;
+    ) || entryMin > entryMax || targetEntry < entryMin || targetEntry > entryMax) return reject('INVALID_ENTRY_GEOMETRY');
 
     // Validate sanity of prices (no fake values, no inverted order)
     if (direction === 'LONG') {
-      if (stopLoss >= targetEntry) return null;
-      if (Math.abs(currentPrice - targetEntry) / currentPrice > 0.08) return null;
+      if (stopLoss >= targetEntry) return reject('INVALID_STOP_SIDE');
+      if (Math.abs(currentPrice - targetEntry) / currentPrice > 0.08) return reject('ENTRY_DRIFT', { currentPrice, targetEntry, maxFraction: 0.08 });
     } else {
-      if (stopLoss <= targetEntry) return null;
-      if (Math.abs(currentPrice - targetEntry) / currentPrice > 0.08) return null;
+      if (stopLoss <= targetEntry) return reject('INVALID_STOP_SIDE');
+      if (Math.abs(currentPrice - targetEntry) / currentPrice > 0.08) return reject('ENTRY_DRIFT', { currentPrice, targetEntry, maxFraction: 0.08 });
     }
 
     // Determine candidate structural targets
@@ -880,17 +970,17 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     let target14 = candidate.target14Price || candidate.candidateTarget14;
 
     const riskDistance = Math.abs(targetEntry - stopLoss);
-    if (riskDistance <= 0) return null;
+    if (riskDistance <= 0) return reject('INVALID_RISK_DISTANCE');
 
     // A qualifying mathematical R:R is not itself a structural target.
     // Never fabricate 2.05R / 4.10R price levels when neither analyst supplied one.
-    if (!target12 && !target14) return null;
+    if (!target12 && !target14) return reject('MISSING_STRUCTURAL_TARGET');
     if ((target12 !== undefined && (!Number.isFinite(target12) || target12 <= 0)) ||
-        (target14 !== undefined && (!Number.isFinite(target14) || target14 <= 0))) return null;
+        (target14 !== undefined && (!Number.isFinite(target14) || target14 <= 0))) return reject('INVALID_TARGET');
 
     // Use the actual administrative account policy and the live spread for
     // discovery previews. Hard-coded 10k/1% creates misleading RR/position sizing.
-    const policy = this.coordinator.getRiskPolicyManager?.()?.getPolicy?.();
+    const policy = policySnapshot === undefined ? this.coordinator.getRiskPolicyManager?.()?.getPolicy?.() : policySnapshot as any;
     const ticker = this.coordinator.getMarketState?.()?.ticker;
     const dualCalc = RiskCalculator.calculateDualTargets({
       direction,
@@ -901,7 +991,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       explicit14Price: target14,
       accountBalance: policy?.capitalUsdt ?? 10000,
       riskPercent: policy?.maxRiskPerTradePercent ?? 0.5,
-      spread: ticker && Number.isFinite(ticker.spread) && ticker.spread >= 0 ? ticker.spread : 0.1,
+      spread: Number.isFinite(summary.orderBook?.spread) && summary.orderBook.spread >= 0 ? summary.orderBook.spread :
+        ticker && Number.isFinite(ticker.spread) && ticker.spread >= 0 ? ticker.spread : 0.1,
       minRRShort: policy?.minRRShort ?? 2.0,
       minRRExtended: policy?.minRRExtended ?? 4.0,
       feeStructure: {
@@ -912,15 +1003,21 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
 
     if (dualCalc.qualifiedMode === 'NONE') {
       // Rejects scenarios that don't reach net 1:2
-      return null;
+      return reject('RR_UNQUALIFIED', { calculation12: dualCalc.calculation12, calculation14: dualCalc.calculation14 });
     }
 
+    let effectiveMode = dualCalc.qualifiedMode;
     if (policy) {
+      const minimums = effectiveRRMinimums(policy);
       const valid12 = policy.rrTargetMode !== 'RR_1_4' && dualCalc.calculation12?.isValid &&
-        dualCalc.calculation12.netRR >= Math.max(policy.minNetRR, policy.minRRShort);
+        dualCalc.calculation12.netRR >= minimums.short;
       const valid14 = policy.rrTargetMode !== 'RR_1_2' && dualCalc.calculation14?.isValid &&
-        dualCalc.calculation14.netRR >= Math.max(policy.minNetRR, policy.minRRExtended);
-      if (!valid12 && !valid14) return null;
+        dualCalc.calculation14.netRR >= minimums.extended;
+      if (!valid12 && !valid14) return reject('RR_POLICY_REJECTED', {
+        netRR12: dualCalc.calculation12?.netRR, netRR14: dualCalc.calculation14?.netRR,
+        minimums, rrTargetMode: policy.rrTargetMode, policyVersion: policy.version,
+      });
+      effectiveMode = valid12 && valid14 ? 'RR_BOTH' : valid12 ? 'RR_1_2' : 'RR_1_4';
     }
 
     const id = candidate.id || `scen_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
@@ -1041,7 +1138,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
         tp14: dualCalc.target14Price,
         structuralTarget: candidate.watchPlan?.candidateTakeProfits?.structuralTarget || dualCalc.target14Price,
       },
-      rrEligibility: dualCalc.qualifiedMode,
+      rrEligibility: effectiveMode,
       observableConditions: validatedConditions,
       confirmationSequence: candidate.watchPlan?.confirmationSequence || [
         `1. Mitigación de la zona operativa [${minZone} - ${maxZone}]`,
@@ -1081,7 +1178,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       target14Price: dualCalc.target14Price,
       netRR12: dualCalc.calculation12?.netRR,
       netRR14: dualCalc.calculation14?.netRR,
-      rrModeAvailable: dualCalc.qualifiedMode,
+      rrModeAvailable: effectiveMode,
       uncertaintyLevel: candidate.uncertaintyLevel || 'MEDIUM',
       status: 'SCENARIO_REGISTERED',
       validUntilTimestamp: expirationTimestamp,
@@ -1090,7 +1187,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       invalidationTriggers: validatedInvalidations.map((i) => i.description),
       argumentsFor: candidate.argumentsFor || [
         'Confluencia de soporte/resistencia multitemporal',
-        `Ratio R:R neto calificado para modo ${dualCalc.qualifiedMode}`,
+        `Ratio R:R neto calificado para modo ${effectiveMode}`,
       ],
       argumentsAgainst: candidate.argumentsAgainst || [
         'Volatilidad intradía puede dilatar la mecha',
@@ -1108,6 +1205,7 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       verifiedLevels: levelCheck.verifiedLevels,
     };
 
+    decisions?.push({ ...decision, accepted: true, reason: 'ACCEPTED', scenarioId: scenario.id });
     return scenario;
   }
 
@@ -1130,10 +1228,11 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       const prompt = `Actúa como Analista Principal Cuantitativo y Discrecional de Mercado para NanoLabs AI Trading.
 Tu objetivo es analizar integralmente la estructura técnica de BTCUSDT Perpetual (1D, 4H, 1H, 15m, 5m, 1m, SMC, ICT, order flow, RSI, EMA, VWAP, spreads y contexto).
 Precio actual de BTCUSDT: $${summary.currentPrice} USDT.
+Política vigente: R:R neto mínimo efectivo ${effectiveRRMinimums(this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()).short} para objetivo corto y ${effectiveRRMinimums(this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()).extended} para extendido; modo ${this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()?.rrTargetMode || "RR_BOTH"}.
 
 DIRECTIVAS ESTRICTAS:
 1. Eres un analista autónomo. No dependes de estrategias fijas ni de patrones predefinidos. Analiza libremente la acción del precio y las estructuras de mercado.
-2. Tienes plena libertad para descubrir hipótesis operables LONG o SHORT con confluencia estructural estricta y R:R neto >= 1:2 o 1:4.
+2. Tienes plena libertad para descubrir hipótesis operables LONG o SHORT con confluencia estructural estricta y respetando los mínimos efectivos de la política vigente indicados arriba.
 3. Si el mercado no ofrece una ventaja estadística nítida, la conclusión imperativa es NEUTRAL / NO_TRADE ("No operar es una decisión válida y a menudo la mejor").
 4. Para cada oportunidad seleccionada, diseña un plan de vigilancia determinista (AI_WATCH_PLAN) con condiciones observables en secuencia mediante operadores algorítmicos nativos evaluados en velas cerradas: PRICE_IN_RANGE, CANDLE_PATTERN (BEARISH_ENGULFING, BULLISH_ENGULFING, PIN_BAR, SHOOTING_STAR, HAMMER), LEVEL_REJECTION_WICK (con minWickRatio), STRUCTURE_CLOSE, BREAK_AND_RETEST, SWEEP_AND_RECLAIM, VOLUME_EXPANSION, BOS_CONFIRMED, CHOCH_CONFIRMED, RSI_THRESHOLD, SPREAD_TOLERANCE. Marca automatable: true para estos operadores. Si requieres una confirmación cualitativa no automatizable, se mantendrá automatable: false y requerirá reevaluación.
 5. No inventes probabilidades matemáticas ni porcentajes de acierto calibrados; tu evaluación de confianza es cualitativa.
@@ -1200,7 +1299,8 @@ Responde obligatoriamente en JSON estricto:
 Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
 
       const res = await this.openaiAdapter.evaluateWithCustomPrompt?.(prompt, selectedModel) || null;
-      if (!res) return null;
+      if (!res || !['BULLISH', 'BEARISH', 'NEUTRAL'].includes(res.bias || res.marketAnalysis?.bias) ||
+          (res.scenarios !== undefined && !Array.isArray(res.scenarios))) return null;
       return {
         bias: res.bias || res.marketAnalysis?.bias || 'NEUTRAL',
         reasoning: res.reasoning || res.marketAnalysis?.whatMarketIsDoing || '',
@@ -1237,6 +1337,7 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
       const prompt = `Actúa como Auditor Crítico y Analista Independiente de Mercado para NanoLabs AI Trading.
 Evalúa con máxima objetividad la estructura multitemporal de BTCUSDT y descubre oportunidades técnicas genuinas.
 Precio actual de BTCUSDT: $${summary.currentPrice} USDT.
+Política vigente: R:R neto mínimo efectivo ${effectiveRRMinimums(this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()).short} para objetivo corto y ${effectiveRRMinimums(this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()).extended} para extendido; modo ${this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()?.rrTargetMode || "RR_BOTH"}.
 
 DIRECTIVAS ESTRICTAS:
 1. Sin estrategias preprogramadas obligatorias. Eres libre de evaluar cualquier setup técnico de SMC/ICT o confluencia de mercado.
@@ -1305,8 +1406,9 @@ Responde obligatoriamente en JSON estricto:
 
 Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
 
-      const res = await this.geminiAdapter.evaluateWithCustomPrompt?.(prompt, selectedModel) || null;
-      if (!res) return null;
+      const res = await this.geminiAdapter.evaluateWithCustomPrompt?.(prompt, selectedModel, { discovery: true }) || null;
+      if (!res || !['BULLISH', 'BEARISH', 'NEUTRAL'].includes(res.bias || res.marketAnalysis?.bias) ||
+          (res.scenarios !== undefined && !Array.isArray(res.scenarios))) return null;
       return {
         bias: res.bias || res.marketAnalysis?.bias || 'NEUTRAL',
         reasoning: res.reasoning || res.marketAnalysis?.whatMarketIsDoing || '',

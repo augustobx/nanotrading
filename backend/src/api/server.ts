@@ -1,4 +1,5 @@
 import http from 'http';
+import { effectiveRRMinimums } from '../engine/effective-rr.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { MarketCoordinator } from '../market/market-coordinator.js';
 import { DatabaseService } from '../storage/database.js';
@@ -210,6 +211,21 @@ export class ApiServer {
         this.sendConfigSummary(res);
       } else if (pathname === '/api/v1/discovery/market-intelligence' && req.method === 'GET') {
         this.sendMarketIntelligence(res);
+      } else if (pathname === '/api/v1/discovery/audit' && req.method === 'GET') {
+        const analyses = this.db.getDiscoveryAudits(Number(url.searchParams.get('limit') || 20));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: {
+          funnel: this.db.getDiscoveryFunnel(),
+          policy: { ...effectiveRRMinimums(this.coordinator.getRiskPolicyManager().getPolicy()),
+            mode: this.coordinator.getRiskPolicyManager().getPolicy().rrTargetMode },
+          analyses: analyses.map(({ snapshot, policy, ...analysis }) => ({
+            ...analysis, policyVersion: policy?.version,
+          })),
+        } }));
+      } else if (pathname.startsWith('/api/v1/discovery/audit/') && req.method === 'GET') {
+        const audit = this.db.getDiscoveryAudit(decodeURIComponent(pathname.slice('/api/v1/discovery/audit/'.length)));
+        res.writeHead(audit ? 200 : 404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: !!audit, data: audit }));
       } else if (pathname === '/api/v1/discovery/scenarios' && req.method === 'GET') {
         this.sendScenarios(req, res, url);
       } else if (pathname === '/api/v1/discovery/watch-plans' && req.method === 'GET') {
@@ -1945,6 +1961,8 @@ export class ApiServer {
         scenario,
         lifecycle,
         revalidations,
+        discoveryAudit: this.db.getDiscoveryAudit(scenario.snapshotId),
+        relatedDiscoveryAudits: this.db.getDiscoveryAuditsForScenario(scenario.id),
       },
     }));
   }

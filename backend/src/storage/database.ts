@@ -3,6 +3,7 @@ import path from 'path';
 import { DatabaseSync } from 'node:sqlite';
 import { Candle, Timeframe } from '../types/market.js';
 import { config } from '../config/index.js';
+import type { DiscoveryAudit } from '../ai/discovery-audit.js';
 import { Scenario, ScenarioLifecycleEvent, ScenarioRevalidationRecord, ScenarioStatus, AiWatchPlan, WatchPlanStatus } from '../ai/scenario-types.js';
 
 export class DatabaseService {
@@ -94,6 +95,14 @@ export class DatabaseService {
         open_interest REAL,
         payload TEXT
       );
+
+      CREATE TABLE IF NOT EXISTS discovery_analyses (
+        id TEXT PRIMARY KEY,
+        timestamp INTEGER NOT NULL,
+        outcome TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_discovery_analyses_time ON discovery_analyses(timestamp DESC);
 
       CREATE INDEX IF NOT EXISTS idx_snapshots_time 
       ON market_snapshots(timestamp DESC);
@@ -804,6 +813,55 @@ export class DatabaseService {
         payload ? JSON.stringify(payload) : null
       );
     } catch {}
+  }
+
+  public saveDiscoveryAudit(audit: DiscoveryAudit): void {
+    if (this.isClosed) throw new Error('Cannot persist discovery audit: database closed');
+    this.db.prepare(`INSERT INTO discovery_analyses (id, timestamp, outcome, payload_json)
+      VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET outcome=excluded.outcome, payload_json=excluded.payload_json`)
+      .run(audit.id, audit.timestamp, audit.outcome, JSON.stringify(audit));
+  }
+
+  public getDiscoveryAudit(id: string): DiscoveryAudit | null {
+    const row = this.db.prepare('SELECT payload_json FROM discovery_analyses WHERE id=?').get(id) as any;
+    return row ? JSON.parse(row.payload_json) : null;
+  }
+
+  public getDiscoveryAudits(limit = 20): DiscoveryAudit[] {
+    const bounded = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 20;
+    return (this.db.prepare('SELECT payload_json FROM discovery_analyses ORDER BY timestamp DESC LIMIT ?')
+      .all(bounded) as any[]).map(row => JSON.parse(row.payload_json));
+  }
+
+  public getDiscoveryAuditsForScenario(scenarioId: string): DiscoveryAudit[] {
+    return (this.db.prepare(`SELECT a.payload_json FROM discovery_analyses a
+      WHERE EXISTS (SELECT 1 FROM json_each(a.payload_json, '$.scenarioIds') s WHERE s.value=?)
+      ORDER BY a.timestamp DESC LIMIT 5`).all(scenarioId) as any[]).map(row => JSON.parse(row.payload_json));
+  }
+
+  public getDiscoveryFunnel(): Record<string, unknown> {
+    const counts = this.db.prepare(`SELECT COUNT(*) scenarios,
+      SUM(CASE WHEN direction='NEUTRAL' THEN 1 ELSE 0 END) neutral,
+      SUM(CASE WHEN direction='LONG' THEN 1 ELSE 0 END) longs,
+      SUM(CASE WHEN direction='SHORT' THEN 1 ELSE 0 END) shorts,
+      SUM(CASE WHEN direction='NEUTRAL' AND status='COMPLETED' THEN 1 ELSE 0 END) neutralBreakouts,
+      SUM(CASE WHEN snapshot_id NOT IN (SELECT id FROM discovery_analyses) THEN 1 ELSE 0 END) legacyScenarios
+      FROM scenarios`).get();
+    const signals = this.db.prepare(`SELECT SUM(CASE WHEN consensus_verdict='AUTHORIZED' THEN 1 ELSE 0 END) authorizedSignals,
+      COUNT(simulated_entry_time) paperEntries,
+      SUM(CASE WHEN simulated_entry_time IS NOT NULL AND exit_time IS NOT NULL THEN 1 ELSE 0 END) paperClosed FROM signals`).get();
+    return {
+      ...counts, ...signals,
+      analyses: this.db.prepare('SELECT outcome, COUNT(*) count FROM discovery_analyses GROUP BY outcome').all(),
+      candidates: this.db.prepare(`SELECT json_extract(c.value, '$.reason') reason, COUNT(*) count
+        FROM discovery_analyses a, json_each(a.payload_json, '$.candidates') c GROUP BY 1`).all(),
+      providers: this.db.prepare(`SELECT p.key provider, json_extract(p.value, '$.status') status, COUNT(*) count
+        FROM discovery_analyses a, json_each(a.payload_json, '$.providers') p GROUP BY 1,2`).all(),
+      revalidations: this.db.prepare(`SELECT s.direction, r.consensus_verdict verdict, COUNT(*) count
+        FROM scenario_revalidations r JOIN scenarios s ON s.id=r.scenario_id GROUP BY 1,2`).all(),
+      zoneConfirmed: this.db.prepare(`SELECT s.direction, COUNT(DISTINCT l.scenario_id) count
+        FROM scenario_lifecycle l JOIN scenarios s ON s.id=l.scenario_id WHERE l.to_status='IN_ZONE' GROUP BY 1`).all(),
+    };
   }
 
   public getRecentEvents(limit: number = 50): any[] {
