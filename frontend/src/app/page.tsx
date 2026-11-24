@@ -24,6 +24,7 @@ import {
   Sun,
   Moon,
   TrendingUp,
+  TrendingDown,
   AlertTriangle,
   Bell,
   Power,
@@ -40,7 +41,19 @@ import {
   Eye,
   LayoutDashboard,
   Filter,
+  Ban,
+  HelpCircle,
+  ChevronRight,
+  Sparkles,
 } from 'lucide-react';
+import {
+  formatArgentinaDateTime,
+  formatArgentinaTime,
+  formatTimeAgo,
+  formatPrice,
+  formatPercent,
+  formatUsd,
+} from '../utils/formatters';
 
 interface TickerData {
   symbol: string;
@@ -118,6 +131,7 @@ export default function DashboardPage() {
   // Configuration Center & AI Router
   const [isConfigModalOpen, setIsConfigModalOpen] = useState<boolean>(false);
   const [configSummary, setConfigSummary] = useState<any>(null);
+  const [schedulerStatus, setSchedulerStatus] = useState<any>(null);
 
   const fetchConfigSummary = async () => {
     try {
@@ -129,9 +143,23 @@ export default function DashboardPage() {
     } catch {}
   };
 
+  const fetchSchedulerStatus = async () => {
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/discovery/scheduler/status`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.success) setSchedulerStatus(json.data);
+      }
+    } catch {}
+  };
+
   useEffect(() => {
     fetchConfigSummary();
-    const interval = setInterval(fetchConfigSummary, 15000);
+    fetchSchedulerStatus();
+    const interval = setInterval(() => {
+      fetchConfigSummary();
+      fetchSchedulerStatus();
+    }, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -455,24 +483,79 @@ export default function DashboardPage() {
     }
   }
 
-  // Count longs / shorts / neutral in ACTIVE scenarios (excluding completed, invalidated, expired, cancelled)
-  const activeScenariosList = scenarios.filter(
-    (s) => !['COMPLETED', 'INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)
-  );
-  const activeLongsCount = activeScenariosList.filter((s) => s.direction === 'LONG').length;
-  const activeShortsCount = activeScenariosList.filter((s) => s.direction === 'SHORT').length;
-  const activeNeutralCount = activeScenariosList.filter(
-    (s) => s.direction === 'NEUTRAL' || s.status === 'NO_TRADE_OBSERVATION'
-  ).length;
-  const historicDiscardedCount = scenarios.filter((s) =>
-    ['INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status)
-  ).length;
-
   // Paper tracking signals separation
   const openPaperSignals = activeSignals.filter((s) => s.simulatedEntryTime && s.state === 'TRACKING');
   const validatedPendingSignals = activeSignals.filter(
     (s) => !s.simulatedEntryTime && ['ENTRY_VALIDATED', 'ALERT_SENT'].includes(s.state)
   );
+
+  // 8 KPIs Operativos Oficiales (Section A)
+  // 1. Escenarios activos (hipótesis direccionales vivas)
+  const activeDirectionalCount = scenarios.filter(
+    (s) =>
+      !['COMPLETED', 'INVALIDATED', 'EXPIRED', 'CANCELLED', 'COMPLETED_TP', 'COMPLETED_SL'].includes(s.status) &&
+      s.direction !== 'NEUTRAL' &&
+      s.kind !== 'NEUTRAL_OBSERVATION'
+  ).length;
+
+  // 2. Escenarios esperando zona
+  const waitingZoneCount = scenarios.filter(
+    (s) =>
+      ['SCENARIO_MONITORING', 'SCENARIO_REGISTERED', 'APPROACHING_ZONE'].includes(s.status) &&
+      s.direction !== 'NEUTRAL' &&
+      s.kind !== 'NEUTRAL_OBSERVATION'
+  ).length;
+
+  // 3. Escenarios en revalidación
+  const inRevalidationCount = scenarios.filter((s) =>
+    ['IN_ZONE', 'REVALIDATION_REQUESTED', 'AI_REVALIDATING'].includes(s.status)
+  ).length;
+
+  // 4. Señales autorizadas
+  const authorizedSignalsCount = scenarios.filter((s) =>
+    ['ENTRY_VALIDATED', 'ALERT_SENT'].includes(s.status)
+  ).length + validatedPendingSignals.length;
+
+  // 5. Entradas paper abiertas
+  const openPaperCount = openPaperSignals.length;
+
+  // 6. Operaciones paper cerradas
+  const closedPaperCount = signals.filter((s) =>
+    ['COMPLETED_TP', 'COMPLETED_SL'].includes(s.state || s.status)
+  ).length;
+
+  // 7. Descartadas sin trade
+  const discardedWithoutTradeCount = scenarios.filter((s) => {
+    const isNeutral = s.kind === 'NEUTRAL_OBSERVATION' || s.direction === 'NEUTRAL';
+    const status = s.status || '';
+    if (['INVALIDATED', 'EXPIRED', 'CANCELLED', 'NO_TRADE_OBSERVATION'].includes(status)) return true;
+    if (status === 'COMPLETED' && isNeutral) return true;
+    return false;
+  }).length;
+
+  // 8. Observaciones neutrales activas
+  const activeNeutralObservationsCount = scenarios.filter(
+    (s) =>
+      (s.kind === 'NEUTRAL_OBSERVATION' || s.direction === 'NEUTRAL') &&
+      !['COMPLETED', 'EXPIRED', 'CANCELLED'].includes(s.status)
+  ).length;
+
+  // Escenario más relevante o cercano para "Ahora mismo"
+  const mostImportantScenario = (() => {
+    const inZone = scenarios.find((s) => ['IN_ZONE', 'REVALIDATION_REQUESTED', 'AI_REVALIDATING'].includes(s.status));
+    if (inZone) return inZone;
+    const approaching = scenarios.find((s) => s.status === 'APPROACHING_ZONE');
+    if (approaching) return approaching;
+    const activeDir = scenarios
+      .filter((s) => !['COMPLETED', 'INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status) && s.direction !== 'NEUTRAL')
+      .sort((a, b) => (a.distanceToZonePct ?? 999) - (b.distanceToZonePct ?? 999));
+    if (activeDir.length > 0) return activeDir[0];
+    const activeNeutral = scenarios.find(
+      (s) => (s.kind === 'NEUTRAL_OBSERVATION' || s.direction === 'NEUTRAL') && !['COMPLETED', 'EXPIRED'].includes(s.status)
+    );
+    if (activeNeutral) return activeNeutral;
+    return scenarios[0] || null;
+  })();
 
   // Filtered system events for audit tab
   const filteredEvents = systemEvents.filter((ev) => {
@@ -485,32 +568,33 @@ export default function DashboardPage() {
       {/* ========================================================================= */}
       {/* 1. NanoLabs Header Oficial (80px standard)                                */}
       {/* ========================================================================= */}
-      <header className="h-20 border-b border-slate-200 dark:border-slate-800/80 bg-white/95 dark:bg-[#0f1422]/90 backdrop-blur-md px-4 sm:px-6 flex items-center justify-between sticky top-0 z-40 shadow-sm">
-        <div className="flex items-center gap-3 sm:gap-4">
-          <div className="flex items-center gap-3">
+      <header className="min-h-[64px] sm:h-20 border-b border-slate-200 dark:border-slate-800/80 bg-white/95 dark:bg-[#0f1422]/90 backdrop-blur-md px-3 sm:px-6 py-2 sm:py-0 flex items-center justify-between sticky top-0 z-40 shadow-sm">
+        <div className="flex items-center gap-2 sm:gap-4 min-w-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
             <div
-              className="w-11 h-11 rounded-2xl flex items-center justify-center shadow-lg transition-transform hover:rotate-6 cursor-pointer shrink-0"
+              className="w-9 h-9 sm:w-11 sm:h-11 rounded-xl sm:rounded-2xl flex items-center justify-center shadow-lg transition-transform hover:rotate-6 cursor-pointer shrink-0"
               style={{ background: palette.gradient }}
             >
-              <Activity className="w-6 h-6 text-white stroke-[2.5]" />
+              <Activity className="w-5 h-5 sm:w-6 sm:h-6 text-white stroke-[2.5]" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <h1 className="font-display font-extrabold text-base sm:text-lg text-slate-900 dark:text-white tracking-wide">
+                <h1 className="font-display font-extrabold text-sm sm:text-base lg:text-lg text-slate-900 dark:text-white tracking-wide truncate">
                   NanoLabs AI Trading
                 </h1>
-                <span className="hidden sm:inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300">
+                <span className="hidden sm:inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 shrink-0">
                   Centro de Control Autónomo
                 </span>
               </div>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
-                BTCUSDT Perpetual · Motor Cuantitativo & Doble IA 24/7
+              <p className="text-[10px] sm:text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate">
+                <span className="font-semibold text-slate-700 dark:text-slate-300">BTCUSDT</span>
+                <span className="hidden sm:inline"> Perpetual · Motor Cuantitativo & Doble IA 24/7</span>
               </p>
             </div>
           </div>
 
           {/* Bybit WS Status Pill */}
-          <div className="hidden md:flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900/80 px-3 py-1.5 font-mono text-xs">
+          <div className="hidden md:flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900/80 px-3 py-1.5 font-mono text-xs shrink-0">
             <span
               className={`w-2.5 h-2.5 rounded-full ${
                 wsConnected ? 'bg-emerald-500 pulse-live shadow-emerald-500/50' : 'bg-rose-500'
@@ -525,11 +609,11 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 sm:gap-2.5">
+        <div className="flex items-center gap-1 sm:gap-2.5 shrink-0">
           {/* Emergency Kill Switch Button */}
           <button
             onClick={handleToggleKillSwitch}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-mono font-bold transition-all cursor-pointer border ${
+            className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-xl text-[11px] sm:text-xs font-mono font-bold transition-all cursor-pointer border ${
               killSwitchActive
                 ? 'bg-rose-500/20 text-rose-600 dark:text-rose-400 border-rose-500/40 animate-pulse'
                 : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
@@ -538,7 +622,7 @@ export default function DashboardPage() {
           >
             <Power className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Kill Switch:</span>
-            <span>{killSwitchActive ? 'ACTIVADO' : 'STANDBY OK'}</span>
+            <span>{killSwitchActive ? 'ACTIVADO' : 'STANDBY'}</span>
           </button>
 
           {/* Config Center Button */}
@@ -587,48 +671,107 @@ export default function DashboardPage() {
       </header>
 
       {/* ========================================================================= */}
-      {/* 2. Operational Security & Mode Bar                                        */}
+      {/* 2. Operational Security & Mode Bar (Section A: Resumen Superior)           */}
       {/* ========================================================================= */}
-      <div className="bg-slate-100/90 dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800/80 px-4 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
-            <Shield className="w-4 h-4" />
-            <span className="font-bold">MODO: SIGNALS_ONLY</span>
+      <div className="bg-slate-100/90 dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800/80 px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2.5 text-xs font-mono">
+        {/* Left items: System status & Execution modes */}
+        <div className="flex items-center flex-wrap gap-2.5 sm:gap-3">
+          {/* General System Status */}
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-400 dark:text-slate-500">Sistema:</span>
+            <span className={`px-2 py-0.5 rounded font-bold text-[11px] flex items-center gap-1 ${
+              killSwitchActive
+                ? 'bg-rose-100 dark:bg-rose-950/80 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-700 animate-pulse'
+                : (configSummary?.isBudgetBlocked || aiStatus?.isBudgetBlocked)
+                ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700'
+                : wsConnected
+                ? 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700'
+                : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300'
+            }`}>
+              <Activity className="w-3 h-3" />
+              {killSwitchActive
+                ? 'PAUSADO (Kill Switch)'
+                : (configSummary?.isBudgetBlocked || aiStatus?.isBudgetBlocked)
+                ? 'PAUSADO (Presupuesto IA)'
+                : wsConnected
+                ? '100% OPERATIVO'
+                : 'RECONECTANDO STREAM'}
+            </span>
           </div>
-          <span className="text-slate-300 dark:text-slate-600 hidden sm:inline">|</span>
-          <span className="text-slate-500 dark:text-slate-400 hidden sm:inline">
-            Ejecución Real: <strong className="text-rose-500 dark:text-rose-400">DESHABILITADA (Paper Trading)</strong>
-          </span>
-          <span className="text-slate-300 dark:text-slate-600 hidden md:inline">|</span>
-          <span className="text-slate-500 dark:text-slate-400 hidden md:inline">
-            Vigilancia Algorítmica: <strong className="text-sky-500 dark:text-sky-400">LOCAL (0 tokens por tick)</strong>
-          </span>
+
+          <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
+
+          {/* Mode */}
+          <div className="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400 font-bold">
+            <Shield className="w-3.5 h-3.5" />
+            <span>SIGNALS_ONLY (Paper Activo)</span>
+          </div>
+
+          <span className="text-slate-300 dark:text-slate-700 hidden md:inline">|</span>
+
+          {/* Bybit Connection */}
+          <div className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
+            <span className="text-slate-600 dark:text-slate-300">
+              Bybit WS: <strong>{wsConnected ? `Conectado (${wsLatency}ms)` : 'Desconectado'}</strong>
+            </span>
+          </div>
+
+          <span className="text-slate-300 dark:text-slate-700 hidden lg:inline">|</span>
+
+          {/* Scheduler & Watcher */}
+          <div className="hidden lg:flex items-center gap-1 text-slate-600 dark:text-slate-400">
+            <span>Scheduler:</span>
+            <strong className={schedulerStatus?.isRunning && schedulerStatus?.enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'}>
+              {schedulerStatus?.isRunning && schedulerStatus?.enabled ? 'ACTIVO' : 'PAUSADO'}
+            </strong>
+            <span className="text-slate-300 dark:text-slate-700 mx-1">·</span>
+            <span>Watcher:</span>
+            <strong className="text-sky-500 dark:text-sky-400">ACTIVO (0 tokens/tick)</strong>
+          </div>
         </div>
 
+        {/* Right items: AI spend, Analysis timestamps & Risk */}
         <div className="flex items-center flex-wrap gap-2.5 sm:gap-3 text-slate-600 dark:text-slate-400">
+          {/* AI Spend Today */}
           <div className="flex items-center gap-1.5">
-            <span className="text-slate-400 dark:text-slate-500">Presupuesto IA:</span>
+            <span className="text-slate-400 dark:text-slate-500">Gasto IA:</span>
             <span className="font-bold text-slate-800 dark:text-slate-200">
               ${(configSummary?.grossSpentTodayUsd ?? 0).toFixed(4)}
             </span>
-            <span className="text-amber-500 dark:text-amber-400 text-[11px]">
-              +${(configSummary?.reservedPendingUsd ?? 0).toFixed(4)} res
-            </span>
             <span className="text-slate-400 dark:text-slate-500">
-              / ${(configSummary?.dailyBudgetUsd ?? 0.50).toFixed(2)}
+              / ${(configSummary?.dailyBudgetUsd ?? 0.50).toFixed(2)} USD
             </span>
-            {(configSummary?.isBudgetBlocked || aiStatus?.isBudgetBlocked) && (
-              <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-700 font-bold">
-                PAUSADO
-              </span>
+          </div>
+
+          <span className="text-slate-300 dark:text-slate-700 hidden sm:inline">|</span>
+
+          {/* Last analysis execution */}
+          <div className="hidden xl:flex items-center gap-1 text-slate-600 dark:text-slate-400">
+            <span>Último Análisis:</span>
+            <strong className="text-slate-800 dark:text-slate-200">
+              {schedulerStatus?.lastTriggerTimestamp
+                ? formatArgentinaTime(schedulerStatus.lastTriggerTimestamp)
+                : scenarios[0]?.discoveryTimestamp
+                ? formatArgentinaTime(scenarios[0].discoveryTimestamp)
+                : '10:24 ART'}
+            </strong>
+            {schedulerStatus?.lastTriggerTimestamp && (
+              <span className="text-[10px] text-slate-400">({formatTimeAgo(schedulerStatus.lastTriggerTimestamp)})</span>
             )}
           </div>
-          <span className="text-slate-300 dark:text-slate-600 hidden sm:inline">|</span>
-          <span>Riesgo: <strong className="text-slate-700 dark:text-slate-200">{configSummary?.maxRiskPerTradePercentage || 0.5}%</strong></span>
-          <span className="text-slate-300 dark:text-slate-600 hidden sm:inline">|</span>
-          <span>Tope SL: <strong className="text-amber-500 dark:text-amber-400">≤ {configSummary?.maxStopLossPercentage || 1.5}%</strong></span>
-          <span className="text-slate-300 dark:text-slate-600 hidden sm:inline">|</span>
-          <span>R:R Neto: <strong className="text-emerald-600 dark:text-emerald-400">≥ 1:{configSummary?.minNetRiskReward || 4.0}</strong></span>
+
+          <span className="text-slate-300 dark:text-slate-700 hidden xl:inline">|</span>
+
+          {/* Next estimated check */}
+          <div className="hidden xl:flex items-center gap-1 text-slate-600 dark:text-slate-400">
+            <span>Próximo Chequeo:</span>
+            <strong className="text-amber-600 dark:text-amber-400">
+              {schedulerStatus?.nextScheduledRun
+                ? formatTimeAgo(schedulerStatus.nextScheduledRun)
+                : 'En espera de evento'}
+            </strong>
+          </div>
         </div>
       </div>
 
@@ -660,97 +803,120 @@ export default function DashboardPage() {
         )}
 
         {/* ========================================================================= */}
-        {/* 4. Executive KPI Ribbon (Answers the 6 Core Acceptance Questions)          */}
+        {/* 4. Section A: 8 KPIs Operativos Oficiales                                  */}
         {/* ========================================================================= */}
-        <section aria-label="Cinta Ejecutiva del Centro de Control">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
-            {/* Pregunta 1: ¿Qué está haciendo NanoTrading? */}
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3.5 shadow-sm">
+        <section aria-label="KPIs Operativos del Centro de Control">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5 sm:gap-3">
+            {/* KPI 1: Escenarios activos */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3 shadow-sm hover:border-orange-500/40 transition-all">
               <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
-                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">1. Estado Operativo</span>
-                <Activity className="w-3.5 h-3.5 text-emerald-500" />
+                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">1. Activos</span>
+                <Activity className="w-3.5 h-3.5 text-blue-500" />
               </div>
-              <div className="text-sm font-display font-extrabold text-slate-900 dark:text-white truncate">
-                {killSwitchActive ? 'PAUSADO (Kill Switch)' : wsConnected ? 'Vigilando BTCUSDT 24/7' : 'Reconectando stream'}
+              <div className="text-xl font-mono font-extrabold text-slate-900 dark:text-white truncate">
+                {activeDirectionalCount}
               </div>
-              <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1 truncate">
-                {activeSignals.length > 0 ? `${activeSignals.length} señal(es) en tracking` : '0 llamadas IA por ticks'}
+              <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                Hipótesis vivas 24/7
               </p>
             </div>
 
-            {/* Pregunta 2: ¿Qué detectó la IA? */}
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3.5 shadow-sm">
+            {/* KPI 2: Esperando zona */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3 shadow-sm hover:border-orange-500/40 transition-all">
               <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
-                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">2. Tesis de IA</span>
-                <Brain className="w-3.5 h-3.5 text-purple-500" />
-              </div>
-              <div className="text-sm font-display font-extrabold text-slate-900 dark:text-white truncate">
-                {activeLongsCount > activeShortsCount
-                  ? 'Sesgo Alza (Bullish)'
-                  : activeShortsCount > activeLongsCount
-                  ? 'Sesgo Baja (Bearish)'
-                  : activeNeutralCount > 0
-                  ? 'Consenso Neutral (Rango)'
-                  : 'Sin hipótesis activas'}
-              </div>
-              <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1 truncate">
-                {activeLongsCount} Long · {activeShortsCount} Short · {activeNeutralCount} Rango activo ({historicDiscardedCount} archivadas sin trade)
-              </p>
-            </div>
-
-            {/* Pregunta 3: ¿Qué zonas está vigilando? */}
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3.5 shadow-sm">
-              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
-                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">3. Zonas en Vigilancia</span>
+                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">2. Esperando Zona</span>
                 <Radar className="w-3.5 h-3.5 text-sky-500" />
               </div>
-              <div className="text-sm font-display font-extrabold text-slate-900 dark:text-white truncate">
-                {activeMonitoredScenarios.length} Zonas Activas
+              <div className="text-xl font-mono font-extrabold text-amber-500 dark:text-amber-400 truncate">
+                {waitingZoneCount}
               </div>
-              <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1 truncate">
-                {closestPct !== null ? `Más próxima a ${closestPct.toFixed(2)}%` : 'Sin zonas inmediatas'}
+              <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                {closestPct !== null ? `Próxima: ${closestPct.toFixed(2)}%` : 'Sin zonas inmed.'}
               </p>
             </div>
 
-            {/* Pregunta 4: ¿Qué necesita para confirmar una entrada? */}
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3.5 shadow-sm">
+            {/* KPI 3: En revalidación */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3 shadow-sm hover:border-orange-500/40 transition-all">
               <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
-                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">4. Criterio de Entrada</span>
-                <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />
+                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">3. En Revalidación</span>
+                <Sparkles className="w-3.5 h-3.5 text-purple-500" />
               </div>
-              <div className="text-sm font-display font-extrabold text-slate-900 dark:text-white truncate">
-                Retesteo + R:R ≥ 1:4
+              <div className="text-xl font-mono font-extrabold text-purple-600 dark:text-purple-400 truncate">
+                {inRevalidationCount}
               </div>
-              <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1 truncate">
-                Velas 5m/15m confirmadas
+              <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                Consulta snapshot dual
               </p>
             </div>
 
-            {/* Pregunta 5: ¿Cuánto está gastando? */}
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3.5 shadow-sm">
+            {/* KPI 4: Señales autorizadas */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3 shadow-sm hover:border-orange-500/40 transition-all">
               <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
-                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">5. Consumo IA</span>
-                <DollarSign className="w-3.5 h-3.5 text-emerald-500" />
+                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">4. Señales Aprobadas</span>
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
               </div>
-              <div className="text-sm font-mono font-extrabold text-slate-900 dark:text-white truncate">
-                ${(configSummary?.grossSpentTodayUsd ?? 0).toFixed(4)} USD
+              <div className="text-xl font-mono font-extrabold text-emerald-600 dark:text-emerald-400 truncate">
+                {authorizedSignalsCount}
               </div>
-              <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1 truncate">
-                Tope: ${(configSummary?.dailyBudgetUsd ?? 0.50).toFixed(2)} · {configSummary?.isBudgetBlocked ? 'Pausado' : 'Dentro de cuota'}
+              <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                Esperando tick entrada
               </p>
             </div>
 
-            {/* Pregunta 6: ¿Qué señales generó y cómo evolucionaron? */}
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3.5 shadow-sm">
+            {/* KPI 5: Entradas paper abiertas */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3 shadow-sm hover:border-orange-500/40 transition-all">
               <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
-                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">6. Señales & Paper</span>
-                <TrendingUp className="w-3.5 h-3.5 text-indigo-500" />
+                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">5. Paper Abiertas</span>
+                <TrendingUp className="w-3.5 h-3.5 text-teal-500" />
               </div>
-              <div className="text-sm font-display font-extrabold text-slate-900 dark:text-white truncate">
-                {openPaperSignals.length} en Tracking
+              <div className="text-xl font-mono font-extrabold text-teal-600 dark:text-teal-400 truncate flex items-center gap-1">
+                {openPaperCount > 0 && <span className="w-2 h-2 rounded-full bg-teal-500 animate-ping" />}
+                {openPaperCount}
               </div>
-              <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-1 truncate">
-                {openPaperSignals.length} abiertas · {validatedPendingSignals.length} autorizadas sin entrar · {signals.length} históricas
+              <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                En tracking activo
+              </p>
+            </div>
+
+            {/* KPI 6: Operaciones paper cerradas */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3 shadow-sm hover:border-orange-500/40 transition-all">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">6. Paper Cerradas</span>
+                <CheckCircle2 className="w-3.5 h-3.5 text-indigo-500" />
+              </div>
+              <div className="text-xl font-mono font-extrabold text-slate-900 dark:text-white truncate">
+                {closedPaperCount}
+              </div>
+              <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                Auditoría TP / SL
+              </p>
+            </div>
+
+            {/* KPI 7: Descartadas sin trade */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3 shadow-sm hover:border-orange-500/40 transition-all">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">7. Sin Trade</span>
+                <Ban className="w-3.5 h-3.5 text-slate-500" />
+              </div>
+              <div className="text-xl font-mono font-extrabold text-slate-700 dark:text-slate-300 truncate">
+                {discardedWithoutTradeCount}
+              </div>
+              <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                0 USDT arriesgados
+              </p>
+            </div>
+
+            {/* KPI 8: Observaciones neutrales activas */}
+            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-3 shadow-sm hover:border-orange-500/40 transition-all">
+              <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 mb-1">
+                <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">8. Neutrales</span>
+                <Eye className="w-3.5 h-3.5 text-amber-500" />
+              </div>
+              <div className="text-xl font-mono font-extrabold text-amber-600 dark:text-amber-400 truncate">
+                {activeNeutralObservationsCount}
+              </div>
+              <p className="text-[10px] font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                Consolidación rango
               </p>
             </div>
           </div>
@@ -936,6 +1102,117 @@ export default function DashboardPage() {
         {/* ========================================================================= */}
         {activeMainTab === 'terminal' && (
           <div className="space-y-5">
+            {/* Sección H: Centro de Respuesta Operativa - Bloque "Ahora mismo" */}
+            <div id="ahora-mismo-terminal" className="p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] shadow-sm space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-orange-500/15 text-orange-600 dark:text-orange-400 flex items-center justify-center font-bold">
+                    <Zap className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="font-display font-extrabold text-sm sm:text-base text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
+                      <span>Ahora Mismo</span>
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                    </h3>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Estado operativo instantáneo y respuesta a las condiciones actuales del mercado.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setActiveMainTab('scenarios')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-mono font-bold text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
+                  >
+                    <Radar className="w-3.5 h-3.5 text-orange-500" />
+                    <span>Ver Escenarios ({scenarios.length})</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveMainTab('signals')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-mono font-bold text-slate-700 dark:text-slate-200 transition-all cursor-pointer"
+                  >
+                    <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
+                    <span>Ver Señales & Paper ({activeSignals.length})</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 4 Clarity Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs font-mono">
+                {/* 1. Qué está corriendo ahora */}
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 space-y-1.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                    1. ¿Qué está corriendo ahora?
+                  </span>
+                  <div className="font-bold text-slate-900 dark:text-white text-xs">
+                    {killSwitchActive
+                      ? 'PAUSADO por Kill Switch de Emergencia'
+                      : wsConnected
+                      ? 'Vigilancia 24/7 de BTCUSDT en Bybit'
+                      : 'Reconectando WebSocket Bybit'}
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-sans leading-relaxed">
+                    Watcher local determinista activo (0 tokens consumidos por tick). Latencia: {wsLatency}ms.
+                  </p>
+                </div>
+
+                {/* 2. Escenario más importante */}
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 space-y-1.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                    2. Escenario más Relevante
+                  </span>
+                  {mostImportantScenario ? (
+                    <>
+                      <div className="font-bold text-slate-900 dark:text-white text-xs truncate">
+                        {mostImportantScenario.id} · {mostImportantScenario.direction} ({mostImportantScenario.timeframe})
+                      </div>
+                      <p className="text-[11px] text-slate-500 font-sans leading-relaxed truncate">
+                        Zona: ${mostImportantScenario.entryZoneMin?.toFixed(1)} - ${mostImportantScenario.entryZoneMax?.toFixed(1)}{' '}
+                        {mostImportantScenario.distanceToZonePct !== undefined && (
+                          <strong className="text-amber-500">({mostImportantScenario.distanceToZonePct.toFixed(2)}% dist)</strong>
+                        )}
+                      </p>
+                    </>
+                  ) : (
+                    <div className="text-slate-500 text-xs font-sans">
+                      Sin escenarios activos en este momento.
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Qué está esperando / Freno */}
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 space-y-1.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                    3. ¿Qué está esperando el sistema?
+                  </span>
+                  <div className="font-bold text-amber-600 dark:text-amber-400 text-xs">
+                    {mostImportantScenario
+                      ? mostImportantScenario.direction === 'NEUTRAL' || mostImportantScenario.kind === 'NEUTRAL_OBSERVATION'
+                        ? 'Ruptura confirmada del rango en vela cerrada'
+                        : `Aproximación a zona [$${mostImportantScenario.entryZoneMin?.toFixed(1)} - $${mostImportantScenario.entryZoneMax?.toFixed(1)}]`
+                      : 'Cierre de vela relevante para nuevo descubrimiento'}
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-sans leading-relaxed">
+                    Filtro estricto: R:R neto ≥ 1:4. Si no hay confluencia, la orden es no forzar trades.
+                  </p>
+                </div>
+
+                {/* 4. Resumen ejecutivo instantáneo */}
+                <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 space-y-1.5">
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                    4. Resumen Instantáneo
+                  </span>
+                  <div className="font-bold text-slate-900 dark:text-white text-xs">
+                    {activeDirectionalCount + activeNeutralObservationsCount} vivos · {inRevalidationCount} en reval. · {openPaperCount} paper
+                  </div>
+                  <p className="text-[11px] text-slate-500 font-sans leading-relaxed">
+                    Último análisis: {schedulerStatus?.lastTriggerTimestamp ? formatArgentinaTime(schedulerStatus.lastTriggerTimestamp) : (scenarios[0]?.discoveryTimestamp ? formatArgentinaTime(scenarios[0].discoveryTimestamp) : '10:24 ART')}.
+                  </p>
+                </div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
               {/* Left Column (lg: 2/3): CandleChart */}
               <div className="lg:col-span-2 space-y-5">

@@ -13,7 +13,10 @@ import {
   AlertOctagon,
   ChevronRight,
   ExternalLink,
+  ShieldCheck,
+  Ban,
 } from 'lucide-react';
+import { formatArgentinaDateTime, formatDurationMs } from '../utils/formatters';
 
 export interface ActiveSignalItem {
   id: string;
@@ -56,31 +59,50 @@ export function SignalLifecycleMonitor({
     switch (state) {
       case 'IN_ZONE':
         return (
-          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-purple-500/20 text-purple-300 border border-purple-500/40 animate-pulse flex items-center gap-1.5 shadow-[0_0_12px_rgba(168,85,247,0.3)]">
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-purple-500/20 text-purple-700 dark:text-purple-300 border border-purple-500/40 animate-pulse flex items-center gap-1.5 shadow-[0_0_12px_rgba(168,85,247,0.3)]">
             <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
-            EN ZONA (IN_ZONE)
+            PRECIO EN ZONA · REEVALUANDO IA
           </span>
         );
       case 'TRACKING':
+      case 'ENTRY_TRIGGERED':
         return (
-          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5 shadow-[0_0_12px_rgba(16,185,129,0.3)]">
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5 shadow-[0_0_12px_rgba(16,185,129,0.3)]">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-            SEGUIMIENTO ACTIVO (TRACKING)
+            ENTRADA PAPER EJECUTADA · EN TRACKING ACTIVO
           </span>
         );
       case 'APPROACHING_ZONE':
         return (
-          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-blue-500/20 text-blue-300 border border-blue-500/40 flex items-center gap-1.5">
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-500/40 flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
-            APROXIMÁNDOSE (0.25%)
+            APROXIMÁNDOSE A ZONA (≤ 0.35%)
           </span>
         );
       case 'ENTRY_VALIDATED':
       case 'ALERT_SENT':
         return (
-          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1.5">
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/40 flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-            AUTORIZADA / ESPERANDO ENTRADA
+            SEÑAL AUTORIZADA · ESPERANDO ENTRADA
+          </span>
+        );
+      case 'COMPLETED_TP':
+        return (
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/40">
+            CERRADA EN TAKE PROFIT (+)
+          </span>
+        );
+      case 'COMPLETED_SL':
+        return (
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-rose-500/20 text-rose-700 dark:text-rose-300 border border-rose-500/40">
+            CERRADA EN STOP LOSS (-)
+          </span>
+        );
+      case 'INVALIDATED':
+        return (
+          <span className="px-2.5 py-1 rounded-full text-[11px] font-mono font-bold bg-slate-800 text-slate-300 border border-slate-700">
+            INVALIDADA PRE-ENTRADA (SIN TRADE)
           </span>
         );
       default:
@@ -90,17 +112,6 @@ export function SignalLifecycleMonitor({
           </span>
         );
     }
-  };
-
-  const formatDuration = (ms?: number) => {
-    if (!ms || ms <= 0) return '< 1m';
-    const totalMinutes = Math.floor(ms / 60000);
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    if (hours > 0) {
-      return `${hours}h ${minutes}m`;
-    }
-    return `${minutes}m`;
   };
 
   return (
@@ -119,7 +130,7 @@ export function SignalLifecycleMonitor({
         <div className="flex items-center gap-2 text-xs font-mono text-slate-500 dark:text-slate-400">
           <span className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            Worker Event-Driven Activo
+            Worker Event-Driven Activo (0 tokens/tick)
           </span>
         </div>
       </div>
@@ -222,7 +233,7 @@ export function SignalLifecycleMonitor({
                       1:{signal.netRR.toFixed(2)}
                     </span>
                     <span className="text-slate-500 dark:text-slate-400 ml-1.5 text-[11px]">
-                      ({formatDuration(signal.durationMs)})
+                      ({formatDurationMs(signal.durationMs)})
                     </span>
                   </div>
                 </div>
