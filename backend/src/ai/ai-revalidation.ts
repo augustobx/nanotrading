@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { effectiveRRMinimums } from '../engine/effective-rr.js';
 import { EventEmitter } from 'events';
 import { MarketCoordinator } from '../market/market-coordinator.js';
 import { OpenAiAdapter } from './openai-adapter.js';
@@ -432,10 +433,9 @@ Responde estrictamente en JSON:
       });
 
       const meetsAdminRR = [
-        { calc: riskCalc.calculation12, min: riskPolicy.minRRShort },
-        { calc: riskCalc.calculation14, min: riskPolicy.minRRExtended },
-      ].some(({ calc, min }) => calc?.isValid &&
-        calc.netRR >= Math.max(riskPolicy.minNetRR, min));
+        { calc: riskCalc.calculation12, min: effectiveRRMinimums(riskPolicy).short, enabled: riskPolicy.rrTargetMode !== 'RR_1_4' },
+        { calc: riskCalc.calculation14, min: effectiveRRMinimums(riskPolicy).extended, enabled: riskPolicy.rrTargetMode !== 'RR_1_2' },
+      ].some(({ calc, min, enabled }) => enabled && calc?.isValid && calc.netRR >= min);
       if (riskCalc.qualifiedMode === 'NONE' || !meetsAdminRR ||
           (riskCalc.calculation12?.isValid && riskCalc.calculation12.netLossUSDT > riskPolicy.maxRiskPerTradeUsdt) ||
           (riskCalc.calculation14?.isValid && riskCalc.calculation14.netLossUSDT > riskPolicy.maxRiskPerTradeUsdt)) {

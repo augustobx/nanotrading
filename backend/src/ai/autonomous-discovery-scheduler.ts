@@ -48,6 +48,20 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
   private lastStructuralFingerprint: string | null = null;
   private consecutiveProviderFailures = 0;
   private providerFailureBackoffUntil: number | null = null;
+  private lastBlockedLog: { code: string; timestamp: number; suppressed: number } | null = null;
+
+  private blocked(code: string, trigger: string): false {
+    const now = Date.now();
+    if (this.lastBlockedLog?.code === code && now - this.lastBlockedLog.timestamp < 15 * 60000) {
+      this.lastBlockedLog.suppressed++;
+      return false;
+    }
+    this.db.logEvent('INFO', 'DiscoveryScheduler', 'Discovery trigger blocked', {
+      code, trigger, previous: this.lastBlockedLog,
+    });
+    this.lastBlockedLog = { code, timestamp: now, suppressed: 0 };
+    return false;
+  }
   private readonly candleHandler = (candle: Candle): void => this.handleCandleClosed(candle);
   private readonly stateHandler = (state: any): void => {
     const price = state.ticker?.lastPrice;
@@ -80,6 +94,7 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     const now = Date.now();
     const terminal = new Set(['EXPIRED', 'INVALIDATED', 'CANCELLED', 'COMPLETED', 'DISCARDED', 'SIGNAL_GENERATED']);
     return registry.getAllActive().some((sc) => {
+      if (sc.direction === 'NEUTRAL' || sc.kind === 'NEUTRAL_OBSERVATION') return false;
       const expiry = sc.watchPlan?.expirationTimestamp || sc.validUntilTimestamp;
       return !terminal.has(sc.status) && Number.isFinite(expiry) && expiry > now;
     });
@@ -198,23 +213,28 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     if (this.discoveryInFlight) return false;
     if (!isManual && (!this.isRunning || !this.config.enabled)) return false;
     if (!isManual && this.providerFailureBackoffUntil && now < this.providerFailureBackoffUntil) {
-      return false;
+      return this.blocked('PROVIDER_BACKOFF', reason);
     }
     if (!isManual && this.hasWatchableScenario()) {
       // The watcher is already monitoring a valid hypothesis at zero token cost.
-      return false;
+      return this.blocked('DIRECTIONAL_SCENARIO_ACTIVE', reason);
     }
     // Even confirmed NEUTRAL breakouts must obey global autonomous cooldown.
-    if (!isManual && this.lastTriggerTimestamp && now - this.lastTriggerTimestamp < cooldownMs) return false;
+    if (!isManual && this.lastTriggerTimestamp && now - this.lastTriggerTimestamp < cooldownMs) {
+      return this.blocked('COOLDOWN', reason);
+    }
 
     const fingerprint = this.structuralFingerprint();
     // The 60-minute timer is a health check, not a mandate to buy an analysis.
     // Only a newly confirmed structural regime, actual neutral breakout, a
     // manual request, or an infrequent 4h watchdog may justify another call.
-    if (!isManual && !reason.startsWith('RANGE_BREAKOUT') &&
+    const significantMove = reason.startsWith('SIGNIFICANT_PRICE_MOVE') &&
+      Number.isFinite(currentPrice) && !!this.lastTriggerPrice &&
+      Math.abs(currentPrice! - this.lastTriggerPrice) / this.lastTriggerPrice * 100 >= this.config.minPriceMovePct;
+    if (!isManual && !reason.startsWith('RANGE_BREAKOUT') && !significantMove &&
         fingerprint && fingerprint === this.lastStructuralFingerprint &&
         this.lastTriggerTimestamp && now - this.lastTriggerTimestamp < 4 * 3600000) {
-      return false;
+      return this.blocked('STRUCTURE_UNCHANGED', reason);
     }
 
     // Budget check

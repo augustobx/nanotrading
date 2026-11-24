@@ -16,6 +16,16 @@ export class GeminiAdapter {
   private lastSuccessTimestamp: number | null = null;
   private lastError: string | null = null;
   private lastAvailabilityStatus: AiAvailabilityStatus = 'AVAILABLE';
+  private discoveryHealth = new Map<string, {
+    failureCode: string | null; consecutiveFailures: number; retryNotBefore: number;
+  }>();
+
+  public getDiscoveryHealth(model = this.model) {
+    return { ...(this.discoveryHealth.get(model) || {
+      failureCode: null, consecutiveFailures: 0, retryNotBefore: 0,
+    }) };
+  }
+
 
   constructor(options: GeminiAdapterOptions = {}) {
     this.apiKey = options.apiKey !== undefined ? options.apiKey : (process.env.GEMINI_API_KEY || '');
@@ -34,6 +44,7 @@ export class GeminiAdapter {
 
   public updateCredentials(apiKey: string, model?: string): void {
     this.apiKey = apiKey ? apiKey.trim() : '';
+    this.discoveryHealth.clear();
     if (model) {
       this.model = getValidatedModel(model, 'GEMINI');
     }
@@ -247,82 +258,72 @@ Responde obligatoriamente en JSON estricto.`;
     }
   }
 
-  public async evaluateWithCustomPrompt(prompt: string, modelOverride?: string): Promise<any> {
+  public async evaluateWithCustomPrompt(
+    prompt: string, modelOverride?: string, options: { discovery?: boolean } = {}
+  ): Promise<any> {
     if (!this.apiKey) return null;
-    const initialModel = getValidatedModel(modelOverride || this.model, 'GEMINI');
-    const apiKeyTrimmed = (this.apiKey || '').trim();
-    // Routed calls have a preauthorized model/cost reservation: no unbudgeted fallback.
-    const candidateModels = modelOverride ? [initialModel] : [
-      initialModel,
-      ...(initialModel !== 'gemini-2.5-flash-lite' ? ['gemini-2.5-flash-lite'] : []),
-      ...(initialModel !== 'gemini-3.8-flash' ? ['gemini-3.8-flash'] : []),
-    ];
-
-    for (const currentModel of candidateModels) {
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        const effectiveTimeoutMs = Math.max(this.timeoutMs, 25000);
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
-        try {
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(currentModel)}:generateContent`;
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-goog-api-key': apiKeyTrimmed,
-            },
-            body: JSON.stringify({
-              contents: [{ parts: [{ text: prompt }] }],
-              generationConfig: {
-                temperature: 0.1,
-                responseMimeType: 'application/json',
-              },
-            }),
-            signal: controller.signal,
-          });
-          clearTimeout(timeoutId);
-
-          if (response.status === 503 || response.status === 429) {
-            const errText = await response.text();
-            console.warn(`[Gemini evaluateWithCustomPrompt] ${currentModel} attempt ${attempt} returned HTTP ${response.status}: ${errText.slice(0, 100)}. Retrying/falling back...`);
-            if (attempt === 1) {
-              await new Promise((r) => setTimeout(r, 1500));
-              continue;
-            } else {
-              break;
-            }
-          }
-
-          if (!response.ok) {
-            const errText = await response.text();
-            console.error(`[Gemini evaluateWithCustomPrompt] HTTP ${response.status}: ${errText.slice(0, 150)}`);
-            break;
-          }
-
-          const data: any = await response.json();
-          let text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (!text) {
-            console.warn(`[Gemini evaluateWithCustomPrompt] No candidates/text in response for ${currentModel}`);
-            break;
-          }
-          text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim();
-          const parsed = JSON.parse(text);
-          const usage = data.usageMetadata || {};
-          const promptTokens = usage.promptTokenCount || 0;
-          const completionTokens = usage.candidatesTokenCount || 0;
-          const costUsd = calculateCallCost(currentModel, promptTokens, completionTokens);
-          return { ...parsed, model: currentModel, costUsd, promptTokens, completionTokens };
-        } catch (err: any) {
-          clearTimeout(timeoutId);
-          console.error(`[Gemini evaluateWithCustomPrompt] Exception on ${currentModel} attempt ${attempt}:`, err.message || err);
-          if (attempt === 1) {
-            await new Promise((r) => setTimeout(r, 1000));
-            continue;
-          }
-        }
+    const model = getValidatedModel(modelOverride || this.model, 'GEMINI');
+    const health = this.getDiscoveryHealth(model);
+    if (options.discovery && Date.now() < health.retryNotBefore) return null;
+    const failed = (code: string, retryAfterMs = 0): null => {
+      this.lastError = code;
+      this.lastAvailabilityStatus = code === 'TIMEOUT' ? 'TIMEOUT' :
+        code === 'HTTP_429' ? 'RATE_LIMIT_EXCEEDED' :
+        code === 'INVALID_RESPONSE' ? 'INVALID_RESPONSE' :
+        ['HTTP_401', 'HTTP_403'].includes(code) ? 'AUTH_ERROR' :
+        code === 'HTTP_404' ? 'MODEL_NOT_FOUND' : 'PROVIDER_ERROR';
+      if (options.discovery) {
+        const consecutiveFailures = health.consecutiveFailures + 1;
+        const delay = Math.max(Math.min(30 * 60000, 5 * 60000 * 2 ** Math.min(3, consecutiveFailures - 1)), retryAfterMs);
+        this.discoveryHealth.set(model, { failureCode: code, consecutiveFailures, retryNotBefore: Date.now() + delay });
       }
+      return null;
+    };
+    // One request per reservation. Retry only on a later, newly budgeted call;
+    // timeouts/invalid responses may already have consumed billable tokens.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.apiKey.trim() },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.1, responseMimeType: 'application/json' } }),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const retryAfter = response.headers?.get('retry-after');
+        const retryMs = retryAfter ? (/^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0;
+        return failed(`HTTP_${response.status}`, Number.isFinite(retryMs) ? Math.max(0, Math.min(4 * 3600000, retryMs)) : 0);
+      }
+      let data: any;
+      try {
+        data = await response.json();
+      } catch (err: any) {
+        if (controller.signal.aborted || err?.name === 'AbortError') throw err;
+        return failed(err instanceof SyntaxError ? 'INVALID_RESPONSE' : 'NETWORK_ERROR');
+      }
+      const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (typeof raw !== 'string' || !raw.trim()) return failed('INVALID_RESPONSE');
+      let parsed: any;
+      try {
+        parsed = JSON.parse(raw.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim());
+      } catch { return failed('INVALID_RESPONSE'); }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !Object.keys(parsed).length) return failed('INVALID_RESPONSE');
+      if (options.discovery && (!['BULLISH', 'BEARISH', 'NEUTRAL'].includes(parsed.bias || parsed.marketAnalysis?.bias) ||
+          (parsed.scenarios !== undefined && !Array.isArray(parsed.scenarios)))) return failed('INVALID_RESPONSE');
+      const promptTokens = data.usageMetadata?.promptTokenCount || 0;
+      const completionTokens = data.usageMetadata?.candidatesTokenCount || 0;
+      if (options.discovery) this.discoveryHealth.delete(model);
+      this.lastSuccessTimestamp = Date.now();
+      this.lastError = null;
+      this.lastAvailabilityStatus = 'AVAILABLE';
+      return { ...parsed, model, costUsd: calculateCallCost(model, promptTokens, completionTokens), promptTokens, completionTokens };
+    } catch (err: any) {
+      return failed(controller.signal.aborted || err?.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK_ERROR');
+    } finally {
+      clearTimeout(timeoutId);
     }
-    return null;
   }
 
   public isConfigured(): boolean {

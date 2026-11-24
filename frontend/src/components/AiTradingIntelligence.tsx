@@ -35,6 +35,7 @@ import { ApprovedSignalsSection } from './scenarios/ApprovedSignalsSection';
 import { PaperTradingSection } from './scenarios/PaperTradingSection';
 import { DiscardedWithoutTradeSection } from './scenarios/DiscardedWithoutTradeSection';
 import { FullAuditTableSection } from './scenarios/FullAuditTableSection';
+import DiscoveryAuditPanel from './DiscoveryAuditPanel';
 import { formatUsd, formatArgentinaDateTime } from '../utils/formatters';
 
 export function AiTradingIntelligence() {
@@ -319,6 +320,11 @@ export function AiTradingIntelligence() {
               <Activity className="w-3.5 h-3.5" />
               {schedulerStatus.activeWatchedScenarios > 0
                 ? `${schedulerStatus.activeWatchedScenarios} ZONA(S) (SIN IA)`
+                : schedulerStatus.discoveryInFlight
+                ? 'DESCUBRIENDO...'
+                : schedulerStatus.providerFailureBackoffUntil &&
+                    schedulerStatus.providerFailureBackoffUntil > Date.now()
+                ? 'BACKOFF PROVEEDOR'
                 : 'VIGILANDO 24/7'}
             </span>
           ) : (
@@ -508,11 +514,14 @@ export function AiTradingIntelligence() {
       )}
 
       {activeTab === 'funnel' && (
-        <ScenarioFunnelView
-          scenarios={scenarios}
-          signals={allSignals.length > 0 ? allSignals : activeSignals}
-          totalAutonomousRuns={schedulerStatus?.totalAutonomousRuns || 0}
-        />
+        <div className="space-y-5">
+          <ScenarioFunnelView
+            scenarios={scenarios}
+            signals={allSignals.length > 0 ? allSignals : activeSignals}
+            totalAutonomousRuns={schedulerStatus?.totalAutonomousRuns || 0}
+          />
+          <DiscoveryAuditPanel apiBase={apiBase} />
+        </div>
       )}
 
       {activeTab === 'market_intelligence' && (
