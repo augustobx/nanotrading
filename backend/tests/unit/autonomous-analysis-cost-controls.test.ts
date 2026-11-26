@@ -8,6 +8,7 @@ import { ScenarioRegistry } from '../../src/engine/scenario-registry.js';
 import { Scenario } from '../../src/ai/scenario-types.js';
 import { calculateCallCost } from '../../src/ai/models-catalog.js';
 import { HardBudgetManager } from '../../src/ai/hard-budget-manager.js';
+import { GeminiAdapter } from '../../src/ai/gemini-adapter.js';
 
 function testScenario(overrides: Partial<Scenario> = {}): Scenario {
   const now = Date.now();
@@ -337,4 +338,81 @@ test('Scheduler: provider outage triggers a bounded automatic backoff, not a pai
     assert.equal(retry, false);
     assert.equal(attempts, 1, 'RANGE_BREAKOUT cannot bypass provider failure backoff');
   } finally { scheduler.stop(); db.close(); }
+});
+
+test('Scheduler status counts actionable watches, never neutral observations', () => {
+  const db = new DatabaseService(':memory:');
+  const coordinator = new EventEmitter() as EventEmitter & Record<string, any>;
+  const neutral = testScenario({
+    id: 'neutral-watch', direction: 'NEUTRAL', kind: 'NEUTRAL_OBSERVATION',
+    rrModeAvailable: 'NONE', status: 'NO_TRADE_OBSERVATION',
+  });
+  const directional = testScenario({ id: 'directional-watch' });
+  let active = [neutral];
+  coordinator.getScenarioRegistry = () => ({ getAllActive: () => active });
+  const scheduler = new AutonomousDiscoveryScheduler({
+    coordinator: coordinator as any, db,
+    hardBudgetManager: { isBlocked: () => false } as any,
+    discoveryEngine: { runDiscovery: async () => ({ scenarios: [] }) } as any,
+  });
+  try {
+    assert.equal(scheduler.getStatus().activeWatchedScenarios, 0);
+    active = [neutral, directional];
+    assert.equal(scheduler.getStatus().activeWatchedScenarios, 1);
+    active = [neutral, testScenario({ id: 'expired', validUntilTimestamp: Date.now() - 1000 })];
+    assert.equal(scheduler.getStatus().activeWatchedScenarios, 0);
+  } finally { db.close(); }
+});
+
+test('Gemini discovery gets a separate 60-second timeout and reports latency without extra calls', async () => {
+  const adapter = new GeminiAdapter({ apiKey: 'fixture-only', timeoutMs: 5 });
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    const signal = init?.signal as AbortSignal;
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(signal.aborted, false, 'Discovery must not inherit the short review timeout');
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: '{"bias":"NEUTRAL","scenarios":[]}' }] } }],
+    }), { status: 200 });
+  };
+  try {
+    const result = await adapter.evaluateWithCustomPrompt('fixture prompt', 'gemini-2.5-flash', { discovery: true });
+    assert.equal(result?.bias, 'NEUTRAL');
+    assert.equal(calls, 1);
+    assert.deepEqual(adapter.getDiscoveryHealth('gemini-2.5-flash'), {
+      failureCode: null, consecutiveFailures: 0, retryNotBefore: 0,
+    });
+    const info = adapter.getStatus().lastDiscoveryAttempt;
+    assert.equal(info?.model, 'gemini-2.5-flash');
+    assert.equal(info?.timeoutMs, 60000);
+    assert.equal(info?.outcome, 'SUCCESS');
+    assert.ok((info?.durationMs || 0) >= 20);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test('Gemini discovery timeout is recorded, paused and never retried inside the same reservation', async () => {
+  const adapter = new GeminiAdapter({ apiKey: 'fixture-only', discoveryTimeoutMs: 25 });
+  const previousFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_url, init) => {
+    calls++;
+    return await new Promise<Response>((_resolve, reject) => {
+      (init?.signal as AbortSignal).addEventListener('abort', () => {
+        reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+      }, { once: true });
+    });
+  };
+  try {
+    const result = await adapter.evaluateWithCustomPrompt('fixture', 'gemini-2.5-flash', { discovery: true });
+    assert.equal(result, null);
+    assert.equal(adapter.getStatus().lastDiscoveryAttempt?.outcome, 'TIMEOUT');
+    assert.equal(adapter.getStatus().lastDiscoveryAttempt?.timeoutMs, 25);
+    assert.equal(adapter.getDiscoveryHealth('gemini-2.5-flash').failureCode, 'TIMEOUT');
+    assert.ok(adapter.getDiscoveryHealth('gemini-2.5-flash').retryNotBefore > Date.now());
+    const paused = await adapter.evaluateWithCustomPrompt('fixture', 'gemini-2.5-flash', { discovery: true });
+    assert.equal(paused, null);
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = previousFetch; }
 });
