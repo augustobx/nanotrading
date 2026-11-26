@@ -2,7 +2,7 @@
 
 ## Alcance y evidencia
 
-Corte de SQLite: **25/11/2026 17:52:47 ART**. Ventana principal: **24/11/2026 10:23:32 ART**, arranque del backend con PR #7, hasta el corte. Todos los horarios de este informe son ART (UTC−3).
+Corte original de SQLite: **25/11/2026 17:52:47 ART**. Las secciones 1–8 reconstruyen los 69 registros de ese corte. La comprobación final se amplió hasta **25/11/2026 22:55:34 ART** y se documenta por separado al final, porque producción siguió operando durante la auditoría. Ventana principal desde **24/11/2026 10:23:32 ART**, arranque del backend con PR #7. Todos los horarios de este informe son ART (UTC−3).
 
 GitHub `master` y el checkout limpio de producción: `f3e0a446bbff4b2c683ffc6a1d4a15db7cce4edd`. PR #7 fue fusionado como `66a87fc4` el 24/11 a las 10:14:24. El backend arrancó a las 10:23:32; el frontend fue actualizado posteriormente. Se verificaron en el JavaScript del contenedor las funciones de auditoría del PR #7 y el defecto de identidad de Gemini. La imagen del backend es `sha256:f03bf66ec7cf5074bdb6ea469d8c7630eafb1707acc1190a5d20a9160ec9300a`; el commit del checkout no constituye por sí solo una etiqueta de procedencia de esa imagen.
 
@@ -163,3 +163,26 @@ Validación focalizada: **45/45 pruebas** en `gemini-discovery-recovery`, `disco
 **Combinación: falla operativa demostrada en Gemini + configuración presupuestaria que corta cobertura + propuestas históricas descartables bajo la política vigente.**
 
 No se ha demostrado que la arquitectura cuantitativa sea excesivamente restrictiva ni que el parche produzca una frecuencia mínima de operaciones. Los 69 no prueban 69 oportunidades perdidas. La corrección hace coherentes el proveedor efectivo, su presupuesto y su recuperación; el circuito paper ya es técnicamente capaz de abrir, seguir y cerrar. La cobertura autónoma actual seguirá limitada por el subpresupuesto y la disponibilidad del proveedor hasta resolverlos de forma autorizada.
+
+## Actualización final — 25/11/2026 22:55 ART
+
+Se obtuvo una **segunda copia lógica consistente**, también con `quick_check=ok`, en `scratch/diagnosis-20261125/final/`. No se sobrescribió la evidencia de los 69 originales. Se amplió la descarga Bybit hasta el nuevo corte: 62 velas adicionales de 5m y 20 de 15m, incluyendo solapamiento de límite y la vela abierta; los ocho eventos analizados arriba conservan su evidencia causal original.
+
+Producción tiene ahora **71 registros: 70 finalizados y una observación neutral activa; cero hipótesis direccionales activas, señales o entradas paper**. Las dos observaciones adicionales provienen de candidatos LONG descartados. El primer neutral nuevo fue reemplazado por el segundo.
+
+Hubo tres bloqueos presupuestarios adicionales a las 18:45, 19:45 y 20:45. El reinicio diario ocurre a las **21:00 ART (00:00 UTC)**. Después volvió a haber respuestas OpenAI, sin intervención nuestra:
+
+| Hora | Propuesta OpenAI | Entrada / SL | TP corto / extendido | R:R netos | Resultado |
+|---|---|---|---|---|---|
+| 21:15 | BULLISH, LONG | 60.950 / 60.341 | 62.169 / 63.388 | 1,69 / 3,46 | `RR_UNQUALIFIED` |
+| 22:00 | BULLISH, LONG | 60.504 / 59.899 | 61.714 / 62.924 | 1,69 / 3,46 | `RR_UNQUALIFIED` |
+
+Gemini volvió a figurar sin respuesta válida y con el alias incorrecto en ambas auditorías; su estado vigente conserva `HTTP_503`. Los dos nuevos LONG también reproducen los niveles del ejemplo porcentual del prompt. Son **cinco propuestas de ese patrón sobre 25** en la ventana extendida, todas por debajo de 4R netos.
+
+Embudo acumulado posterior al PR #7 hasta las 22:55: **50 solicitudes finalizadas → 31 con intentos de proveedores → 29 con respuesta válida → 25 propuestas (5 LONG, 20 SHORT) → 25 rechazadas → 0 escenarios direccionales → 0 zonas/revalidaciones/autorizaciones/entradas/cierres paper**. Resultados de análisis: 25 `CANDIDATES_REJECTED`, 4 `AI_NO_TRADE`, 19 `BUDGET_BLOCKED`, 2 `PROVIDER_UNAVAILABLE`.
+
+Distribución final: **14 `UNVERIFIED_STRUCTURAL_LEVELS` (56%) y 11 `RR_UNQUALIFIED` (44%)**. Sigue sin haber candidatos perdidos exclusivamente por el piso global 4R frente al corto 2R. El nuevo par tiene 2R/4R brutos y 1,69R/3,46R netos. El CSV adjunto conserva los 23 candidatos del corte original; esta tabla documenta los dos adicionales y sus snapshots completos están en la segunda copia.
+
+Gasto del nuevo día UTC: USD 0,049417; reservas cero. El campo `lastBudgetDenial` conserva la última denegación histórica, **no significa que el nuevo día siga bloqueado**. WS conectado, datos de 3 ms de antigüedad y cero gaps. Esto demuestra recuperación autónoma del scheduler tras el reset; el sublímite sigue configurado y puede volver a detener las llamadas cuando se alcance.
+
+PR independiente: [#8](https://github.com/augustobx/nanotrading/pull/8). No fusionado ni desplegado. La disponibilidad Gemini y la calidad de propuestas siguen siendo limitaciones reales; no se atribuye al parche una rentabilidad ni una cantidad mínima de operaciones.
