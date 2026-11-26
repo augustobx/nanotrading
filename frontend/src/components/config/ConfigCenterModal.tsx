@@ -2553,6 +2553,53 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                   </div>
                 </div>
 
+
+                {/* Provider sublimits are independent hard stops, not a share of the global balance. */}
+                {hardBudgetSummary?.providerDaily && (
+                  <div className="rounded-lg border border-[#21283b] bg-[#111624] p-4 space-y-3">
+                    <div>
+                      <h4 className="text-xs font-bold uppercase tracking-wide text-white">Sublímites diarios por proveedor</h4>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Un saldo global disponible NO garantiza que OpenAI o Gemini puedan reservar otra solicitud.
+                        Estos valores incluyen gasto bruto y reservas pendientes. Tener remanente no garantiza que alcance para la próxima reserva. No se modifican límites.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {(['OPENAI', 'GEMINI'] as const).map((provider) => {
+                        const item = hardBudgetSummary.providerDaily?.[provider];
+                        if (!item) return null;
+                        const hasLimit = typeof item.limitUsd === 'number';
+                        const remaining = typeof item.remainingUsd === 'number' ? item.remainingUsd : null;
+                        return (
+                          <div key={provider} className="rounded-lg bg-[#0a0d14] border border-[#21283b] p-3 space-y-1 text-xs">
+                            <div className="flex justify-between items-center">
+                              <span className="text-slate-200 font-bold">{provider}</span>
+                              <span className={hasLimit && remaining === 0 ? 'text-amber-300 font-bold' : 'text-slate-300'}>
+                                {hasLimit ? (remaining === 0 ? 'SUBLÍMITE AGOTADO' : 'REMANENTE PARCIAL') : 'SIN SUBLÍMITE'}
+                              </span>
+                            </div>
+                            <div className="font-mono text-slate-200">
+                              Bruto hoy: ${item.grossSpentUsd.toFixed(4)} USD
+                              {hasLimit && <> / ${item.limitUsd.toFixed(4)} USD</>}
+                            </div>
+                            <div className="text-slate-400 font-mono">
+                              Reservado: ${item.reservedUsd.toFixed(4)} USD
+                              {' · '}Disponible: {remaining === null ? 'sujeto a límites globales' : ('$' + remaining.toFixed(4) + ' USD')}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {hardBudgetSummary.lastBudgetDenial?.code?.startsWith('PROVIDER_') && (
+                      <div className="text-[11px] text-amber-300 border-t border-[#21283b] pt-2">
+                        Última denegación por proveedor ({new Date(hardBudgetSummary.lastBudgetDenial.timestamp).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}):
+                        {' '}{hardBudgetSummary.lastBudgetDenial.reason}
+                        <span className="text-slate-400"> · Registro histórico, no implica bloqueo vigente.</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* Progress Bars Section */}
                 <div className="p-5 rounded-lg bg-[#111624] border border-[#21283b] space-y-5">
                   <h4 className="text-xs font-bold uppercase tracking-wider text-orange-400 flex items-center gap-2">

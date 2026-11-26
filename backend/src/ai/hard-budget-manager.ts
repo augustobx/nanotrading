@@ -78,6 +78,13 @@ export interface HardBudgetSummary {
   isBlocked: boolean;
   blockedReason: string | null;
   spendByProvider: Record<AiProvider, number>;
+  /** Daily GROSS provider sublimits; null means no independent provider cap. */
+  providerDaily: Record<AiProvider, {
+    limitUsd: number | null;
+    grossSpentUsd: number;
+    reservedUsd: number;
+    remainingUsd: number | null;
+  }>;
   spendByModel: Record<string, number>;
   spendByTask: Record<string, number>;
   tokensSummary: {
@@ -1160,6 +1167,25 @@ export class HardBudgetManager {
     const dailyPercent = Math.min(100, parseFloat(((effectiveToday / this.config.dailyBudgetLimitUsd) * 100).toFixed(1)));
     const monthlyPercent = Math.min(100, parseFloat(((effectiveMonth / this.config.monthlyBudgetLimitUsd) * 100).toFixed(1)));
 
+    // This read-only breakdown uses the same gross ledger and pending reservations
+    // as reserveBudget(), avoiding misleading 'global budget available' messages.
+    const dailyProvider = (provider: AiProvider) => {
+      const limit = this.config.providerLimitsUsd?.[provider.toLowerCase() as 'openai' | 'gemini'];
+      const spent = this.grossSpentSince(day.getTime(), { provider });
+      const reserved = this.pendingFor({ provider });
+      return {
+        limitUsd: limit ?? null,
+        grossSpentUsd: Number(spent.toFixed(4)),
+        reservedUsd: Number(reserved.toFixed(4)),
+        remainingUsd: limit === undefined ? null :
+          Math.max(0, Number((limit - spent - reserved).toFixed(4))),
+      };
+    };
+    const providerDaily = {
+      OPENAI: dailyProvider('OPENAI'),
+      GEMINI: dailyProvider('GEMINI'),
+    };
+
     const spendByProvider: Record<AiProvider, number> = { OPENAI: 0, GEMINI: 0 };
     const spendByModel: Record<string, number> = {};
     const spendByTask: Record<string, number> = {};
@@ -1236,6 +1262,7 @@ export class HardBudgetManager {
       monthGrossSpendUsd: monthGrossSpend,
       lastBudgetDenial: this.lastBudgetDenial,
       spendByProvider,
+      providerDaily,
       spendByModel,
       spendByTask,
       tokensSummary: {

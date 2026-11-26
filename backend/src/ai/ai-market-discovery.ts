@@ -214,6 +214,93 @@ export function verifyProposedLevels(
   };
 }
 
+
+/**
+ * Discovery contract shared by OpenAI and Gemini.
+ * Describes only levels actually present in the market snapshot; illustrative
+ * percentage-derived entry/stop/target examples must never enter paid prompts.
+ * Validation and the administrative R:R policy remain authoritative.
+ */
+export function buildDiscoveryPrompt(
+  summary: MarketIntelligenceSummary,
+  provider: 'OPENAI' | 'GEMINI',
+  policy?: { minNetRR: number; minRRShort: number; minRRExtended: number; rrTargetMode?: string } | null
+): string {
+  const minimums = effectiveRRMinimums(policy);
+  const anchorLines: string[] = [];
+  const positive = (input: unknown): number | null => {
+    const number = Number(input);
+    return Number.isFinite(number) && number > 0 ? number : null;
+  };
+
+  for (const [tf, raw] of Object.entries(summary.timeframes || {})) {
+    const data: any = raw;
+    if (!data) continue;
+    const levels: string[] = [];
+    const high = positive(data.activeSwings?.high?.price);
+    const low = positive(data.activeSwings?.low?.price);
+    const vwap = positive(data.vwap);
+    if (high !== null) levels.push('SWING_HIGH=' + high);
+    if (low !== null) levels.push('SWING_LOW=' + low);
+    for (const ob of data.activeObDetails || []) {
+      const bottom = positive(ob.bottom);
+      const top = positive(ob.top);
+      if (bottom !== null && top !== null) {
+        levels.push('OB_' + String(ob.type || 'UNKNOWN') + '=[' + Math.min(bottom, top) + ',' + Math.max(bottom, top) + ']');
+      }
+    }
+    for (const fvg of data.activeFvgDetails || []) {
+      const bottom = positive(fvg.bottom);
+      const top = positive(fvg.top);
+      if (bottom !== null && top !== null) {
+        levels.push('FVG_' + String(fvg.type || 'UNKNOWN') + '=[' + Math.min(bottom, top) + ',' + Math.max(bottom, top) + ']');
+      }
+    }
+    if (vwap !== null) levels.push('VWAP=' + vwap);
+    if (levels.length) anchorLines.push(tf + ': ' + levels.join('; '));
+  }
+
+  const analystRole = provider === 'OPENAI'
+    ? 'Analista principal cuantitativo y discrecional de BTCUSDT Perpetual.'
+    : 'Auditor crítico independiente de BTCUSDT Perpetual: cuestiona las tesis sin inventar niveles.';
+  return [
+    analystRole,
+    'Precio de referencia: ' + summary.currentPrice + ' USDT.',
+    'Política real: R:R NETO mínimo ' + minimums.short + ' para objetivo corto y ' +
+      minimums.extended + ' para extendido; modo ' + (policy?.rrTargetMode || 'RR_BOTH') + '.',
+    'Examinar estructura SMC/ICT, tendencia y rangos multitemporales, velas cerradas, volumen, RSI, EMA, VWAP y spreads.',
+    'Las siguientes son las ÚNICAS anclas estructurales activas admitidas por el verificador de escenarios:',
+    anchorLines.length ? anchorLines.join('\n') : 'No hay anclas verificables: responde scenarios: [].',
+    'Los recentSwings históricos son contexto descriptivo, NO anclas válidas salvo que coincidan con activeSwings.',
+    'REGLAS PARA PRECIOS: elige entrada, límites de zona, stop y objetivos apoyándote en estas anclas actuales. ' +
+      'Puedes ubicar un nivel dentro del rango de un OB/FVG activo o cerca de un punto anclado conforme al verificador. ' +
+      'Cita el timeframe y el nivel usado en thesis o argumentsFor.',
+    'PROHIBIDO: objetivos derivados de multiplicadores del precio actual (+2%, +4%), ' +
+      'R:R fijado a priori, precios redondeados inventados, stops arbitrarios y objetivos sin referencia verificable.',
+    'Primero determina los objetivos estructurales alcanzables y el stop estructural; después comprueba si el R:R NETO ' +
+      'alcanza la política. Si no, devuelve scenarios: [] y explica la falta de elegibilidad.',
+    'No hay obligación de emitir un LONG o SHORT. NEUTRAL/NO_TRADE es correcto sin confluencia y precio justificable.',
+    'Construye AI_WATCH_PLAN determinista con pasos secuenciales y operadores soportados: PRICE_IN_RANGE, ' +
+      'CANDLE_PATTERN, LEVEL_REJECTION_WICK, STRUCTURE_CLOSE, BREAK_AND_RETEST, SWEEP_AND_RECLAIM, ' +
+      'VOLUME_EXPANSION, BOS_CONFIRMED, CHOCH_CONFIRMED, RSI_THRESHOLD, SPREAD_TOLERANCE. ' +
+      'Solo automatable:true para condiciones verificables con los datos disponibles; si no, automatable:false.',
+    'RESPUESTA: exclusivamente JSON válido con claves marketAnalysis, bias, reasoning, keyZones y scenarios.',
+    'marketAnalysis es objeto con whatMarketIsDoing, whyMarketIsDoingIt, evidenceList (array de strings), ' +
+      'bias (BULLISH/BEARISH/NEUTRAL), preferredHorizon (SCALP/INTRADAY/SWING), recommendedTimeframe ' +
+      'y noTradeJustification.',
+    'scenarios es un array (puede ser []). Para cada elemento usa direction (LONG/SHORT), thesis, horizon, timeframe, ' +
+      'structureType, entryZoneMin, entryZoneMax, targetEntry, structuralStopLoss, candidateTarget12 y/o ' +
+      'candidateTarget14, missingConditions, invalidationEvents, argumentsFor, argumentsAgainst, confidence y watchPlan.',
+    'watchPlan incluye horizon, observableConditions [{description,operator,params,automatable,sequenceOrder}], ' +
+      'confirmationSequence, invalidationConditions [{description,operator,params,automatable}] y expirationHours.',
+    'Los niveles monetarios deben ser NÚMEROS JSON basados en el snapshot, nunca strings, null ni ejemplos. ' +
+      'Si no hay un target estructural, omite ese target; si no hay ninguno, devuelve scenarios: [].',
+    'No inventes probabilidades estadísticas ni garantices rendimiento.',
+    'Panorama Multitemporal:',
+    JSON.stringify(summary, null, 2),
+  ].join('\n');
+}
+
 export class AiMarketDiscoveryEngine extends EventEmitter {
   private coordinator: MarketCoordinator;
   private openaiAdapter: OpenAiAdapter;
@@ -1224,79 +1311,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
     if (!this.openaiAdapter.isConfigured()) return null;
 
     try {
-      const pCurrent = Math.round(summary.currentPrice);
-      const prompt = `Actúa como Analista Principal Cuantitativo y Discrecional de Mercado para NanoLabs AI Trading.
-Tu objetivo es analizar integralmente la estructura técnica de BTCUSDT Perpetual (1D, 4H, 1H, 15m, 5m, 1m, SMC, ICT, order flow, RSI, EMA, VWAP, spreads y contexto).
-Precio actual de BTCUSDT: $${summary.currentPrice} USDT.
-Política vigente: R:R neto mínimo efectivo ${effectiveRRMinimums(this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()).short} para objetivo corto y ${effectiveRRMinimums(this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()).extended} para extendido; modo ${this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()?.rrTargetMode || "RR_BOTH"}.
-
-DIRECTIVAS ESTRICTAS:
-1. Eres un analista autónomo. No dependes de estrategias fijas ni de patrones predefinidos. Analiza libremente la acción del precio y las estructuras de mercado.
-2. Tienes plena libertad para descubrir hipótesis operables LONG o SHORT con confluencia estructural estricta y respetando los mínimos efectivos de la política vigente indicados arriba.
-3. Si el mercado no ofrece una ventaja estadística nítida, la conclusión imperativa es NEUTRAL / NO_TRADE ("No operar es una decisión válida y a menudo la mejor").
-4. Para cada oportunidad seleccionada, diseña un plan de vigilancia determinista (AI_WATCH_PLAN) con condiciones observables en secuencia mediante operadores algorítmicos nativos evaluados en velas cerradas: PRICE_IN_RANGE, CANDLE_PATTERN (BEARISH_ENGULFING, BULLISH_ENGULFING, PIN_BAR, SHOOTING_STAR, HAMMER), LEVEL_REJECTION_WICK (con minWickRatio), STRUCTURE_CLOSE, BREAK_AND_RETEST, SWEEP_AND_RECLAIM, VOLUME_EXPANSION, BOS_CONFIRMED, CHOCH_CONFIRMED, RSI_THRESHOLD, SPREAD_TOLERANCE. Marca automatable: true para estos operadores. Si requieres una confirmación cualitativa no automatizable, se mantendrá automatable: false y requerirá reevaluación.
-5. No inventes probabilidades matemáticas ni porcentajes de acierto calibrados; tu evaluación de confianza es cualitativa.
-6. ANCLAJE CUANTITATIVO OBLIGATORIO: Los niveles de entrada, stop loss y objetivos DEBEN anclarse en soportes, resistencias, Order Blocks o FVGs reales provistos en el panorama multitemporal. JAMÁS uses números arbitrarios ni niveles fuera del contexto actual de $${summary.currentPrice}.
-
-Responde obligatoriamente en JSON estricto:
-{
-  "marketAnalysis": {
-    "whatMarketIsDoing": "Descripción concisa del estado actual del mercado...",
-    "whyMarketIsDoingIt": "Tesis sobre motivación de la acción del precio (absorción, barrido de liquidez, reacumulación)...",
-    "evidenceList": ["Evidencia 1", "Evidencia 2", "..."],
-    "bias": "BULLISH" | "BEARISH" | "NEUTRAL",
-    "preferredHorizon": "SCALP" | "INTRADAY" | "SWING",
-    "recommendedTimeframe": "15m",
-    "noTradeJustification": "Explicación en caso de concluir NEUTRAL"
-  },
-  "bias": "BULLISH" | "BEARISH" | "NEUTRAL",
-  "reasoning": "Resumen ejecutivo del análisis",
-  "keyZones": ["Zona clave 1 cercana al precio actual", "Zona clave 2"],
-  "scenarios": [
-    {
-      "direction": "LONG" | "SHORT",
-      "thesis": "Tesis técnica de la oportunidad",
-      "horizon": "SCALP" | "INTRADAY" | "SWING",
-      "timeframe": "15m",
-      "structureType": "SMC_DISCRETIONARY_DISCOVERY",
-      "entryZoneMin": ${Math.round(pCurrent * 0.995)},
-      "entryZoneMax": ${Math.round(pCurrent * 1.002)},
-      "targetEntry": ${pCurrent},
-      "structuralStopLoss": ${Math.round(pCurrent * 0.990)},
-      "candidateTarget12": ${Math.round(pCurrent * 1.020)},
-      "candidateTarget14": ${Math.round(pCurrent * 1.040)},
-      "missingConditions": ["Esperar mitigación limpia y desaceleración de volumen"],
-      "invalidationEvents": ["Cierre de vela por debajo del stop loss"],
-      "argumentsFor": ["..."],
-      "argumentsAgainst": ["..."],
-      "confidence": 75,
-      "watchPlan": {
-        "horizon": "INTRADAY",
-        "observableConditions": [
-          {
-            "description": "Precio entra en zona de entrada",
-            "operator": "PRICE_IN_RANGE",
-            "params": { "minLevel": ${Math.round(pCurrent * 0.995)}, "maxLevel": ${Math.round(pCurrent * 1.002)} },
-            "automatable": true,
-            "sequenceOrder": 1
-          }
-        ],
-        "confirmationSequence": ["Mitigación de zona", "Rechazo de volumen adverso"],
-        "invalidationConditions": [
-          {
-            "description": "Precio vulnera Stop Loss",
-            "operator": "PRICE_CROSS_BELOW",
-            "params": { "level": ${Math.round(pCurrent * 0.990)} },
-            "automatable": true
-          }
-        ],
-        "expirationHours": 8
-      }
-    }
-  ]
-}
-
-Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
+      const prompt = buildDiscoveryPrompt(summary, 'OPENAI',
+        this.coordinator.getRiskPolicyManager?.()?.getPolicy?.());
 
       const res = await this.openaiAdapter.evaluateWithCustomPrompt?.(prompt, selectedModel) || null;
       if (!res || !['BULLISH', 'BEARISH', 'NEUTRAL'].includes(res.bias || res.marketAnalysis?.bias) ||
@@ -1333,78 +1349,8 @@ Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
     if (!this.geminiAdapter.isConfigured()) return null;
 
     try {
-      const pCurrent = Math.round(summary.currentPrice);
-      const prompt = `Actúa como Auditor Crítico y Analista Independiente de Mercado para NanoLabs AI Trading.
-Evalúa con máxima objetividad la estructura multitemporal de BTCUSDT y descubre oportunidades técnicas genuinas.
-Precio actual de BTCUSDT: $${summary.currentPrice} USDT.
-Política vigente: R:R neto mínimo efectivo ${effectiveRRMinimums(this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()).short} para objetivo corto y ${effectiveRRMinimums(this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()).extended} para extendido; modo ${this.coordinator.getRiskPolicyManager?.()?.getPolicy?.()?.rrTargetMode || "RR_BOTH"}.
-
-DIRECTIVAS ESTRICTAS:
-1. Sin estrategias preprogramadas obligatorias. Eres libre de evaluar cualquier setup técnico de SMC/ICT o confluencia de mercado.
-2. Identifica trampas de liquidez, mechas de absorción y falsos quiebres.
-3. Si el mercado está en rango sucio o sin ventaja nítida, concluye NEUTRAL / NO_TRADE ("No operar es una decisión válida y a menudo la mejor").
-4. Genera planes de vigilancia algorítmicos estructurados (AI_WATCH_PLAN) con condiciones observables evaluadas sobre velas cerradas: PRICE_IN_RANGE, CANDLE_PATTERN (BEARISH_ENGULFING, BULLISH_ENGULFING, PIN_BAR, SHOOTING_STAR, HAMMER), LEVEL_REJECTION_WICK, STRUCTURE_CLOSE, BREAK_AND_RETEST, SWEEP_AND_RECLAIM, VOLUME_EXPANSION, BOS_CONFIRMED, CHOCH_CONFIRMED. Marca automatable: true para estos operadores.
-5. ANCLAJE CUANTITATIVO OBLIGATORIO: Los niveles de entrada, stop loss y objetivos DEBEN anclarse en soportes, resistencias, Order Blocks o FVGs reales provistos en el panorama multitemporal. JAMÁS inventes precios no existentes en los datos.
-
-Responde obligatoriamente en JSON estricto:
-{
-  "marketAnalysis": {
-    "whatMarketIsDoing": "...",
-    "whyMarketIsDoingIt": "...",
-    "evidenceList": ["..."],
-    "bias": "BULLISH" | "BEARISH" | "NEUTRAL",
-    "preferredHorizon": "SCALP" | "INTRADAY" | "SWING",
-    "recommendedTimeframe": "15m",
-    "noTradeJustification": "..."
-  },
-  "bias": "BULLISH" | "BEARISH" | "NEUTRAL",
-  "reasoning": "...",
-  "keyZones": ["..."],
-  "scenarios": [
-    {
-      "direction": "LONG" | "SHORT",
-      "thesis": "...",
-      "horizon": "SCALP" | "INTRADAY" | "SWING",
-      "timeframe": "15m",
-      "structureType": "SMC_DISCRETIONARY_DISCOVERY",
-      "entryZoneMin": ${Math.round(pCurrent * 0.995)},
-      "entryZoneMax": ${Math.round(pCurrent * 1.002)},
-      "targetEntry": ${pCurrent},
-      "structuralStopLoss": ${Math.round(pCurrent * 0.990)},
-      "candidateTarget12": ${Math.round(pCurrent * 1.020)},
-      "candidateTarget14": ${Math.round(pCurrent * 1.040)},
-      "missingConditions": ["..."],
-      "invalidationEvents": ["..."],
-      "argumentsFor": ["..."],
-      "argumentsAgainst": ["..."],
-      "confidence": 75,
-      "watchPlan": {
-        "horizon": "INTRADAY",
-        "observableConditions": [
-          {
-            "description": "Precio entra en zona operativa",
-            "operator": "PRICE_IN_RANGE",
-            "params": { "minLevel": ${Math.round(pCurrent * 0.995)}, "maxLevel": ${Math.round(pCurrent * 1.002)} },
-            "automatable": true,
-            "sequenceOrder": 1
-          }
-        ],
-        "confirmationSequence": ["..."],
-        "invalidationConditions": [
-          {
-            "description": "Precio cruza bajo SL",
-            "operator": "PRICE_CROSS_BELOW",
-            "params": { "level": ${Math.round(pCurrent * 0.990)} },
-            "automatable": true
-          }
-        ],
-        "expirationHours": 8
-      }
-    }
-  ]
-}
-
-Panorama Multitemporal:\n${JSON.stringify(summary, null, 2)}`;
+      const prompt = buildDiscoveryPrompt(summary, 'GEMINI',
+        this.coordinator.getRiskPolicyManager?.()?.getPolicy?.());
 
       const res = await this.geminiAdapter.evaluateWithCustomPrompt?.(prompt, selectedModel, { discovery: true }) || null;
       if (!res || !['BULLISH', 'BEARISH', 'NEUTRAL'].includes(res.bias || res.marketAnalysis?.bias) ||

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { DatabaseService } from '../../src/storage/database.js';
 import { ScenarioRegistry } from '../../src/engine/scenario-registry.js';
-import { AiMarketDiscoveryEngine } from '../../src/ai/ai-market-discovery.js';
+import { AiMarketDiscoveryEngine, buildDiscoveryPrompt } from '../../src/ai/ai-market-discovery.js';
 import { AutonomousDiscoveryScheduler } from '../../src/ai/autonomous-discovery-scheduler.js';
 import { DEFAULT_RISK_POLICY } from '../../src/engine/risk-policy.js';
 import { GeminiAdapter } from '../../src/ai/gemini-adapter.js';
@@ -43,6 +43,24 @@ function harness() {
 }
 const candidate: any = { direction: 'LONG', entryZoneMin: 59990, entryZoneMax: 60010,
   targetEntry: 60000, stopLossPrice: 59500, candidateTarget12: 61700 };
+
+test('Both analyst prompts require current verified anchors and contain no numeric price examples', () => {
+  const h = harness();
+  try {
+    const openai = buildDiscoveryPrompt(h.summary, 'OPENAI', h.policy);
+    const gemini = buildDiscoveryPrompt(h.summary, 'GEMINI', h.policy);
+    for (const prompt of [openai, gemini]) {
+      assert.match(prompt, /SWING_HIGH=60500/);
+      assert.ok(prompt.includes('OB_BULLISH=[61690,61710]'));
+      assert.match(prompt, /R:R NETO mínimo 4 para objetivo corto y 4 para extendido/);
+      assert.match(prompt, /PROHIBIDO: objetivos derivados de multiplicadores/);
+      assert.match(prompt, /Los recentSwings históricos son contexto descriptivo, NO anclas válidas/);
+      assert.doesNotMatch(prompt, /"candidateTarget(?:12|14)"\s*:\s*[0-9]/);
+      assert.doesNotMatch(prompt, /"entryZoneMin"\s*:\s*[0-9]/);
+      assert.doesNotMatch(prompt, /Math\.round\(pCurrent/);
+    }
+  } finally { h.db.close(); }
+});
 
 test('Administrative 4R floor rejects a structural 2.5R short objective with an extended objective below 4R', async () => {
   const h = harness();
