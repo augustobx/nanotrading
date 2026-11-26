@@ -2584,7 +2584,23 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                             </div>
                             <div className="text-slate-400 font-mono">
                               Reservado: ${item.reservedUsd.toFixed(4)} USD
-                              {' · '}Disponible: {remaining === null ? 'sujeto a límites globales' : '
+                              {' · '}Disponible: {remaining === null ? 'sujeto a límites globales' : ('$' + remaining.toFixed(4) + ' USD')}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {hardBudgetSummary.lastBudgetDenial?.code?.startsWith('PROVIDER_') && (
+                      <div className="text-[11px] text-amber-300 border-t border-[#21283b] pt-2">
+                        Última denegación por proveedor ({new Date(hardBudgetSummary.lastBudgetDenial.timestamp).toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}):
+                        {' '}{hardBudgetSummary.lastBudgetDenial.reason}
+                        <span className="text-slate-400"> · Registro histórico, no implica bloqueo vigente.</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Progress Bars Section */}
                 <div className="p-5 rounded-lg bg-[#111624] border border-[#21283b] space-y-5">
                   <h4 className="text-xs font-bold uppercase tracking-wider text-orange-400 flex items-center gap-2">
                     <TrendingUp className="w-4 h-4" /> Ejecución Presupuestaria en Tiempo Real
