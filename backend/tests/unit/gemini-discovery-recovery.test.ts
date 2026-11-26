@@ -1,6 +1,43 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GeminiAdapter } from '../../src/ai/gemini-adapter.js';
+import { AiModelRouter } from '../../src/ai/router/ai-router.js';
+import { getModelMetadata } from '../../src/ai/models-catalog.js';
+
+test('Automatic routing reserves the same Gemini model that executes and reports its discovery pause', async () => {
+  const router = new AiModelRouter();
+  const decision = router.routeModel('MARKET_DISCOVERY', 'GEMINI', 5);
+  assert.equal(decision.selectedModel, 'gemini-2.5-flash');
+  assert.equal(decision.estimatedCostPer1kTokensUsd,
+    getModelMetadata(decision.selectedModel).estimatedInputCostPerMillion / 1000);
+  const previousFetch = globalThis.fetch;
+  const adapter = new GeminiAdapter({ apiKey: 'fixture-only' });
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    calls++;
+    assert.match(String(url), new RegExp(`/models/${decision.selectedModel}:generateContent$`));
+    return new Response('', { status: 503 });
+  };
+  try {
+    await adapter.evaluateWithCustomPrompt('fixture', decision.selectedModel, { discovery: true });
+    assert.equal(adapter.getDiscoveryHealth(decision.selectedModel).failureCode, 'HTTP_503');
+    assert.ok(adapter.getDiscoveryHealth(decision.selectedModel).retryNotBefore > Date.now());
+    await adapter.evaluateWithCustomPrompt('fixture', decision.selectedModel, { discovery: true });
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test('Retired Gemini aliases expose the actual model failure and cooldown', async () => {
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('', { status: 429 });
+  const adapter = new GeminiAdapter({ apiKey: 'fixture-only' });
+  try {
+    await adapter.evaluateWithCustomPrompt('fixture', 'gemini-2.0-flash', { discovery: true });
+    assert.equal(adapter.getDiscoveryHealth('gemini-2.0-flash').failureCode, 'HTTP_429');
+    assert.deepEqual(adapter.getDiscoveryHealth('gemini-2.0-flash'),
+      adapter.getDiscoveryHealth('gemini-2.5-flash'));
+  } finally { globalThis.fetch = previousFetch; }
+});
 
 test('Gemini separates HTTP failures, pauses discovery and recovers with one request per reservation', async () => {
   const fetchBefore = globalThis.fetch, nowBefore = Date.now;
