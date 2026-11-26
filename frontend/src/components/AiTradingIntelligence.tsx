@@ -38,7 +38,9 @@ import { FullAuditTableSection } from './scenarios/FullAuditTableSection';
 import DiscoveryAuditPanel from './DiscoveryAuditPanel';
 import { formatUsd, formatArgentinaDateTime } from '../utils/formatters';
 
-export function AiTradingIntelligence() {
+export function AiTradingIntelligence({
+  onShowScenarioOnChart,
+}: { onShowScenarioOnChart?: (scenarioId: string) => void } = {}) {
   const [activeTab, setActiveTab] = useState<
     'en_proceso' | 'senales' | 'paper' | 'sin_trade' | 'historial' | 'funnel' | 'market_intelligence' | 'watcher_stats'
   >('en_proceso');
@@ -610,6 +612,7 @@ export function AiTradingIntelligence() {
           scenarioDetail={scenarioDetail}
           onClose={() => setSelectedScenarioId(null)}
           onManualRevalidate={handleManualRevalidate}
+          onShowOnChart={onShowScenarioOnChart}
           isRevalidating={isRevalidating}
         />
       )}

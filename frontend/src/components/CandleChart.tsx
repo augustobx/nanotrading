@@ -79,6 +79,48 @@ interface CandleChartProps {
 
 const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
+const TERMINAL_SCENARIO_STATUSES = new Set([
+  'COMPLETED', 'COMPLETED_TP', 'COMPLETED_SL', 'INVALIDATED',
+  'EXPIRED', 'CANCELLED', 'DISCARDED', 'SIGNAL_GENERATED',
+]);
+const DIRECTIONAL_WATCH_STATUSES = new Set([
+  'SCENARIO_PROPOSED', 'SCENARIO_REGISTERED', 'SCENARIO_MONITORING',
+  'APPROACHING_ZONE', 'IN_ZONE', 'REVALIDATION_REQUESTED',
+  'AI_REVALIDATING', 'WAITING_CONFIRMATION', 'ENTRY_VALIDATED',
+]);
+const isNeutralRange = (scenario: any) =>
+  scenario?.direction === 'NEUTRAL' || scenario?.kind === 'NEUTRAL_OBSERVATION';
+
+function isVisibleWatch(scenario: any): boolean {
+  if (!scenario || TERMINAL_SCENARIO_STATUSES.has(scenario.status)) return false;
+  const expiry = Number(scenario.watchPlan?.expirationTimestamp || scenario.validUntilTimestamp);
+  if (Number.isFinite(expiry) && expiry > 0 && expiry <= Date.now()) return false;
+  if (isNeutralRange(scenario)) {
+    return scenario.status === 'NO_TRADE_OBSERVATION' &&
+      Number.isFinite(scenario.entryZoneMin) &&
+      Number.isFinite(scenario.entryZoneMax) &&
+      scenario.entryZoneMax > scenario.entryZoneMin;
+  }
+  return DIRECTIONAL_WATCH_STATUSES.has(scenario.status) &&
+    (scenario.direction === 'LONG' || scenario.direction === 'SHORT') &&
+    Number.isFinite(scenario.targetEntry) &&
+    Number.isFinite(scenario.stopLossPrice);
+}
+
+function resolveWatchForChart(scenarios: any[], selectedId: string | null, symbol: string): any | null {
+  const matchesSymbol = (s: any) => !s.symbol || s.symbol === symbol;
+  if (selectedId) {
+    const selected = scenarios.find(s => s.id === selectedId && matchesSymbol(s));
+    // Never draw expired / invalidated levels as if they were active.
+    if (selected) return isVisibleWatch(selected) ? selected : null;
+  }
+  const active = scenarios.filter(s => matchesSymbol(s) && isVisibleWatch(s))
+    .sort((a, b) => (b.discoveryTimestamp || b.createdAt || 0) -
+      (a.discoveryTimestamp || a.createdAt || 0));
+  return active.find(s => !isNeutralRange(s)) || active.find(isNeutralRange) || null;
+}
+
+
 export function CandleChart({
   candles,
   currentCandle,
@@ -106,6 +148,7 @@ export function CandleChart({
   const [showBreaks, setShowBreaks] = useState(false);
   const [showFvg, setShowFvg] = useState(true);
   const [showScenarios, setShowScenarios] = useState(true);
+  const chartWatch = resolveWatchForChart(scenarios, selectedScenarioId, symbol);
 
   // Initialize Lightweight Chart
   useEffect(() => {
@@ -356,23 +399,45 @@ export function CandleChart({
       }
     }
 
-    // Scenarios Lines (Autonomous AI Entry, SL, TP 1:4)
-    if (showScenarios && scenarios && scenarios.length > 0) {
-      let activeScenario: any = null;
-      if (selectedScenarioId) {
-        activeScenario = scenarios.find((s) => s.id === selectedScenarioId);
-      }
-      if (!activeScenario) {
-        activeScenario = [...scenarios].reverse().find(
-          (s) =>
-            ['SCENARIO_MONITORING', 'APPROACHING_ZONE', 'IN_ZONE', 'REVALIDATION_REQUESTED', 'AI_REVALIDATING', 'ENTRY_VALIDATED'].includes(s.status) &&
-            s.direction !== 'NEUTRAL' &&
-            Number.isFinite(s.targetEntry) &&
-            Number.isFinite(s.stopLossPrice)
-        );
-      }
-      if (activeScenario) {
+    // Always visualize the persisted watcher levels, even when only NEUTRAL exists.
+    if (showScenarios && chartWatch) {
+      const activeScenario = chartWatch;
+      if (isNeutralRange(activeScenario)) {
         try {
+          const ceiling = candleSeriesRef.current.createPriceLine({
+            price: activeScenario.entryZoneMax,
+            color: '#f59e0b',
+            lineWidth: 2,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: 'TECHO · ESPERA RUPTURA',
+          });
+          const floor = candleSeriesRef.current.createPriceLine({
+            price: activeScenario.entryZoneMin,
+            color: '#38bdf8',
+            lineWidth: 2,
+            lineStyle: 2,
+            axisLabelVisible: true,
+            title: 'PISO · ESPERA RUPTURA',
+          });
+          priceLinesRef.current.push(ceiling, floor);
+        } catch {}
+      } else {
+        try {
+          // Entry-zone bounds are informational, not trade authorization.
+          const min = activeScenario.entryZoneMin;
+          const max = activeScenario.entryZoneMax;
+          if (Number.isFinite(min) && Number.isFinite(max) && max > min) {
+            for (const [price, label] of [
+              [min, 'ZONA · LIMITE INFERIOR'], [max, 'ZONA · LIMITE SUPERIOR'],
+            ] as const) {
+              if (Math.abs(price - activeScenario.targetEntry) < 0.01) continue;
+              priceLinesRef.current.push(candleSeriesRef.current.createPriceLine({
+                price, color: '#818cf8', lineWidth: 1, lineStyle: 2,
+                axisLabelVisible: true, title: label,
+              }));
+            }
+          }
           const isValidated = activeScenario.status === 'ENTRY_VALIDATED' || activeScenario.status === 'SIGNAL_GENERATED';
           const lineStyle = isValidated ? 0 : 2; // Solid for validated signals, dashed for proposed monitoring scenarios
           const entryPrefix = isValidated ? 'ENTRADA VALIDADA' : 'ZONA PROPUESTA';
@@ -453,13 +518,13 @@ export function CandleChart({
         } catch {}
       }
     }
-  }, [fvgs, scenarios, selectedScenarioId, showFvg, showScenarios]);
+  }, [fvgs, scenarios, selectedScenarioId, showFvg, showScenarios, symbol, isDark]);
 
   const activeCandle = hoverData || currentCandle || (candles.length > 0 ? candles[candles.length - 1] : null);
   const priceColor =
     activeCandle && activeCandle.close >= activeCandle.open ? 'text-emerald-500 dark:text-emerald-400' : 'text-rose-500 dark:text-rose-400';
 
-  const selectedScenario = selectedScenarioId ? scenarios.find((s) => s.id === selectedScenarioId) : null;
+  const selectedScenario = selectedScenarioId && chartWatch?.id === selectedScenarioId ? chartWatch : null;
 
   return (
     <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] p-4 shadow-xl">
@@ -562,7 +627,7 @@ export function CandleChart({
                 : 'border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
             }`}
           >
-            ● Escenario IA (SL/TP)
+            ● Escenario IA / zonas
           </button>
         </div>
       </div>
@@ -576,8 +641,9 @@ export function CandleChart({
               Escenario seleccionado en gráfico:
             </span>
             <span className="font-mono text-slate-800 dark:text-slate-200">
-              {selectedScenario.direction} @ ${selectedScenario.targetEntry?.toFixed(1)} · SL ${selectedScenario.stopLossPrice?.toFixed(1)}
-              {selectedScenario.target14Price ? ` · TP 1:4 $${selectedScenario.target14Price.toFixed(1)}` : ''}
+              {isNeutralRange(selectedScenario)
+                ? `NEUTRAL · TECHO $${selectedScenario.entryZoneMax.toFixed(1)} · PISO $${selectedScenario.entryZoneMin.toFixed(1)} · Espera vela cerrada y volumen`
+                : `${selectedScenario.direction} · Entrada $${selectedScenario.targetEntry?.toFixed(1)} · SL $${selectedScenario.stopLossPrice?.toFixed(1)}${selectedScenario.target14Price ? ` · TP $${selectedScenario.target14Price.toFixed(1)}` : ''}`}
             </span>
           </div>
           {onSelectScenario && (
@@ -587,6 +653,25 @@ export function CandleChart({
             >
               Restablecer automático
             </button>
+          )}
+        </div>
+      )}
+
+      {showScenarios && chartWatch && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/50 px-3 py-2 text-[11px] font-mono">
+          {isNeutralRange(chartWatch) ? (
+            <>
+              <span className="font-semibold text-amber-600 dark:text-amber-400">● Techo ${chartWatch.entryZoneMax.toFixed(1)}</span>
+              <span className="font-semibold text-sky-600 dark:text-sky-400">● Piso ${chartWatch.entryZoneMin.toFixed(1)}</span>
+              <span className="text-slate-600 dark:text-slate-400">Rango neutral · esperando ruptura confirmada</span>
+            </>
+          ) : (
+            <>
+              <span className="font-semibold text-indigo-600 dark:text-indigo-400">● Zona de entrada</span>
+              <span className="font-semibold text-blue-600 dark:text-blue-400">● Entrada</span>
+              <span className="font-semibold text-red-600 dark:text-red-400">● Stop loss</span>
+              <span className="font-semibold text-emerald-600 dark:text-emerald-400">● Objetivo</span>
+            </>
           )}
         </div>
       )}
