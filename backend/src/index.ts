@@ -36,8 +36,31 @@ async function main() {
     config.bybit.symbol
   );
 
+  // ETH runs independently with separate Bybit streams, candle/orderbook state,
+  // scenario registry, watcher and scheduler. Both markets share one strict
+  // hard-budget manager and provider credentials; reservations are global.
+  const ethCoordinator = new MarketCoordinator(
+    new BybitRestClient(),
+    new BybitWsClient(undefined, 'ETHUSDT'),
+    new CandleManager('ETHUSDT', db),
+    new OrderBookManager('ETHUSDT'),
+    db,
+    'ETHUSDT',
+    {
+      hardBudgetManager: coordinator.getHardBudgetManager(),
+      openaiAdapter: coordinator.getConsensusEngine().getOpenAiAdapter(),
+      geminiAdapter: coordinator.getConsensusEngine().getGeminiAdapter(),
+      riskPolicyManager: coordinator.getRiskPolicyManager(),
+      aiRouter: coordinator.getAiRouter(),
+    }
+  );
+  const markets = new Map([
+    ['BTCUSDT', coordinator],
+    ['ETHUSDT', ethCoordinator],
+  ]);
+
   // 5. API Server (HTTP + WebSocket)
-  const apiServer = new ApiServer(coordinator, db, config.port, config.host);
+  const apiServer = new ApiServer(coordinator, db, config.port, config.host, markets);
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
@@ -46,6 +69,7 @@ async function main() {
     try {
       await apiServer.stop();
       coordinator.stop();
+      ethCoordinator.stop();
       db.close();
       console.log('[Shutdown] All services stopped safely.');
       process.exit(0);
@@ -66,7 +90,16 @@ async function main() {
 
     // Bootstrap market coordinator (fetch specs, klines, orderbook, connect WS)
     await coordinator.bootstrap();
-    console.log('[Coordinator] Market streaming initialized and active.');
+    console.log('[Coordinator] BTCUSDT market streaming initialized and active.');
+    try {
+      await ethCoordinator.bootstrap();
+      console.log('[Coordinator] ETHUSDT market streaming initialized and active.');
+    } catch (err: any) {
+      // ETH must never bring down the already healthy BTCUSDT production pipeline.
+      ethCoordinator.stop();
+      console.error('[Coordinator] ETHUSDT startup failed (isolated):', err.message);
+      db.logEvent('ERROR', 'Coordinator', 'ETHUSDT startup failed; BTCUSDT remains operational', { error: err.message });
+    }
   } catch (err: any) {
     console.error('[Fatal Startup Error]', err);
     process.exit(1);

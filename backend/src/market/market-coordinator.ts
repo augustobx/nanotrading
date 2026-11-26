@@ -24,6 +24,8 @@ import { RiskPolicyManager } from '../engine/risk-policy.js';
 import { BybitCredentialsManager } from '../bybit/bybit-credentials.js';
 import { AiModelRouter } from '../ai/router/ai-router.js';
 import { HardBudgetManager } from '../ai/hard-budget-manager.js';
+import { OpenAiAdapter } from '../ai/openai-adapter.js';
+import { GeminiAdapter } from '../ai/gemini-adapter.js';
 import { decryptSecret } from '../security/encryption.js';
 import { config } from '../config/index.js';
 import { ScenarioRegistry } from '../engine/scenario-registry.js';
@@ -65,7 +67,14 @@ export class MarketCoordinator extends EventEmitter {
     candleManager: CandleManager,
     orderBookManager: OrderBookManager,
     db: DatabaseService,
-    symbol: string = config.bybit.symbol
+    symbol: string = config.bybit.symbol,
+    shared?: {
+      hardBudgetManager?: HardBudgetManager;
+      openaiAdapter?: OpenAiAdapter;
+      geminiAdapter?: GeminiAdapter;
+      riskPolicyManager?: RiskPolicyManager;
+      aiRouter?: AiModelRouter;
+    }
   ) {
     super();
     this.restClient = restClient;
@@ -80,7 +89,7 @@ export class MarketCoordinator extends EventEmitter {
     this.webPushNotifier = new WebPushNotifier(this.db);
 
     const savedBudget = this.db.getHardBudgetConfig();
-    const hardBudgetManager = new HardBudgetManager(savedBudget || undefined, {
+    const hardBudgetManager = shared?.hardBudgetManager || new HardBudgetManager(savedBudget || undefined, {
       sendTelegramAlert: async (title, msg) => {
         await this.telegramNotifier.sendMessage(`🚨 *${title}*\n\n${msg}`, 'BUDGET_ALERT');
       },
@@ -94,6 +103,8 @@ export class MarketCoordinator extends EventEmitter {
       coordinator: this,
       db: this.db,
       hardBudgetManager,
+      openaiAdapter: shared?.openaiAdapter,
+      geminiAdapter: shared?.geminiAdapter,
     });
 
     // Load persisted AI credentials from DB into ConsensusEngine adapters
@@ -122,9 +133,9 @@ export class MarketCoordinator extends EventEmitter {
 
     // A persisted emergency stop must survive process/container restarts.
     config.security.killSwitchActive = config.security.killSwitchActive || this.db.getKillSwitchState() === true;
-    this.riskPolicyManager = new RiskPolicyManager(this.db.getActiveRiskPolicy() || undefined);
+    this.riskPolicyManager = shared?.riskPolicyManager || new RiskPolicyManager(this.db.getActiveRiskPolicy() || undefined);
     this.bybitCredentialsManager = new BybitCredentialsManager(this.db.getBybitCredentials() || undefined);
-    this.aiRouter = new AiModelRouter(this.db.getRouterConfig() || undefined);
+    this.aiRouter = shared?.aiRouter || new AiModelRouter(this.db.getRouterConfig() || undefined);
     this.marketMonitorWorker = new MarketMonitorWorker({
       coordinator: this,
       stateMachine: this.signalStateMachine,
@@ -133,7 +144,7 @@ export class MarketCoordinator extends EventEmitter {
       db: this.db,
     });
 
-    this.scenarioRegistry = new ScenarioRegistry(this.db);
+    this.scenarioRegistry = new ScenarioRegistry(this.db, this.symbol);
     this.aiDiscoveryEngine = new AiMarketDiscoveryEngine({
       coordinator: this,
       openaiAdapter: this.consensusEngine.getOpenAiAdapter(),
@@ -163,6 +174,7 @@ export class MarketCoordinator extends EventEmitter {
       discoveryEngine: this.aiDiscoveryEngine,
       hardBudgetManager,
       db: this.db,
+      symbol: this.symbol,
     });
 
     this.setupListeners();
