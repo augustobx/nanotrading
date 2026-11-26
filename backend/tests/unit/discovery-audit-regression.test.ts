@@ -49,13 +49,13 @@ test('Both analyst prompts require current verified anchors and contain no numer
     const gemini = buildDiscoveryPrompt(h.summary, 'GEMINI', h.policy);
     for (const prompt of [openai, gemini]) {
       assert.match(prompt, /SWING_HIGH=60500/);
-      assert.match(prompt, /OB_BULLISH=\\[61690,61710\\]/);
+      assert.ok(prompt.includes('OB_BULLISH=[61690,61710]'));
       assert.match(prompt, /R:R NETO mínimo 4 para objetivo corto y 4 para extendido/);
       assert.match(prompt, /PROHIBIDO: objetivos derivados de multiplicadores/);
       assert.match(prompt, /Los recentSwings históricos son contexto descriptivo, NO anclas válidas/);
-      assert.doesNotMatch(prompt, /"candidateTarget(?:12|14)"\\s*:\\s*[0-9]/);
-      assert.doesNotMatch(prompt, /"entryZoneMin"\\s*:\\s*[0-9]/);
-      assert.doesNotMatch(prompt, /Math\\.round\\(pCurrent/);
+      assert.doesNotMatch(prompt, /"candidateTarget(?:12|14)"\s*:\s*[0-9]/);
+      assert.doesNotMatch(prompt, /"entryZoneMin"\s*:\s*[0-9]/);
+      assert.doesNotMatch(prompt, /Math\.round\(pCurrent/);
     }
   } finally { h.db.close(); }
 });
