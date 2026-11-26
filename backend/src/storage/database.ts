@@ -1202,11 +1202,11 @@ export class DatabaseService {
     } catch {}
   }
 
-  public getActiveSignalsForRecovery(): any[] {
+  public getActiveSignalsForRecovery(symbol?: string): any[] {
     if (this.isClosed) return [];
     try {
       const rows = this.selectActiveSignalsStmt.all() as any[];
-      return rows.map((r) => ({
+      return rows.filter((r) => !symbol || r.symbol === symbol).map((r) => ({
         id: r.id,
         setupId: r.setup_id,
         timestamp: Number(r.timestamp),
@@ -2280,8 +2280,8 @@ export class DatabaseService {
     if (this.isClosed) {
       return {
         enabled: true,
-        intervalMinutes: 60,
-        triggerOn1hClose: true,
+        intervalMinutes: symbol === 'ETHUSDT' ? 120 : 60,
+        triggerOn1hClose: symbol !== 'ETHUSDT',
         triggerOn15mStructure: true,
         minPriceMovePct: 1.5,
         minCooldownMinutes: 15,
@@ -2314,8 +2314,8 @@ export class DatabaseService {
     } catch {
       return {
         enabled: true,
-        intervalMinutes: 60,
-        triggerOn1hClose: true,
+        intervalMinutes: symbol === 'ETHUSDT' ? 120 : 60,
+        triggerOn1hClose: symbol !== 'ETHUSDT',
         triggerOn15mStructure: true,
         minPriceMovePct: 1.5,
         minCooldownMinutes: 15,

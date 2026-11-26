@@ -84,7 +84,7 @@ export class MarketCoordinator extends EventEmitter {
     this.db = db;
     this.symbol = symbol;
     this.setupEngine = new SetupEngine(this.candleManager, this.db);
-    this.signalStateMachine = new SignalStateMachine(this.db);
+    this.signalStateMachine = new SignalStateMachine(this.db, this.symbol);
     this.telegramNotifier = new TelegramNotifier(this.db);
     this.webPushNotifier = new WebPushNotifier(this.db);
 
