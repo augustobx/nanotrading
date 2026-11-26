@@ -198,6 +198,13 @@ export class AiModelRouter {
       selectionReason = auto.reason;
     }
 
+    // Resolve retired aliases before pricing/reserving, just as adapters do.
+    // Discovery health and reconciliation must use the actual executed model.
+    const effectiveModel = getValidatedModel(selectedModel, provider);
+    if (effectiveModel !== selectedModel) {
+      selectionReason += ` Modelo efectivo validado: ${effectiveModel}.`;
+    }
+    selectedModel = effectiveModel;
     const modelInfo = AI_MODELS_CATALOG[selectedModel];
     const estimatedCostPer1kTokensUsd = modelInfo ? modelInfo.estimatedInputCostPerMillion / 1000 : 0.001;
 

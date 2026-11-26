@@ -6,6 +6,8 @@ import { ScenarioRegistry } from '../../src/engine/scenario-registry.js';
 import { AiMarketDiscoveryEngine, buildDiscoveryPrompt } from '../../src/ai/ai-market-discovery.js';
 import { AutonomousDiscoveryScheduler } from '../../src/ai/autonomous-discovery-scheduler.js';
 import { DEFAULT_RISK_POLICY } from '../../src/engine/risk-policy.js';
+import { GeminiAdapter } from '../../src/ai/gemini-adapter.js';
+import { AiModelRouter } from '../../src/ai/router/ai-router.js';
 
 function harness() {
   const db = new DatabaseService(':memory:');
@@ -58,6 +60,61 @@ test('Both analyst prompts require current verified anchors and contain no numer
       assert.doesNotMatch(prompt, /Math\.round\(pCurrent/);
     }
   } finally { h.db.close(); }
+});
+
+test('Administrative 4R floor rejects a structural 2.5R short objective with an extended objective below 4R', async () => {
+  const h = harness();
+  const proposal = { ...candidate, candidateTarget12: 61501.8, candidateTarget14: 62200 };
+  h.summary.timeframes['15m'].activeObDetails.push({ type: 'BULLISH', bottom: 62190, top: 62210 });
+  h.openai.evaluateWithCustomPrompt = async () => ({ bias: 'BULLISH', scenarios: [proposal], costUsd: 0 });
+  try {
+    await h.discovery.runDiscovery();
+    const decision = h.db.getDiscoveryAudits()[0].candidates[0];
+    assert.equal(decision.reason, 'RR_POLICY_REJECTED');
+    assert.equal(decision.details?.netRR12, 2.5);
+    assert.ok(Number(decision.details?.netRR14) < 4);
+    assert.deepEqual(decision.details?.minimums, { short: 4, extended: 4 });
+    assert.equal(h.registry.getAllActive().filter(s => s.direction !== 'NEUTRAL').length, 0);
+  } finally { h.db.close(); }
+});
+
+test('Production automatic router preserves Gemini failure, pauses before reservation and recovers', async () => {
+  const h = harness();
+  const adapter = new GeminiAdapter({ apiKey: 'fixture-only' });
+  h.coordinator.getAiRouter = () => new AiModelRouter();
+  h.gemini.isConfigured = () => true;
+  h.gemini.getDiscoveryHealth = adapter.getDiscoveryHealth.bind(adapter);
+  h.gemini.evaluateWithCustomPrompt = adapter.evaluateWithCustomPrompt.bind(adapter);
+  h.openai.evaluateWithCustomPrompt = async () => ({ bias: 'NEUTRAL', scenarios: [], costUsd: 0 });
+  const models: string[] = [];
+  const reserve = h.budget.reserveBudget;
+  h.budget.reserveBudget = (input: any) => { models.push(input.model); return reserve(input); };
+  const previousFetch = globalThis.fetch, previousNow = Date.now;
+  let now = Date.now(), calls = 0, status = 503;
+  Date.now = () => now;
+  globalThis.fetch = async () => {
+    calls++;
+    return status === 503 ? new Response('', { status }) : new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: '{"bias":"NEUTRAL","scenarios":[]}' }] } }],
+    }));
+  };
+  try {
+    const first = await h.discovery.runDiscovery();
+    const audit = h.db.getDiscoveryAudit(first.scenarios[0].snapshotId)!;
+    assert.equal(audit.providers.GEMINI.model, 'gemini-2.5-flash');
+    assert.equal(audit.providers.GEMINI.failure, 'HTTP_503');
+    assert.deepEqual(models, ['gpt-4o', 'gemini-2.5-flash']);
+    now += 1000;
+    const paused = await h.discovery.runDiscovery();
+    assert.equal(h.db.getDiscoveryAudit(paused.scenarios[0].snapshotId)!.providers.GEMINI.status, 'PAUSED');
+    assert.deepEqual(models, ['gpt-4o', 'gemini-2.5-flash', 'gpt-4o']);
+    assert.equal(calls, 1);
+    now = audit.providers.GEMINI.retryNotBefore!;
+    status = 200;
+    const recovered = await h.discovery.runDiscovery();
+    assert.equal(h.db.getDiscoveryAudit(recovered.scenarios[0].snapshotId)!.providers.GEMINI.status, 'SUCCESS');
+    assert.equal(calls, 2);
+  } finally { globalThis.fetch = previousFetch; Date.now = previousNow; h.db.close(); }
 });
 
 test('Real discovery path preserves rejected bullish candidate, effective RR, snapshot and provider degradation', async () => {
