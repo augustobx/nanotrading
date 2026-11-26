@@ -2561,7 +2561,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                       <h4 className="text-xs font-bold uppercase tracking-wide text-white">Sublímites diarios por proveedor</h4>
                       <p className="text-[11px] text-slate-400 mt-1">
                         Un saldo global disponible NO garantiza que OpenAI o Gemini puedan reservar otra solicitud.
-                        Estos valores incluyen gasto bruto y reservas pendientes. No modifican los límites.
+                        Estos valores incluyen gasto bruto y reservas pendientes. Tener remanente no garantiza que alcance para la próxima reserva. No se modifican límites.
                       </p>
                     </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2575,7 +2575,7 @@ export function ConfigCenterModal({ isOpen, onClose, onConfigChanged }: ConfigCe
                             <div className="flex justify-between items-center">
                               <span className="text-slate-200 font-bold">{provider}</span>
                               <span className={hasLimit && remaining === 0 ? 'text-amber-300 font-bold' : 'text-slate-300'}>
-                                {hasLimit ? (remaining === 0 ? 'SUBLÍMITE AGOTADO' : 'CUPO DISPONIBLE') : 'SIN SUBLÍMITE'}
+                                {hasLimit ? (remaining === 0 ? 'SUBLÍMITE AGOTADO' : 'REMANENTE PARCIAL') : 'SIN SUBLÍMITE'}
                               </span>
                             </div>
                             <div className="font-mono text-slate-200">
