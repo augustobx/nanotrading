@@ -10,15 +10,18 @@ import {
 export class ScenarioRegistry extends EventEmitter {
   private scenarios: Map<string, Scenario> = new Map();
   private db: DatabaseService;
+  private symbol?: string;
 
-  constructor(db: DatabaseService) {
+  constructor(db: DatabaseService, symbol?: string) {
     super();
     this.db = db;
+    this.symbol = symbol;
     this.loadFromDatabase();
   }
 
   private loadFromDatabase(): void {
     const active = this.db.getScenarios({
+      symbol: this.symbol,
       status: [
         'SCENARIO_PROPOSED',
         'SCENARIO_REGISTERED',
@@ -39,6 +42,9 @@ export class ScenarioRegistry extends EventEmitter {
   }
 
   public registerScenario(scenario: Scenario): Scenario {
+    if (this.symbol && scenario.symbol !== this.symbol) {
+      throw new Error(`Scenario symbol ${scenario.symbol} mismatches isolated registry ${this.symbol}`);
+    }
     // Check for similar active scenario to group / avoid duplicates
     const existing = this.findSimilarScenario(scenario);
     if (existing) {
@@ -77,7 +83,8 @@ export class ScenarioRegistry extends EventEmitter {
   public getScenario(id: string): Scenario | null {
     const mem = this.scenarios.get(id);
     if (mem) return mem;
-    return this.db.getScenarioById(id);
+    const fromDb = this.db.getScenarioById(id);
+    return fromDb && (!this.symbol || fromDb.symbol === this.symbol) ? fromDb : null;
   }
 
   public getAllActive(): Scenario[] {
@@ -85,7 +92,7 @@ export class ScenarioRegistry extends EventEmitter {
   }
 
   public getAll(options?: { status?: ScenarioStatus | ScenarioStatus[]; rrMode?: ScenarioRRMode; limit?: number }): Scenario[] {
-    const list = this.db.getScenarios({ status: options?.status, limit: options?.limit });
+    const list = this.db.getScenarios({ status: options?.status, limit: options?.limit, symbol: this.symbol });
     if (options?.rrMode && options.rrMode !== 'NONE') {
       return list.filter((s) => s.rrModeAvailable === options.rrMode || s.rrModeAvailable === 'RR_BOTH');
     }

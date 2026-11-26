@@ -1933,20 +1933,27 @@ export class DatabaseService {
     );
   }
 
-  public getScenarios(options?: { status?: ScenarioStatus | ScenarioStatus[]; limit?: number }): Scenario[] {
+  public getScenarios(options?: { status?: ScenarioStatus | ScenarioStatus[]; symbol?: string; limit?: number }): Scenario[] {
     if (this.isClosed) return [];
     try {
       let query = 'SELECT * FROM scenarios';
       const params: any[] = [];
+      const conditions: string[] = [];
+      if (options?.symbol) {
+        conditions.push('symbol = ?');
+        params.push(options.symbol);
+      }
       if (options?.status) {
         if (Array.isArray(options.status)) {
-          query += ` WHERE status IN (${options.status.map(() => '?').join(',')})`;
+          if (options.status.length === 0) return [];
+          conditions.push(`status IN (${options.status.map(() => '?').join(',')})`);
           params.push(...options.status);
         } else {
-          query += ' WHERE status = ?';
+          conditions.push('status = ?');
           params.push(options.status);
         }
       }
+      if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
       query += ' ORDER BY discovery_timestamp DESC';
       if (options?.limit) {
         query += ' LIMIT ?';
@@ -2187,14 +2194,15 @@ export class DatabaseService {
     }
   }
 
-  public getActiveWatchPlans(): AiWatchPlan[] {
+  public getActiveWatchPlans(symbol?: string): AiWatchPlan[] {
     if (this.isClosed) return [];
     try {
       const rows = this.db.prepare(`
         SELECT * FROM ai_watch_plans 
         WHERE status IN ('PENDING', 'ACTIVE', 'TRIGGERED', 'REVALIDATING')
+          AND (? IS NULL OR symbol = ?)
         ORDER BY created_at DESC
-      `).all() as any[];
+      `).all(symbol || null, symbol || null) as any[];
       return rows.map((r) => this.mapWatchPlanRow(r));
     } catch {
       return [];
@@ -2260,7 +2268,7 @@ export class DatabaseService {
   // ---------------------------------------------------------------------------
   // Discovery Scheduler Configuration
   // ---------------------------------------------------------------------------
-  public getDiscoverySchedulerConfig(): {
+  public getDiscoverySchedulerConfig(symbol = 'BTCUSDT'): {
     enabled: boolean;
     intervalMinutes: number;
     triggerOn1hClose: boolean;
@@ -2281,7 +2289,8 @@ export class DatabaseService {
       };
     }
     try {
-      const row = this.db.prepare('SELECT * FROM discovery_scheduler_config WHERE id = ?').get('default') as any;
+      const id = symbol === 'BTCUSDT' ? 'default' : symbol;
+      const row = this.db.prepare('SELECT * FROM discovery_scheduler_config WHERE id = ?').get(id) as any;
       if (!row) {
         return {
           enabled: true,
@@ -2322,7 +2331,7 @@ export class DatabaseService {
     triggerOn15mStructure: boolean;
     minPriceMovePct: number;
     minCooldownMinutes: number;
-  }): void {
+  }, symbol = 'BTCUSDT'): void {
     if (this.isClosed) return;
     try {
       this.db.prepare(`
@@ -2338,7 +2347,7 @@ export class DatabaseService {
           min_cooldown_minutes = excluded.min_cooldown_minutes,
           updated_at = excluded.updated_at
       `).run(
-        'default',
+        symbol === 'BTCUSDT' ? 'default' : symbol,
         config.enabled ? 1 : 0,
         config.intervalMinutes,
         config.triggerOn1hClose ? 1 : 0,

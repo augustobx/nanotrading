@@ -36,6 +36,7 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
   private hardBudgetManager: HardBudgetManager;
   private db: DatabaseService;
   private config: DiscoverySchedulerConfig;
+  private symbol: string;
 
   private isRunning: boolean = false;
   private timer: NodeJS.Timeout | null = null;
@@ -105,13 +106,16 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     discoveryEngine: AiMarketDiscoveryEngine;
     hardBudgetManager: HardBudgetManager;
     db: DatabaseService;
+    symbol?: string;
   }) {
     super();
     this.coordinator = options.coordinator;
     this.discoveryEngine = options.discoveryEngine;
     this.hardBudgetManager = options.hardBudgetManager;
     this.db = options.db;
-    this.config = this.db.getDiscoverySchedulerConfig();
+    this.symbol = options.symbol || 'BTCUSDT';
+    this.config = this.db.getDiscoverySchedulerConfig(this.symbol);
+
   }
 
   public start(): void {
@@ -305,7 +309,7 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       ...newConfig,
       updatedAt: Date.now(),
     };
-    this.db.saveDiscoverySchedulerConfig(this.config);
+    this.db.saveDiscoverySchedulerConfig(this.config, this.symbol);
     if (this.isRunning && this.config.enabled) {
       this.startTimer(); // Restart timer with new interval
     } else if (this.timer) {
