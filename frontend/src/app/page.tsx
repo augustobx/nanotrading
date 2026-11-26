@@ -85,7 +85,19 @@ export default function DashboardPage() {
 
   const [activeMainTab, setActiveMainTab] = useState<MainTab>('terminal');
   const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
+  const [pendingChartFocus, setPendingChartFocus] = useState(false);
   const [auditFilter, setAuditFilter] = useState<'ALL' | 'CRITICAL' | 'ERROR' | 'WARN' | 'INFO'>('ALL');
+
+  useEffect(() => {
+    if (!pendingChartFocus || activeMainTab !== 'terminal') return;
+    const frame = requestAnimationFrame(() => {
+      document.getElementById('nanotrading-candle-chart')?.scrollIntoView({
+        behavior: 'smooth', block: 'center',
+      });
+      setPendingChartFocus(false);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [pendingChartFocus, activeMainTab]);
 
   const [timeframe, setTimeframe] = useState<Timeframe>('15m');
   const [ticker, setTicker] = useState<TickerData | null>(null);
@@ -1216,7 +1228,8 @@ export default function DashboardPage() {
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
               {/* Left Column (lg: 2/3): CandleChart */}
               <div className="lg:col-span-2 space-y-5">
-                <CandleChart
+                <div id="nanotrading-candle-chart">
+                  <CandleChart
                   candles={candles}
                   currentCandle={currentCandles[timeframe]}
                   timeframe={timeframe}
@@ -1229,7 +1242,8 @@ export default function DashboardPage() {
                   onSelectScenario={setSelectedScenarioId}
                   symbol="BTCUSDT"
                   isDark={isDark}
-                />
+                  />
+                </div>
               </div>
 
               {/* Right Column (lg: 1/3): Watcher Sidebar + OrderBook L2 */}
@@ -1360,7 +1374,11 @@ export default function DashboardPage() {
         {/* ========================================================================= */}
         {activeMainTab === 'scenarios' && (
           <div className="space-y-4">
-            <AiTradingIntelligence />
+            <AiTradingIntelligence onShowScenarioOnChart={(id) => {
+              setSelectedScenarioId(id);
+              setActiveMainTab('terminal');
+              setPendingChartFocus(true);
+            }} />
           </div>
         )}
 
