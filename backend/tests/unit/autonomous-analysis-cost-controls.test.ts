@@ -213,6 +213,41 @@ test('Accounting: 95% alert uses gross estimate, not a declared discount', () =>
   } finally { db.close(); }
 });
 
+test('Provider sublimit audit exposes the real gross headroom without relaxing any hard budget', () => {
+  const db = new DatabaseService(':memory:');
+  const budget = new HardBudgetManager({
+    dailyBudgetLimitUsd: 5,
+    monthlyBudgetLimitUsd: 20,
+    maxCostPerRequestUsd: 0.05,
+    providerLimitsUsd: { openai: 0.40, gemini: 0.40 },
+  }, undefined, db);
+  try {
+    budget.recordDirectUsage('OPENAI', 'gpt-4o', 'MARKET_DISCOVERY', 0.3983,
+      { prompt: 1000, completion: 300 }, 'SUCCESS', 1, { grossCostUsd: 0.3983 });
+    const denied = budget.reserveBudget({
+      provider: 'OPENAI', model: 'gpt-4o', task: 'MARKET_DISCOVERY',
+      estimatedTokens: 1000, maxEstimatedCostUsd: 0.0192,
+    });
+    assert.equal(denied.allowed, false);
+    assert.equal(denied.violatedLimit, 'PROVIDER_OPENAI');
+    const summary = budget.getSummary();
+    assert.equal(summary.isBlocked, false);
+    assert.equal(summary.remainingDailyUsd > 4, true);
+    assert.equal(summary.providerDaily.OPENAI.limitUsd, 0.40);
+    assert.equal(summary.providerDaily.OPENAI.grossSpentUsd, 0.3983);
+    assert.equal(summary.providerDaily.OPENAI.remainingUsd, 0.0017);
+    assert.equal(summary.providerDaily.GEMINI.remainingUsd, 0.40);
+
+    const reservation = budget.reserveBudget({
+      provider: 'GEMINI', model: 'gemini-2.5-flash', task: 'MARKET_DISCOVERY',
+      estimatedTokens: 1000, maxEstimatedCostUsd: 0.02,
+    });
+    assert.equal(reservation.allowed, true);
+    assert.equal(budget.getSummary().providerDaily.GEMINI.reservedUsd, 0.02);
+    assert.equal(budget.getConfig().providerLimitsUsd?.openai, 0.40);
+  } finally { db.close(); }
+});
+
 test('Recovery: last AI reevaluation timestamp survives a ScenarioRegistry reload', () => {
   const db = new DatabaseService(':memory:');
   try {
