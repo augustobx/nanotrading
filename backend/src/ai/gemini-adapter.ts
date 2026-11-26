@@ -21,7 +21,7 @@ export class GeminiAdapter {
   }>();
 
   public getDiscoveryHealth(model = this.model) {
-    return { ...(this.discoveryHealth.get(model) || {
+    return { ...(this.discoveryHealth.get(getValidatedModel(model, 'GEMINI')) || {
       failureCode: null, consecutiveFailures: 0, retryNotBefore: 0,
     }) };
   }

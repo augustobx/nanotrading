@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { DatabaseService } from '../../src/storage/database.js';
 import { CandleManager } from '../../src/market/candle-manager.js';
 import { OrderBookManager } from '../../src/market/orderbook-manager.js';
@@ -104,8 +107,8 @@ function makeWatchPlan(
   };
 }
 
-function createPipelineTestRig() {
-  const db = new DatabaseService(':memory:');
+function createPipelineTestRig(dbPath = ':memory:') {
+  const db = new DatabaseService(dbPath);
   const restClient = new BybitRestClient();
   const wsClient = new BybitWsClient();
   const candleManager = new CandleManager('BTCUSDT', db);
@@ -560,14 +563,17 @@ test('PR 4.1 E2E Pipeline: AlgorithmicWatcher -> AiEntryRevalidation -> MarketCo
   }
 });
 
-test('Audit fix: authorized scenario reaches a persisted paper fill', async () => {
-  const { coordinator, db } = createPipelineTestRig();
+for (const exit of ['TP', 'SL'] as const) test(`Paper circuit: watcher through ${exit} survives SQLite reopen`, async () => {
+  const folder = mkdtempSync(join(tmpdir(), 'nanotrading-paper-'));
+  const dbPath = join(folder, 'paper.sqlite');
+  const { coordinator, db } = createPipelineTestRig(dbPath);
   const watcher = coordinator.getAlgorithmicWatcher();
   const machine = coordinator.getSignalStateMachine();
   const notify = async () => {};
   const worker = new MarketMonitorWorker({ coordinator, stateMachine: machine, db,
-    telegramNotifier: { notifyApproachingZone: notify, notifyInZone: notify, notifyEntryTriggered: notify } as any,
-    webPushNotifier: {} as any });
+    telegramNotifier: { notifyApproachingZone: notify, notifyInZone: notify, notifyEntryTriggered: notify,
+      notifyTakeProfitCompleted: notify, notifyStopLossCompleted: notify } as any,
+    webPushNotifier: { notifyTakeProfit: notify, notifyStopLoss: notify } as any });
   try {
     watcher.start(); worker.start();
     coordinator.getAiRevalidation().setMockEvaluator(() => ({
@@ -586,8 +592,29 @@ test('Audit fix: authorized scenario reaches a persisted paper fill', async () =
     assert.equal(funnel.authorizedSignals, 1);
     assert.equal(funnel.paperEntries, 1);
     assert.equal(funnel.paperClosed, 0);
-
-  } finally { worker.stop(); watcher.stop(); coordinator.stop(); db.close(); }
+    const signal = machine.getActiveSignals()[0];
+    coordinator.emit('ticker_updated', { lastPrice: 60500, timestamp: Date.now() });
+    assert.equal(db.getSignals(10)[0].status, 'TRACKING');
+    const exitPrice = exit === 'TP' ? signal.takeProfitPrice : signal.stopLossPrice - 50;
+    coordinator.emit('ticker_updated', { lastPrice: exitPrice, timestamp: Date.now() });
+    const closed = db.getSignals(10)[0];
+    assert.equal(closed.status, `COMPLETED_${exit}`);
+    assert.ok(closed.simulatedEntryTime);
+    assert.ok(closed.exitTime >= closed.simulatedEntryTime);
+    assert.equal(closed.exitPrice, exitPrice);
+    assert.ok(exit === 'TP' ? closed.realizedNetPnlUsdt > 0 : closed.realizedNetPnlUsdt < 0);
+    assert.equal((db.getDiscoveryFunnel() as any).paperClosed, 1);
+    worker.stop(); watcher.stop(); coordinator.stop(); db.close();
+    const reopened = new DatabaseService(dbPath);
+    try {
+      assert.deepEqual(reopened.getSignals(10)[0], closed);
+      const states = reopened.getSignalLifecycle(signal.id).map((row: any) => row.toState);
+      for (const state of ['ENTRY_TRIGGERED', 'TRACKING', `COMPLETED_${exit}`]) assert.ok(states.includes(state));
+    } finally { reopened.close(); }
+  } finally {
+    worker.stop(); watcher.stop(); coordinator.stop(); db.close();
+    rmSync(folder, { recursive: true, force: true });
+  }
 });
 
 
