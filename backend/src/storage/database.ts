@@ -827,10 +827,14 @@ export class DatabaseService {
     return row ? JSON.parse(row.payload_json) : null;
   }
 
-  public getDiscoveryAudits(limit = 20): DiscoveryAudit[] {
+  public getDiscoveryAudits(limit = 20, symbol?: string): DiscoveryAudit[] {
     const bounded = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 20;
-    return (this.db.prepare('SELECT payload_json FROM discovery_analyses ORDER BY timestamp DESC LIMIT ?')
-      .all(bounded) as any[]).map(row => JSON.parse(row.payload_json));
+    const rows = symbol
+      ? this.db.prepare(`SELECT payload_json FROM discovery_analyses
+        WHERE json_extract(payload_json, '$.snapshot.symbol') = ?
+        ORDER BY timestamp DESC LIMIT ?`).all(symbol, bounded)
+      : this.db.prepare('SELECT payload_json FROM discovery_analyses ORDER BY timestamp DESC LIMIT ?').all(bounded);
+    return (rows as any[]).map(row => JSON.parse(row.payload_json));
   }
 
   public getDiscoveryAuditsForScenario(scenarioId: string): DiscoveryAudit[] {
@@ -992,9 +996,12 @@ export class DatabaseService {
     } catch {}
   }
 
-  public getSignals(limit: number = 50): any[] {
+  public getSignals(limit: number = 50, symbol?: string): any[] {
     if (this.isClosed) return [];
-    const rows = this.selectSignalsStmt.all(limit) as any[];
+    const bounded = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 50;
+    const rows = symbol
+      ? this.db.prepare('SELECT * FROM signals WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?').all(symbol, bounded) as any[]
+      : this.selectSignalsStmt.all(bounded) as any[];
     return rows.map((r) => ({
       id: r.id,
       setupId: r.setup_id,
