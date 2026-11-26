@@ -17,6 +17,7 @@ export class ApiServer {
   private server: http.Server;
   private wss: WebSocketServer;
   private coordinator: MarketCoordinator;
+  private markets: Map<string, MarketCoordinator>;
   private db: DatabaseService;
   private port: number;
   private host: string;
@@ -26,8 +27,10 @@ export class ApiServer {
   private historicalDataManager: HistoricalDataManager;
   private backtestEngine: BacktestEngine;
 
-  constructor(coordinator: MarketCoordinator, db: DatabaseService, port?: number, host?: string) {
+  constructor(coordinator: MarketCoordinator, db: DatabaseService, port?: number, host?: string,
+    markets?: Map<string, MarketCoordinator>) {
     this.coordinator = coordinator;
+    this.markets = markets || new Map([['BTCUSDT', coordinator]]);
     this.db = db;
     this.historicalDataManager = new HistoricalDataManager(new BybitRestClient(), this.db);
     this.backtestEngine = new BacktestEngine(this.historicalDataManager, this.db);
@@ -102,7 +105,11 @@ export class ApiServer {
     }
 
     try {
-      if (pathname === '/health' && req.method === 'GET') {
+      if (pathname === '/api/v1/markets' && req.method === 'GET') {
+        this.sendMarketDirectory(res);
+      } else if (pathname.startsWith('/api/v1/markets/')) {
+        this.handleMultiMarketRequest(req, res, url, pathname);
+      } else if (pathname === '/health' && req.method === 'GET') {
         this.sendHealth(res);
       } else if (pathname === '/api/v1/market/state' && req.method === 'GET') {
         this.sendMarketState(res);
@@ -280,6 +287,106 @@ export class ApiServer {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal Server Error', message: 'Error interno de servidor' }));
     }
+  }
+
+
+  /** Read-only per-market API. The legacy /api/v1/market endpoints remain BTC-compatible.
+   * No paid AI invocation is performed by GET requests. Writes require admin authentication.
+   */
+  private sendMarketDirectory(res: http.ServerResponse): void {
+    const list = Array.from(this.markets.entries()).map(([symbol, coordinator]) => {
+      const market = coordinator.getMarketState();
+      const scheduler = coordinator.getDiscoveryScheduler().getStatus();
+      return {
+        symbol, status: market.status,
+        lastPrice: market.ticker?.lastPrice ?? null,
+        wsConnected: market.wsConnected,
+        schedulerEnabled: scheduler.enabled,
+        activeWatchedScenarios: scheduler.activeWatchedScenarios,
+        autonomousRunsSinceRestart: scheduler.totalAutonomousRuns,
+        executionMode: 'SIGNALS_ONLY',
+      };
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: list }));
+  }
+
+  private handleMultiMarketRequest(req: http.IncomingMessage, res: http.ServerResponse,
+    url: URL, pathname: string): void {
+    const segments = pathname.slice('/api/v1/markets/'.length).split('/');
+    const symbol = segments[0];
+    const resource = segments.slice(1).join('/');
+    const coordinator = this.markets.get(symbol);
+    if (!coordinator || !resource) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Mercado o ruta no disponible' }));
+      return;
+    }
+    const reply = (data: any, statusCode = 200) => {
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: statusCode < 400, symbol, data }));
+    };
+    if (req.method === 'POST' && resource === 'discovery/trigger') {
+      if (!this.isAuthenticated(req)) {
+        reply({ error: 'Autenticación requerida' }, 401);
+        return;
+      }
+      coordinator.getAiDiscoveryEngine().runDiscovery({
+        forceManual: true, triggerSource: 'MANUAL_TRIGGER',
+      }).then(result => reply(result)).catch(err => {
+        this.db.logEvent('ERROR', 'MarketApi', `Discovery failed for ${symbol}: ${err?.message || err}`);
+        reply({ error: 'No se pudo completar el descubrimiento' }, 503);
+      });
+      return;
+    }
+    if (req.method !== 'GET') {
+      res.setHeader('Allow', 'GET');
+      reply({ error: 'Método no permitido' }, 405);
+      return;
+    }
+    const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit')) || 100));
+    const state = coordinator.getMarketState();
+    if (resource === 'state') return reply(state);
+    if (resource === 'orderbook') return reply(state.orderBook);
+    if (resource === 'instrument') return reply(coordinator.getInstrumentInfo());
+    if (resource === 'analysis') return reply(coordinator.getAnalyses());
+    if (resource === 'candles') {
+      const timeframe = url.searchParams.get('timeframe') || '15m';
+      if (!SUPPORTED_TIMEFRAMES.includes(timeframe as Timeframe)) {
+        return reply({ error: 'Timeframe no permitido' }, 400);
+      }
+      return reply(coordinator.getCandles(timeframe as Timeframe, limit));
+    }
+    if (resource === 'scenarios') {
+      return reply(coordinator.getScenarioRegistry().getAll({ limit }));
+    }
+    if (resource === 'signals') return reply(this.db.getSignals(limit, symbol));
+    if (resource === 'watch-plans') return reply(this.db.getActiveWatchPlans(symbol));
+    if (resource === 'scheduler') return reply(coordinator.getDiscoveryScheduler().getStatus());
+    if (resource === 'market-intelligence') {
+      if (!state.ticker) return reply({ error: 'Mercado sin datos suficientes' }, 503);
+      return reply(coordinator.getAiDiscoveryEngine().getLatestSummary());
+    }
+    if (resource === 'audits') {
+      return reply(this.db.getDiscoveryAudits(limit, symbol).map(({ snapshot, policy, ...record }) => record));
+    }
+    if (resource === 'stats') {
+      const scenarios = this.db.getScenarios({ symbol });
+      const signals = this.db.getSignals(500, symbol);
+      const closed = signals.filter(s => s.simulatedEntryTime && s.exitTime);
+      const realized = closed.reduce((sum, s) => sum + (Number(s.realizedNetR) || 0), 0);
+      return reply({
+        symbol,
+        totalScenarios: scenarios.length,
+        neutralObservations: scenarios.filter(s => s.direction === 'NEUTRAL').length,
+        directionalScenarios: scenarios.filter(s => s.direction !== 'NEUTRAL').length,
+        paperEntries: signals.filter(s => s.simulatedEntryTime).length,
+        paperClosed: closed.length,
+        netRRealized: Number(realized.toFixed(4)),
+        note: 'Las estadísticas no prueban edge por sí mismas; incluyen el historial prospectivo.',
+      });
+    }
+    reply({ error: 'Recurso no disponible' }, 404);
   }
 
   private sendHealth(res: http.ServerResponse): void {
