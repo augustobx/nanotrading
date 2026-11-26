@@ -5,6 +5,7 @@ export interface GeminiAdapterOptions {
   apiKey?: string;
   model?: string;
   timeoutMs?: number;
+  discoveryTimeoutMs?: number;
   mockEvaluator?: (snapshot: MarketSnapshot) => Promise<Partial<AiEvaluationResult>>;
 }
 
@@ -12,6 +13,14 @@ export class GeminiAdapter {
   private apiKey: string;
   private model: string;
   private timeoutMs: number;
+  private discoveryTimeoutMs: number;
+  private lastDiscoveryAttempt: {
+    model: string;
+    durationMs: number;
+    timeoutMs: number;
+    outcome: string;
+    timestamp: number;
+  } | null = null;
   private mockEvaluator?: (snapshot: MarketSnapshot) => Promise<Partial<AiEvaluationResult>>;
   private lastSuccessTimestamp: number | null = null;
   private lastError: string | null = null;
@@ -31,6 +40,9 @@ export class GeminiAdapter {
     this.apiKey = options.apiKey !== undefined ? options.apiKey : (process.env.GEMINI_API_KEY || '');
     this.model = getValidatedModel(options.model || process.env.GEMINI_MODEL || 'gemini-2.5-flash', 'GEMINI');
     this.timeoutMs = options.timeoutMs || 25000;
+    // Discovery prompts are significantly larger than simple risk reviews.
+    // Allow one bounded 60-second request, never an automatic paid retry.
+    this.discoveryTimeoutMs = options.discoveryTimeoutMs ?? 60000;
     this.mockEvaluator = options.mockEvaluator;
     if (!this.apiKey && !this.mockEvaluator) {
       this.lastAvailabilityStatus = 'UNCONFIGURED';
@@ -265,7 +277,16 @@ Responde obligatoriamente en JSON estricto.`;
     const model = getValidatedModel(modelOverride || this.model, 'GEMINI');
     const health = this.getDiscoveryHealth(model);
     if (options.discovery && Date.now() < health.retryNotBefore) return null;
+    const startedAt = Date.now();
+    const recordDiscoveryAttempt = (outcome: string): void => {
+      if (!options.discovery) return;
+      this.lastDiscoveryAttempt = {
+        model, durationMs: Date.now() - startedAt,
+        timeoutMs: this.discoveryTimeoutMs, outcome, timestamp: Date.now(),
+      };
+    };
     const failed = (code: string, retryAfterMs = 0): null => {
+      recordDiscoveryAttempt(code);
       this.lastError = code;
       this.lastAvailabilityStatus = code === 'TIMEOUT' ? 'TIMEOUT' :
         code === 'HTTP_429' ? 'RATE_LIMIT_EXCEEDED' :
@@ -282,7 +303,8 @@ Responde obligatoriamente en JSON estricto.`;
     // One request per reservation. Retry only on a later, newly budgeted call;
     // timeouts/invalid responses may already have consumed billable tokens.
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(),
+      options.discovery ? this.discoveryTimeoutMs : this.timeoutMs);
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
         method: 'POST',
@@ -315,6 +337,7 @@ Responde obligatoriamente en JSON estricto.`;
       const promptTokens = data.usageMetadata?.promptTokenCount || 0;
       const completionTokens = data.usageMetadata?.candidatesTokenCount || 0;
       if (options.discovery) this.discoveryHealth.delete(model);
+      recordDiscoveryAttempt('SUCCESS');
       this.lastSuccessTimestamp = Date.now();
       this.lastError = null;
       this.lastAvailabilityStatus = 'AVAILABLE';
@@ -342,6 +365,9 @@ Responde obligatoriamente en JSON estricto.`;
     lastError: string | null;
     availabilityStatus: AiAvailabilityStatus;
     role: string;
+    lastDiscoveryAttempt: {
+      model: string; durationMs: number; timeoutMs: number; outcome: string; timestamp: number;
+    } | null;
   } {
     return {
       provider: 'GEMINI',
@@ -350,6 +376,7 @@ Responde obligatoriamente en JSON estricto.`;
       lastSuccessTimestamp: this.lastSuccessTimestamp,
       lastError: this.lastError,
       availabilityStatus: this.lastAvailabilityStatus,
+      lastDiscoveryAttempt: this.lastDiscoveryAttempt,
       role: 'Auditor Crítico de Riesgos e Invalidación',
     };
   }

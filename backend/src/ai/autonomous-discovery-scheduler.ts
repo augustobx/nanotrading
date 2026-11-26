@@ -332,9 +332,14 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       totalAutonomousRuns: this.totalAutonomousRuns,
       totalScenariosFound: this.totalScenariosFound,
       activeWatchedScenarios: this.coordinator.getScenarioRegistry?.()?.getAllActive?.()
-        .filter((sc) => Number.isFinite(sc.validUntilTimestamp) &&
-          sc.validUntilTimestamp > now &&
-          !['COMPLETED', 'CANCELLED', 'EXPIRED', 'INVALIDATED', 'DISCARDED'].includes(sc.status))
+        .filter((sc) => {
+          if (sc.direction === 'NEUTRAL' || sc.kind === 'NEUTRAL_OBSERVATION' ||
+              sc.status === 'NO_TRADE_OBSERVATION') return false;
+          const expiry = sc.watchPlan?.expirationTimestamp || sc.validUntilTimestamp;
+          return Number.isFinite(expiry) && expiry > now &&
+            !['COMPLETED', 'CANCELLED', 'EXPIRED', 'INVALIDATED', 'DISCARDED',
+              'SIGNAL_GENERATED'].includes(sc.status);
+        })
         .length || 0,
       discoveryInFlight: this.discoveryInFlight,
       providerFailureBackoffUntil: this.providerFailureBackoffUntil,
