@@ -39,6 +39,7 @@ interface ScenarioDetailDrawerProps {
   } | null;
   onClose: () => void;
   onManualRevalidate?: (scenarioId: string) => void;
+  onShowOnChart?: (scenarioId: string) => void;
   isRevalidating?: boolean;
 }
 
@@ -46,6 +47,7 @@ export function ScenarioDetailDrawer({
   scenarioDetail,
   onClose,
   onManualRevalidate,
+  onShowOnChart,
   isRevalidating = false,
 }: ScenarioDetailDrawerProps) {
   if (!scenarioDetail) return null;
@@ -169,7 +171,17 @@ export function ScenarioDetailDrawer({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            {onShowOnChart && (
+              <button
+                type="button"
+                onClick={() => onShowOnChart(scenario.id)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400 hover:bg-amber-500/20 font-bold text-xs transition-colors"
+              >
+                <Crosshair className="w-3.5 h-3.5" />
+                Ver niveles en gráfico
+              </button>
+            )}
             {!isNeutral && narrative.isAlive && onManualRevalidate && (
               <button
                 onClick={() => onManualRevalidate(scenario.id)}
