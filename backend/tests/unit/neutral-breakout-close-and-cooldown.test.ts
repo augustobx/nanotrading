@@ -163,7 +163,9 @@ test('neutral breakout is queued across scheduler cooldown, without bypassing sh
     assert.equal(scheduler.getStatus().pendingNeutralBreakout?.price, 112);
     assert.equal(scheduler.getStatus().lastBlockedTrigger?.code, 'COOLDOWN');
     (scheduler as any).lastTriggerTimestamp = Date.now() - 16 * 60 * 1000;
-    assert.equal(await scheduler.triggerDiscovery('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', 112), true);
+    // Exercise the automatic one-minute scheduler retry, not a manual call.
+    (scheduler as any).evaluatePeriodicTrigger();
+    await new Promise(resolve => setTimeout(resolve, 20));
     assert.equal(discoveryCalls, 2);
     assert.equal(scheduler.getStatus().pendingNeutralBreakout, null);
   } finally {
