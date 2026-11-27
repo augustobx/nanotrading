@@ -92,7 +92,19 @@ export function ScenarioDetailDrawer({
       let desc = ev.reason || 'Actualización registrada por el motor de estados.';
       let type: any = 'MONITOR';
 
-      if (ev.metadata?.neutralObservation) {
+      if (ev.metadata?.watcherProgress === 'ZONE_TOUCHED') {
+        title = 'Toque real de zona registrado';
+        type = 'ZONE';
+      } else if (ev.metadata?.watcherProgress === 'CONDITION_MET') {
+        title = 'Confirmación técnica cumplida';
+        type = 'ZONE';
+      } else if (ev.metadata?.watcherProgress === 'LEGACY_CONFIRMATIONS_RESET') {
+        title = 'Confirmaciones anteriores requieren evidencia nueva';
+        type = 'MONITOR';
+      } else if (ev.toStatus === 'EXPIRED' && ev.reason?.startsWith('OPPORTUNITY_MISSED')) {
+        title = 'Oportunidad perdida · Sin entrada';
+        type = 'DISCARD';
+      } else if (ev.metadata?.neutralObservation) {
         title = ev.metadata.progress === 'OUTSIDE_AWAITING_CLOSE'
           ? 'Precio cruzó límite · Sin confirmar'
           : ev.metadata.progress === 'OUTSIDE_CLOSED_LOW_VOLUME'
@@ -106,8 +118,8 @@ export function ScenarioDetailDrawer({
         desc = 'Alerta temprana emitida. El precio se acercó al umbral operativo.';
         type = 'ZONE';
       } else if (ev.toStatus === 'IN_ZONE' || ev.toStatus === 'REVALIDATION_REQUESTED') {
-        title = 'Precio Entró en Zona Operativa';
-        desc = 'Mitigación de zona detectada. Disparo automático de snapshot y reevaluación IA.';
+        title = ev.toStatus === 'IN_ZONE' ? 'Condiciones de entrada cumplidas' : 'Revalidación solicitada';
+        desc = ev.reason || 'Solicitud de revalidación registrada.';
         type = 'ZONE';
       } else if (ev.toStatus === 'AI_REVALIDATING') {
         title = 'Revalidación Dual IA en Ejecución';
