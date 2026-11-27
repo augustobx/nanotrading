@@ -27,7 +27,10 @@ const PRICE = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2, minimum
 const fmt = (value: number | null | undefined) =>
   Number.isFinite(value) ? PRICE.format(value as number) : '—';
 
-export function EthMarketPanel({ isDark = true }: { isDark?: boolean }) {
+export function EthMarketPanel({
+  isDark = true,
+  focusScenarioId = null,
+}: { isDark?: boolean; focusScenarioId?: string | null }) {
   const [timeframe, setTimeframe] = useState<Timeframe>('15m');
   const [state, setState] = useState<any>(null);
   const [candles, setCandles] = useState<CandleData[]>([]);
@@ -89,6 +92,10 @@ export function EthMarketPanel({ isDark = true }: { isDark?: boolean }) {
       setLoading(false);
     }
   }, [request, timeframe]);
+
+  useEffect(() => {
+    setSelectedScenarioId(focusScenarioId);
+  }, [focusScenarioId]);
 
   useEffect(() => {
     void refresh();
