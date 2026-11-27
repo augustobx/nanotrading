@@ -1,5 +1,32 @@
 # NanoLabs AI Trading
 
+## Actualización 2026-11-27 — Fast Lane cuantitativa (SHADOW por defecto)
+
+**Estado real:** BTCUSDT y ETHUSDT siguen conectados a Bybit V5 Linear. Ahora se evalúa cada cierre **5m** con reglas puramente matemáticas de **barrido SFP** y **pullback EMA21 5m / tendencia EMA50 15m**, sin solicitar opiniones de GPT ni Gemini. Se audita también cada vela que no tenga patrón y se registra el motivo cuando un candidato queda descartado.
+
+- **Modo `SHADOW`** (predeterminado): se recopila evidencia cuantitativa, pero la vía matemática **no crea operaciones paper**. El circuito heredado de IA permanece activo para investigación/comparación.
+- **Modo `PAPER`** (opt-in explícito `QUANT_SIGNAL_MODE=PAPER` en `.env` y reinicio): la vía matemática puede emitir señales paper solo si supera riesgo, spreads, R:R neto y límites globales. El discovery/watch/revalidation automático por IA deja de ser una fuente operativa de señales. **Sin ejecución real.**
+- La política de riesgo existente **NO baja automáticamente**: `minNetRR=4` sigue siendo 4R. Para comparar 2R y 4R está el replay de investigación; cualquier cambio de la política debe evaluarse por separado.
+- El frontend principal `/` se ha simplificado: mercado, estado, últimas decisiones, métricas y paper. Todo el panel anterior se conserva en `/legacy`.
+- Los endpoints de auditoría matemática son `GET /api/v1/markets/BTCUSDT/quant` y `.../ETHUSDT/quant`. No consumen tokens IA.
+- Para ejecutar el backtest **offline** de 90 días sobre velas históricas previamente importadas: `node backend/dist/scripts/run-quant-90d.js` (BTC), o `node backend/dist/scripts/run-quant-90d.js --eth` (ETH). Compara dos objetivos netos (2R/4R), con 60 días de desarrollo y 30 fuera de muestra, sin asumir rentabilidad. Esta primera versión no simula parciales/trailing ni reemplaza un test prospectivo de fills.
+
+### Reseteo protegido del historial operativo (requiere servidor y backup)
+
+La tarea del usuario es empezar desde cero con descubrimientos, escenarios, señales, paper, auditorías y backtests anteriores. **No eliminar volúmenes Docker ni SQLite directamente**: eso borraría las credenciales cifradas, cuentas, políticas de riesgo y claves de login.
+
+1. Tras aprobar PR y verificar el código fusionado, compilar **ambos** contenedores sin pararlos: `docker compose build backend frontend`.
+2. Detener únicamente los servicios app: `docker compose stop frontend backend`.
+3. Hacer backup del volumen en frío con una ruta de acceso restringido, por ejemplo:
+   `docker run --rm -v nanolabs_trading_data:/source:ro -v "$BACKUP":/backup alpine:3.20 sh -ec 'cd /source && tar -cf /backup/sqlite-volume.tar .'`.
+   Confirmar `tar -tf "$BACKUP/sqlite-volume.tar"` incluye `./trading.db` y guardar `sha256sum`.
+4. Con ambos contenedores todavía detenidos, ejecutar el **script offline**, vía imagen nueva, montando backup `-v "$BACKUP":/backup:ro`, las variables `CONFIRM_OPERATIONAL_RESET=DELETE_NON_CONFIG_DATA` y `CONFIRMED_BACKUP_FILE=/backup/sqlite-volume.tar`, con el comando `node backend/dist/scripts/reset-operational-history.js`. Sin las tres garantías, se rechaza.
+5. Reiniciar `docker compose up -d --no-deps --force-recreate backend frontend` y comprobar `/health`, ambos `/api/v1/markets` y auditorías `/quant`.
+
+**Se conservan** configuraciones, credenciales, sesiones administrativas, historial `historical_candles` (única base para los 90 días), suscripciones y consumos reales de IA. El presupuesto ya gastado NO se pone artificialmente en cero. El reset no se ha ejecutado en producción desde GitHub; exige intervención explícita por SSH y respaldo.
+
+---
+
 > **Sistema inteligente de análisis cuantitativo, monitoreo multitemporal y asistencia de trading 24/7 en BTCUSDT Perpetual (Bybit V5 Linear).**
 
 ---
