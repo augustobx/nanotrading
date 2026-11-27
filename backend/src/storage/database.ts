@@ -2301,8 +2301,8 @@ export class DatabaseService {
       if (!row) {
         return {
           enabled: true,
-          intervalMinutes: 60,
-          triggerOn1hClose: true,
+          intervalMinutes: symbol === 'ETHUSDT' ? 120 : 60,
+          triggerOn1hClose: symbol !== 'ETHUSDT',
           triggerOn15mStructure: true,
           minPriceMovePct: 1.5,
           minCooldownMinutes: 15,
