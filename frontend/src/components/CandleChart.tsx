@@ -78,6 +78,9 @@ interface CandleChartProps {
   overlayLabel?: string;
 }
 
+const LIVE_RIGHT_OFFSET = 12;
+const INITIAL_VISIBLE_BARS = 100;
+
 const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
 const TERMINAL_SCENARIO_STATUSES = new Set([
@@ -143,7 +146,27 @@ export function CandleChart({
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
 
+  const zonePrimitiveRef = useRef<Parameters<ISeriesApi<'Candlestick'>['attachPrimitive']>[0] | null>(null);
+  const displayedTimesRef = useRef<number[]>([]);
+  const followRef = useRef(true);
+  const [followingLive, setFollowingLive] = useState(true);
+  const [showLevelLabels, setShowLevelLabels] = useState(false);
   const [hoverData, setHoverData] = useState<CandleData | null>(null);
+
+  const pauseLive = () => {
+    if (!followRef.current) return;
+    followRef.current = false;
+    setFollowingLive(false);
+    chartRef.current?.timeScale().applyOptions({ shiftVisibleRangeOnNewBar: false });
+  };
+
+  const resumeLive = () => {
+    followRef.current = true;
+    setFollowingLive(true);
+    const scale = chartRef.current?.timeScale();
+    scale?.applyOptions({ shiftVisibleRangeOnNewBar: true, rightOffset: LIVE_RIGHT_OFFSET });
+    scale?.scrollToPosition(LIVE_RIGHT_OFFSET, false);
+  };
 
   // Layer toggles
   const [showSwings, setShowSwings] = useState(false);
@@ -158,6 +181,12 @@ export function CandleChart({
 
     const container = chartContainerRef.current;
     container.innerHTML = '';
+    displayedTimesRef.current = [];
+    priceLinesRef.current = [];
+    zonePrimitiveRef.current = null;
+    followRef.current = true;
+    setFollowingLive(true);
+    setHoverData(null);
 
     const chart = createChart(container, {
       width: container.clientWidth,
@@ -186,6 +215,9 @@ export function CandleChart({
         borderColor: isDark ? '#1e293b' : '#cbd5e1',
         timeVisible: true,
         secondsVisible: false,
+        rightOffset: LIVE_RIGHT_OFFSET,
+        barSpacing: 8,
+        shiftVisibleRangeOnNewBar: true,
       },
     });
 
@@ -203,6 +235,8 @@ export function CandleChart({
         type: 'volume',
       },
       priceScaleId: '',
+      lastValueVisible: false,
+      priceLineVisible: false,
     });
 
     volumeSeries.priceScale().applyOptions({
@@ -234,6 +268,19 @@ export function CandleChart({
       }
     });
 
+    // Capture genuine drag/zoom gestures before the library moves the viewport.
+    // Hover and ordinary clicks do not disable live following.
+    const onWheel = (event: WheelEvent) => {
+      if (event.deltaX !== 0 || event.deltaY !== 0) pauseLive();
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.buttons !== 0 && event.pointerType !== 'touch') pauseLive();
+    };
+    const onTouchMove = () => pauseLive();
+    container.addEventListener('wheel', onWheel, { capture: true, passive: true });
+    container.addEventListener('pointermove', onPointerMove, { capture: true, passive: true });
+    container.addEventListener('touchmove', onTouchMove, { capture: true, passive: true });
+
     const resizeObserver = new ResizeObserver((entries) => {
       if (entries.length === 0 || !entries[0].contentRect) return;
       chart.applyOptions({ width: entries[0].contentRect.width });
@@ -241,72 +288,81 @@ export function CandleChart({
     resizeObserver.observe(container);
 
     return () => {
+      container.removeEventListener('wheel', onWheel, true);
+      container.removeEventListener('pointermove', onPointerMove, true);
+      container.removeEventListener('touchmove', onTouchMove, true);
       resizeObserver.disconnect();
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
     };
-  }, [isDark]);
+  }, [isDark, symbol, timeframe]);
 
-  // Set historical candles
+  // Keep history and the forming candle in one chronological snapshot.
+  // Preserve the visible timestamp when the rolling REST window drops old bars.
   useEffect(() => {
-    if (!candleSeriesRef.current || !volumeSeriesRef.current || candles.length === 0) return;
+    const chart = chartRef.current;
+    const series = candleSeriesRef.current;
+    const volume = volumeSeriesRef.current;
+    if (!chart || !series || !volume) return;
 
-    const formattedCandles: CandlestickData<Time>[] = [];
-    const formattedVolume: HistogramData<Time>[] = [];
-
-    const sorted = [...candles].sort((a, b) => a.timestamp - b.timestamp);
-    const seenTimes = new Set<number>();
-
-    for (const c of sorted) {
-      const timeInSec = Math.floor(c.timestamp / 1000) as Time;
-      if (seenTimes.has(timeInSec as number)) continue;
-      seenTimes.add(timeInSec as number);
-
-      formattedCandles.push({
-        time: timeInSec,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      });
-
-      formattedVolume.push({
-        time: timeInSec,
-        value: c.volume,
-        color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)',
-      });
+    const byTime = new Map<number, CandleData>();
+    for (const candle of candles) byTime.set(Math.floor(candle.timestamp / 1000), candle);
+    const historicalLast = candles.reduce((last, c) => Math.max(last, Math.floor(c.timestamp / 1000)), -Infinity);
+    if (currentCandle) {
+      const time = Math.floor(currentCandle.timestamp / 1000);
+      if (time >= historicalLast) {
+        const historical = byTime.get(time);
+        if (!historical?.confirmed) byTime.set(time, currentCandle);
+      }
     }
-
+    const times = [...byTime.keys()].sort((a, b) => a - b);
+    if (!times.length) return;
+    const formattedCandles: CandlestickData<Time>[] = times.map(time => {
+      const c = byTime.get(time)!;
+      return { time: time as Time, open: c.open, high: c.high, low: c.low, close: c.close };
+    });
+    const formattedVolume: HistogramData<Time>[] = times.map(time => {
+      const c = byTime.get(time)!;
+      return { time: time as Time, value: c.volume,
+        color: c.close >= c.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)' };
+    });
+    const scale = chart.timeScale();
+    const previousTimes = displayedTimesRef.current;
+    const previousRange = scale.getVisibleLogicalRange();
     try {
-      candleSeriesRef.current.setData(formattedCandles);
-      volumeSeriesRef.current.setData(formattedVolume);
-      chartRef.current?.timeScale().fitContent();
-    } catch {}
-  }, [candles, timeframe]);
-
-  // Update ticking candle
-  useEffect(() => {
-    if (!currentCandle || !candleSeriesRef.current || !volumeSeriesRef.current) return;
-
-    const timeInSec = Math.floor(currentCandle.timestamp / 1000) as Time;
-    try {
-      candleSeriesRef.current.update({
-        time: timeInSec,
-        open: currentCandle.open,
-        high: currentCandle.high,
-        low: currentCandle.low,
-        close: currentCandle.close,
-      });
-
-      volumeSeriesRef.current.update({
-        time: timeInSec,
-        value: currentCandle.volume,
-        color: currentCandle.close >= currentCandle.open ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)',
-      });
-    } catch {}
-  }, [currentCandle]);
+      series.setData(formattedCandles);
+      volume.setData(formattedVolume);
+      displayedTimesRef.current = times;
+      if (!previousTimes.length || !previousRange) {
+        scale.setVisibleLogicalRange({
+          from: Math.max(0, times.length - INITIAL_VISIBLE_BARS),
+          to: times.length - 1 + LIVE_RIGHT_OFFSET,
+        });
+      } else if (followRef.current) {
+        // Preserve the user's zoom level rather than fitting all content.
+        scale.scrollToPosition(LIVE_RIGHT_OFFSET, false);
+      } else {
+        const indices = new Map(times.map((time, index) => [time, index]));
+        const center = Math.max(0, Math.min(previousTimes.length - 1,
+          Math.round((previousRange.from + previousRange.to) / 2)));
+        // Use the closest surviving candle to the inspected part of the chart.
+        let shift = 0;
+        for (let distance = 0; distance < previousTimes.length; distance++) {
+          const anchor = [center - distance, center + distance].find(index =>
+            index >= 0 && index < previousTimes.length && indices.has(previousTimes[index]));
+          if (anchor !== undefined) {
+            shift = indices.get(previousTimes[anchor])! - anchor;
+            break;
+          }
+        }
+        scale.setVisibleLogicalRange({ from: previousRange.from + shift, to: previousRange.to + shift });
+      }
+    } catch (error) {
+      console.warn('No se pudo actualizar el gráfico', error);
+    }
+  }, [candles, currentCandle, timeframe, symbol, isDark]);
 
   // Render SMC Markers (Swings, BOS, CHoCH)
   useEffect(() => {
@@ -361,7 +417,7 @@ export function CandleChart({
     try {
       candleSeriesRef.current.setMarkers(markers);
     } catch {}
-  }, [candles, swings, structureBreaks, showSwings, showBreaks]);
+  }, [candles, swings, structureBreaks, showSwings, showBreaks, symbol, timeframe, isDark]);
 
   // Render Price Lines (FVG, OrderBlocks, Setups)
   useEffect(() => {
@@ -374,6 +430,10 @@ export function CandleChart({
       } catch {}
     }
     priceLinesRef.current = [];
+    if (zonePrimitiveRef.current) {
+      candleSeriesRef.current.detachPrimitive(zonePrimitiveRef.current);
+      zonePrimitiveRef.current = null;
+    }
 
     // FVG Lines
     if (showFvg && fvgs) {
@@ -385,16 +445,16 @@ export function CandleChart({
             color: fvg.type === 'BULLISH' ? '#10b981' : '#ef4444',
             lineWidth: 1,
             lineStyle: 2, // Dashed
-            axisLabelVisible: true,
-            title: `FVG Top`,
+            axisLabelVisible: false,
+            title: '',
           });
           const botLine = candleSeriesRef.current.createPriceLine({
             price: fvg.bottom,
             color: fvg.type === 'BULLISH' ? '#10b981' : '#ef4444',
             lineWidth: 1,
             lineStyle: 2,
-            axisLabelVisible: true,
-            title: `FVG Bottom`,
+            axisLabelVisible: false,
+            title: '',
           });
           priceLinesRef.current.push(topLine, botLine);
         } catch {}
@@ -411,18 +471,16 @@ export function CandleChart({
             color: '#f59e0b',
             lineWidth: 2,
             lineStyle: 2,
-            axisLabelVisible: true,
-            title: activeScenario.neutralBreakoutProgress?.side === 'CEILING'
-              ? 'TECHO · CONFIRMACION 15M' : 'TECHO · ESPERA RUPTURA',
+            axisLabelVisible: showLevelLabels,
+            title: 'Techo',
           });
           const floor = candleSeriesRef.current.createPriceLine({
             price: activeScenario.entryZoneMin,
             color: '#38bdf8',
             lineWidth: 2,
             lineStyle: 2,
-            axisLabelVisible: true,
-            title: activeScenario.neutralBreakoutProgress?.side === 'FLOOR'
-              ? 'PISO · CONFIRMACION 15M' : 'PISO · ESPERA RUPTURA',
+            axisLabelVisible: showLevelLabels,
+            title: 'Piso',
           });
           priceLinesRef.current.push(ceiling, floor);
         } catch {}
@@ -432,29 +490,46 @@ export function CandleChart({
           const min = activeScenario.entryZoneMin;
           const max = activeScenario.entryZoneMax;
           if (Number.isFinite(min) && Number.isFinite(max) && max > min) {
-            for (const [price, label] of [
-              [min, 'ZONA · LIMITE INFERIOR'], [max, 'ZONA · LIMITE SUPERIOR'],
-            ] as const) {
+            const series = candleSeriesRef.current;
+            const zone: Parameters<ISeriesApi<'Candlestick'>['attachPrimitive']>[0] = {
+              paneViews: () => [{
+                zOrder: () => 'bottom',
+                renderer: () => ({
+                  draw(target) {
+                    target.useMediaCoordinateSpace(({ context, mediaSize }) => {
+                      const top = series.priceToCoordinate(max);
+                      const bottom = series.priceToCoordinate(min);
+                      if (top === null || bottom === null) return;
+                      const y = Math.max(0, Math.min(top, bottom));
+                      const end = Math.min(mediaSize.height, Math.max(top, bottom));
+                      if (end <= y) return;
+                      context.fillStyle = 'rgba(129, 140, 248, 0.13)';
+                      context.fillRect(0, y, mediaSize.width, end - y);
+                    });
+                  },
+                }),
+              }],
+            };
+            series.attachPrimitive(zone);
+            zonePrimitiveRef.current = zone;
+            for (const price of [min, max]) {
               if (Math.abs(price - activeScenario.targetEntry) < 0.01) continue;
-              priceLinesRef.current.push(candleSeriesRef.current.createPriceLine({
+              priceLinesRef.current.push(series.createPriceLine({
                 price, color: '#818cf8', lineWidth: 1, lineStyle: 2,
-                axisLabelVisible: true, title: label,
+                axisLabelVisible: false, title: '',
               }));
             }
           }
           const isValidated = activeScenario.status === 'ENTRY_VALIDATED' || activeScenario.status === 'SIGNAL_GENERATED';
           const lineStyle = isValidated ? 0 : 2; // Solid for validated signals, dashed for proposed monitoring scenarios
-          const entryPrefix = isValidated ? 'ENTRADA VALIDADA' : 'ZONA PROPUESTA';
-          const slPrefix = isValidated ? 'SL VALIDADO' : 'SL PROPUESTO';
-          const tpPrefix = isValidated ? 'TP VALIDADO' : 'TP PROPUESTO';
 
           const entryLine = candleSeriesRef.current.createPriceLine({
             price: activeScenario.targetEntry,
             color: '#3b82f6', // Blue
             lineWidth: 2,
             lineStyle,
-            axisLabelVisible: true,
-            title: `${entryPrefix} ($${activeScenario.targetEntry.toFixed(1)})`,
+            axisLabelVisible: showLevelLabels,
+            title: 'Entrada',
           });
 
           const slLine = candleSeriesRef.current.createPriceLine({
@@ -462,67 +537,25 @@ export function CandleChart({
             color: '#ef4444', // Red
             lineWidth: 2,
             lineStyle,
-            axisLabelVisible: true,
-            title: `${slPrefix} ($${activeScenario.stopLossPrice.toFixed(1)})`,
+            axisLabelVisible: showLevelLabels,
+            title: 'SL',
           });
 
           priceLinesRef.current.push(entryLine, slLine);
 
-          const riskDist = Math.abs(activeScenario.targetEntry - activeScenario.stopLossPrice);
-
-          // 1. Target 1:4 (if defined)
-          if (activeScenario.target14Price && Number.isFinite(activeScenario.target14Price)) {
-            let tpLabel: string;
-            if (Number.isFinite(activeScenario.netRR14) && activeScenario.netRR14! > 0) {
-              const net14 = activeScenario.netRR14!;
-              if (net14 >= 4.0) {
-                tpLabel = `${tpPrefix} 1:4 (R:R 1:${net14.toFixed(1)} neto)`;
-              } else {
-                tpLabel = `${tpPrefix} Ext (R:R 1:${net14.toFixed(1)} neto < 1:4)`;
-              }
-            } else {
-              tpLabel = `${tpPrefix} 1:4 (R:R neto no disponible)`;
-            }
-
-            const tp14Line = candleSeriesRef.current.createPriceLine({
-              price: activeScenario.target14Price,
-              color: '#10b981', // Green
-              lineWidth: 2,
-              lineStyle,
-              axisLabelVisible: true,
-              title: `${tpLabel} ($${activeScenario.target14Price.toFixed(1)})`,
-            });
-            priceLinesRef.current.push(tp14Line);
+          const primary = Number.isFinite(activeScenario.target14Price) && activeScenario.target14Price > 0
+            ? activeScenario.target14Price : activeScenario.target12Price;
+          if (Number.isFinite(primary) && primary > 0) {
+            priceLinesRef.current.push(candleSeriesRef.current.createPriceLine({
+              price: primary, color: '#10b981', lineWidth: 2, lineStyle,
+              axisLabelVisible: showLevelLabels, title: 'TP',
+            }));
           }
-
-          // 2. Target 1:2 (if defined and either standalone or secondary target)
-          if (activeScenario.target12Price && Number.isFinite(activeScenario.target12Price)) {
-            let tpLabel: string;
-            if (Number.isFinite(activeScenario.netRR12) && activeScenario.netRR12! > 0) {
-              const net12 = activeScenario.netRR12!;
-              if (net12 >= 2.0) {
-                tpLabel = `${tpPrefix} 1:2 (R:R 1:${net12.toFixed(1)} neto)`;
-              } else {
-                tpLabel = `${tpPrefix} (R:R 1:${net12.toFixed(1)} neto < 1:2)`;
-              }
-            } else {
-              tpLabel = `${tpPrefix} 1:2 (R:R neto no disponible)`;
-            }
-
-            const tp12Line = candleSeriesRef.current.createPriceLine({
-              price: activeScenario.target12Price,
-              color: '#06b6d4', // Cyan
-              lineWidth: 2,
-              lineStyle,
-              axisLabelVisible: true,
-              title: `${tpLabel} ($${activeScenario.target12Price.toFixed(1)})`,
-            });
-            priceLinesRef.current.push(tp12Line);
-          }
+          // The secondary target remains in the legend, not on top of the candles.
         } catch {}
       }
     }
-  }, [fvgs, scenarios, selectedScenarioId, showFvg, showScenarios, symbol, isDark]);
+  }, [fvgs, scenarios, selectedScenarioId, showFvg, showScenarios, showLevelLabels, symbol, timeframe, isDark]);
 
   const activeCandle = hoverData || currentCandle || (candles.length > 0 ? candles[candles.length - 1] : null);
   const priceColor =
@@ -591,7 +624,22 @@ export function CandleChart({
 
       {/* Layer Toggles Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-2 py-2 border-b border-slate-200 dark:border-slate-800/50 text-[11px] font-mono">
-        <span className="text-slate-500 dark:text-slate-400 font-semibold uppercase tracking-wider">Capas SMC / ICT:</span>
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="button" onClick={resumeLive} aria-pressed={followingLive}
+            title="Volver a la última vela y seguir el precio"
+            className={`rounded-md border px-2.5 py-1 font-bold ${followingLive
+              ? 'border-emerald-500/40 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10'
+              : 'border-sky-500/40 text-sky-600 dark:text-sky-400 bg-sky-500/10'}`}>
+            {followingLive ? '● En vivo' : '→ Volver al vivo'}
+          </button>
+          {!followingLive && <span className="text-slate-500 dark:text-slate-400">Vista manual</span>}
+          <button type="button" aria-pressed={showLevelLabels} onClick={() => setShowLevelLabels(v => !v)}
+            className={`rounded-md border px-2.5 py-1 ${showLevelLabels
+              ? 'border-sky-500/40 text-sky-600 dark:text-sky-400 bg-sky-500/10'
+              : 'border-slate-200 dark:border-slate-700 text-slate-500'}`}>
+            Etiquetas {showLevelLabels ? 'ON' : 'OFF'}
+          </button>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setShowSwings(!showSwings)}
@@ -655,7 +703,7 @@ export function CandleChart({
               onClick={() => onSelectScenario(null)}
               className="text-[11px] font-mono text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 underline cursor-pointer"
             >
-              Restablecer automático
+              Selección automática
             </button>
           )}
         </div>
@@ -679,10 +727,20 @@ export function CandleChart({
             </>
           ) : (
             <>
-              <span className="font-semibold text-indigo-600 dark:text-indigo-400">● Zona de entrada</span>
-              <span className="font-semibold text-blue-600 dark:text-blue-400">● Entrada</span>
-              <span className="font-semibold text-red-600 dark:text-red-400">● Stop loss</span>
-              <span className="font-semibold text-emerald-600 dark:text-emerald-400">● Objetivo</span>
+              <span className="font-semibold text-slate-600 dark:text-slate-300">{chartWatch.direction} · {chartWatch.status === 'ENTRY_VALIDATED' ? 'Validado' : 'Propuesto'}</span>
+              {Number.isFinite(chartWatch.entryZoneMin) && Number.isFinite(chartWatch.entryZoneMax) && chartWatch.entryZoneMax > chartWatch.entryZoneMin && (
+                <span className="font-semibold text-indigo-600 dark:text-indigo-400">● Zona {chartWatch.entryZoneMin.toFixed(1)}–{chartWatch.entryZoneMax.toFixed(1)}</span>
+              )}
+              <span className="font-semibold text-blue-600 dark:text-blue-400">● Entrada {chartWatch.targetEntry.toFixed(1)}</span>
+              <span className="font-semibold text-red-600 dark:text-red-400">● SL {chartWatch.stopLossPrice.toFixed(1)}</span>
+              {Number.isFinite(chartWatch.target14Price) && chartWatch.target14Price > 0 && (
+                <span className="font-semibold text-emerald-600 dark:text-emerald-400">● TP {chartWatch.target14Price.toFixed(1)}{Number.isFinite(chartWatch.netRR14) ? ` · R:R 1:${chartWatch.netRR14.toFixed(1)} neto` : ''}</span>
+              )}
+              {Number.isFinite(chartWatch.target12Price) && chartWatch.target12Price > 0 && (
+                <span className={Number.isFinite(chartWatch.target14Price) && chartWatch.target14Price > 0 ? 'text-cyan-600 dark:text-cyan-400' : 'font-semibold text-emerald-600 dark:text-emerald-400'}>
+                  {Number.isFinite(chartWatch.target14Price) && chartWatch.target14Price > 0 ? 'TP alternativo' : '● TP'} {chartWatch.target12Price.toFixed(1)}{Number.isFinite(chartWatch.netRR12) ? ` · R:R 1:${chartWatch.netRR12.toFixed(1)} neto` : ''}
+                </span>
+              )}
             </>
           )}
         </div>
