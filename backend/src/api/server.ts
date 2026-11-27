@@ -557,7 +557,7 @@ export class ApiServer {
   }
 
   private sendSignals(res: http.ServerResponse, limit: number): void {
-    const signals = this.db.getSignals(limit);
+    const signals = this.db.getSignals(limit, this.coordinator.getMarketState().symbol);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, count: signals.length, data: signals }));
   }
@@ -610,6 +610,15 @@ export class ApiServer {
         const active = payload.active === true;
         const reason = payload.reason || 'Acción manual desde panel de control';
         this.coordinator.setKillSwitch(active, reason);
+        // A single emergency action must cover both symbol-isolated paper engines.
+        // Share the global kill switch without sending duplicate Telegram alerts.
+        if (active) {
+          for (const market of this.markets.values()) {
+            if (market !== this.coordinator) {
+              market.getSignalStateMachine().cancelAll('KILL_SWITCH_ACTIVE');
+            }
+          }
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, killSwitchActive: active, reason }));
       } catch (err: any) {
