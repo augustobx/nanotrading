@@ -93,7 +93,7 @@ export function getScenarioCategory(s: any): OperationalCategory {
     return 'SENALES_APROBADAS';
   }
   // 6. Finished / Discarded without trade
-  if (['INVALIDATED', 'EXPIRED', 'CANCELLED', 'NO_TRADE_OBSERVATION'].includes(status)) {
+  if (['INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(status)) {
     return 'FINALIZADOS_SIN_TRADE';
   }
   // 7. In progress (monitoring, approaching, in zone, waiting confirmation)
@@ -109,7 +109,15 @@ export function getHumanOperationalStatus(s: any): string {
 
   switch (status) {
     case 'NO_TRADE_OBSERVATION':
-      return 'Vigilando rango neutral (esperando ruptura)';
+      return s.neutralBreakoutProgress?.state === 'OUTSIDE_AWAITING_CLOSE'
+        ? 'Precio fuera de rango · Pendiente cierre de vela'
+        : s.neutralBreakoutProgress?.state === 'OUTSIDE_CLOSED_LOW_VOLUME'
+        ? 'Cierre fuera de rango · Volumen insuficiente'
+        : s.neutralBreakoutProgress?.state === 'OUTSIDE_CLOSED_INSUFFICIENT_DATA'
+        ? 'Cierre fuera de rango · Historial de volumen insuficiente'
+        : s.neutralBreakoutProgress?.state === 'BACK_INSIDE_RANGE'
+        ? 'Precio volvió al rango · Ruptura no confirmada'
+        : 'Vigilando rango neutral (esperando ruptura)';
     case 'COMPLETED':
       return isNeutral
         ? 'Finalizó sin trade (ruptura de rango observada)'
@@ -169,7 +177,13 @@ export function getHumanOutcome(s: any): string {
   if (status === 'INVALIDATED') return 'Sin trade · Descartado por invalidación técnica previa';
   if (status === 'EXPIRED') return 'Sin trade · Expirado sin alcanzar mitigación';
   if (status === 'CANCELLED') return 'Sin trade · Cancelado por filtro de riesgo o IA';
-  if (status === 'NO_TRADE_OBSERVATION') return 'Sin trade · Observación cualitativa activa';
+  if (status === 'NO_TRADE_OBSERVATION') return s.neutralBreakoutProgress?.state === 'OUTSIDE_AWAITING_CLOSE'
+    ? 'Sin trade · Precio fuera de rango, esperando cierre confirmado'
+    : s.neutralBreakoutProgress?.state === 'OUTSIDE_CLOSED_LOW_VOLUME'
+      ? 'Sin trade · Cierre fuera de rango, RVOL insuficiente'
+      : s.neutralBreakoutProgress?.state === 'OUTSIDE_CLOSED_INSUFFICIENT_DATA'
+        ? 'Sin trade · Cierre sin historial de volumen suficiente'
+        : 'Sin trade · Observación cualitativa activa';
   return 'En vigilancia algorítmica activa (sin trade iniciado)';
 }
 
@@ -203,14 +217,28 @@ export function getScenarioNarrative(s: any): ScenarioNarrative {
     statusColor = isAlive ? 'amber' : 'slate';
     queEstaPasando = `El sistema detectó un rango de consolidación en ${s.timeframe || '15m'} sin ventaja estadística direccional.`;
 
+    const progress = s.neutralBreakoutProgress;
     if (status === 'COMPLETED') {
-      queEstaEsperando = 'Ninguna. La observación concluyó exitosamente.';
-      queFaltaParaAvanzar = 'Completado.';
-      porQueTermino = 'Ruptura confirmada de rango con vela cerrada. El watcher detectó salida del rango y disparó nuevo ciclo de análisis sin arriesgar capital.';
+      queEstaEsperando = 'Ninguna para esta observación. Se confirmó la ruptura de rango.';
+      queFaltaParaAvanzar = 'El scheduler intentará un nuevo descubrimiento IA sujeto a cooldown, disponibilidad y presupuesto. No es una señal.';
+      porQueTermino = `La observación terminó por cierre confirmado de ${s.timeframe || '15m'} con RVOL ${progress?.relativeVolume?.toFixed(2) || 'verificado'}; no implica LONG, SHORT ni entrada paper.`;
     } else {
-      queEstaEsperando = `Ruptura del techo ($${s.entryZoneMax?.toFixed(1) || '---'}) o piso ($${s.entryZoneMin?.toFixed(1) || '---'}) con volumen en vela cerrada.`;
-      queFaltaParaAvanzar = 'Cierre de vela de 15m/1h por fuera de los límites de consolidación.';
-      porQueTermino = isAlive ? 'Sigue viva y bajo vigilancia continua.' : (s.rejectionReason || 'Vigencia agotada.');
+      queEstaEsperando = `Ruptura del techo (${s.entryZoneMax?.toFixed(1) || '---'}) o piso (${s.entryZoneMin?.toFixed(1) || '---'}) en vela ${s.timeframe || '15m'} cerrada con RVOL ≥ 1.20.`;
+      queFaltaParaAvanzar = `Cierre de vela ${s.timeframe || '15m'} fuera de los límites, con mínimo 10 velas históricas válidas y volumen relativo ≥ 1.20.`;
+      porQueTermino = isAlive ? 'Observación activa; todavía no hay ruptura validada.' : (s.rejectionReason || 'Vigencia agotada.');
+      if (progress?.state === 'OUTSIDE_AWAITING_CLOSE') {
+        const level = progress.side === 'CEILING' ? 'techo' : 'piso';
+        queEstaPasando = `El precio cruzó el ${level} del rango a ${progress.price?.toFixed(1) || '---'} durante una vela abierta. Todavía NO se confirmó la ruptura.`;
+        queEstaEsperando = `Cierre de vela ${s.timeframe || '15m'} fuera del rango y RVOL ≥ 1.20. Una mecha o tick no activa análisis.`;
+      } else if (progress?.state === 'OUTSIDE_CLOSED_LOW_VOLUME') {
+        queEstaPasando = `La vela ${s.timeframe || '15m'} cerró fuera del rango, pero RVOL ${progress.relativeVolume?.toFixed(2) || '---'} fue inferior a 1.20.`;
+        queFaltaParaAvanzar = 'Otro cierre válido fuera del rango con volumen relativo ≥ 1.20. No se solicitó IA.';
+      } else if (progress?.state === 'OUTSIDE_CLOSED_INSUFFICIENT_DATA') {
+        queEstaPasando = `La vela cerró fuera del rango, pero solo hay ${progress.baselineCount || 0} de las 10 velas previas válidas requeridas para medir volumen.`;
+        queFaltaParaAvanzar = 'Acumular velas históricas válidas y confirmar nuevo cierre con RVOL ≥ 1.20.';
+      } else if (progress?.state === 'BACK_INSIDE_RANGE') {
+        queEstaPasando = 'El precio salió momentáneamente del rango pero volvió a entrar antes de una ruptura validada.';
+      }
     }
   }
   // 2. DIRECTIONAL SCENARIO
@@ -425,7 +453,7 @@ export function calculateFunnelMetrics(scenarios: any[], signals: any[] = []): F
   const paperClosedSl = signals.filter((s) => (s.state || s.status) === 'COMPLETED_SL').length;
 
   const discardedWithoutTrade = scenarios.filter((s) =>
-    ['INVALIDATED', 'EXPIRED', 'CANCELLED', 'NO_TRADE_OBSERVATION'].includes(s.status) ||
+    ['INVALIDATED', 'EXPIRED', 'CANCELLED'].includes(s.status) ||
     (s.status === 'COMPLETED' && (s.kind === 'NEUTRAL_OBSERVATION' || s.direction === 'NEUTRAL'))
   ).length;
 

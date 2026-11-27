@@ -28,6 +28,8 @@ export interface SchedulerStatus {
   discoveryInFlight: boolean;
   providerFailureBackoffUntil: number | null;
   consecutiveProviderFailures: number;
+  pendingNeutralBreakout: { price: number; confirmedAt: number } | null;
+  lastBlockedTrigger: { code: string; timestamp: number } | null;
 }
 
 export class AutonomousDiscoveryScheduler extends EventEmitter {
@@ -50,6 +52,8 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
   private consecutiveProviderFailures = 0;
   private providerFailureBackoffUntil: number | null = null;
   private lastBlockedLog: { code: string; timestamp: number; suppressed: number } | null = null;
+  private pendingNeutralBreakout: { price: number; confirmedAt: number } | null = null;
+  private readonly neutralBreakoutQueueLifetimeMs = 90 * 60 * 1000;
 
   private blocked(code: string, trigger: string): false {
     const now = Date.now();
@@ -115,7 +119,14 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     this.db = options.db;
     this.symbol = options.symbol || 'BTCUSDT';
     this.config = this.db.getDiscoverySchedulerConfig(this.symbol);
-
+    // Load the pending event synchronously before attaching listeners.
+    // A backend restart must never silently discard a confirmed breakout.
+    this.pendingNeutralBreakout = this.db.getPendingNeutralBreakout(this.symbol);
+    // A restart must not reset a recently spent analysis cooldown.
+    const lastAudit = this.db.getDiscoveryAudits(1, this.symbol)[0];
+    if (lastAudit && lastAudit.timestamp > Date.now() - 4 * 3600_000) {
+      this.lastTriggerTimestamp = lastAudit.timestamp;
+    }
   }
 
   public start(): void {
@@ -201,12 +212,59 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
   private evaluatePeriodicTrigger(): void {
     if (!this.isRunning || !this.config.enabled) return;
     const now = Date.now();
+
+    // A confirmed neutral breakout is important enough to retry after a
+    // cooldown/backoff, but not important enough to bypass hard budgets.
+    if (this.pendingNeutralBreakout) {
+      if (now - this.pendingNeutralBreakout.confirmedAt > this.neutralBreakoutQueueLifetimeMs) {
+        this.db.logEvent('WARN', 'DiscoveryScheduler', 'Neutral breakout expired while awaiting discovery', {
+          symbol: this.symbol, price: this.pendingNeutralBreakout.price,
+        });
+        // Clearing a persisted queue is required; fail closed if SQLite fails.
+        this.db.savePendingNeutralBreakout(this.symbol, null);
+        this.pendingNeutralBreakout = null;
+      } else {
+        void this.triggerDiscovery('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH',
+          this.pendingNeutralBreakout.price);
+        return;
+      }
+    }
     const intervalMs = this.config.intervalMinutes * 60 * 1000;
 
     if (!this.lastTriggerTimestamp || now - this.lastTriggerTimestamp >= intervalMs) {
       const currentPrice = this.coordinator.getMarketState().ticker?.lastPrice || 0;
       this.triggerDiscovery('PERIODIC_SCHEDULED_DISCOVERY', currentPrice);
     }
+  }
+
+  /** Coalesce confirmed breakouts without bypassing cooldown, provider backoff,
+   * global budget or the existing active-directional-scenario guard. */
+  public queueConfirmedNeutralBreakout(price: number): boolean {
+    if (!Number.isFinite(price) || price <= 0) return false;
+    if (!this.pendingNeutralBreakout) {
+      const pending = { price, confirmedAt: Date.now() };
+      try {
+        // Durable write MUST precede any irreversible neutral transition.
+        this.db.savePendingNeutralBreakout(this.symbol, pending);
+      } catch (err: any) {
+        this.db.logEvent('CRITICAL', 'DiscoveryScheduler',
+          'Confirmed breakout NOT queued; SQLite persistence failed', {
+            symbol: this.symbol, price, error: err.message,
+          });
+        return false;
+      }
+      this.pendingNeutralBreakout = pending;
+      this.db.logEvent('INFO', 'DiscoveryScheduler',
+        'Confirmed neutral breakout persisted for autonomous discovery', {
+          symbol: this.symbol, price,
+        });
+    }
+    // Defer paid work until the watcher has finished recording COMPLETED.
+    queueMicrotask(() => {
+      if (this.isRunning) void this.triggerDiscovery(
+        'RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', this.pendingNeutralBreakout?.price);
+    });
+    return true;
   }
 
   public async triggerDiscovery(reason: string, currentPrice?: number): Promise<boolean> {
@@ -244,9 +302,9 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     // Budget check
     if (this.hardBudgetManager.isBlocked()) {
       this.db.logEvent('WARN', 'DiscoveryScheduler', 'Autonomous discovery skipped: Budget limit blocked', {
-        reason: this.hardBudgetManager.getBlockedReason(),
+        symbol: this.symbol, reason: this.hardBudgetManager.getBlockedReason(),
       });
-      return false;
+      return this.blocked('BUDGET_BLOCKED', reason);
     }
 
     this.lastTriggerTimestamp = now;
@@ -280,6 +338,10 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       }
       this.consecutiveProviderFailures = 0;
       this.providerFailureBackoffUntil = null;
+      // A completed discovery (even an explicit AI NO_TRADE) satisfies the
+      // queued request; do not spend a second time on the same breakout.
+      this.db.savePendingNeutralBreakout(this.symbol, null);
+      this.pendingNeutralBreakout = null;
       this.totalAutonomousRuns++;
       this.totalScenariosFound += result.scenarios.length;
       if (fingerprint) this.lastStructuralFingerprint = fingerprint;
@@ -348,6 +410,10 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       discoveryInFlight: this.discoveryInFlight,
       providerFailureBackoffUntil: this.providerFailureBackoffUntil,
       consecutiveProviderFailures: this.consecutiveProviderFailures,
+      pendingNeutralBreakout: this.pendingNeutralBreakout,
+      lastBlockedTrigger: this.lastBlockedLog
+        ? { code: this.lastBlockedLog.code, timestamp: this.lastBlockedLog.timestamp }
+        : null,
     };
   }
 }

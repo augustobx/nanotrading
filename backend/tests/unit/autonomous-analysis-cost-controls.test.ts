@@ -137,7 +137,7 @@ test('Watcher: neutral range needs valid bounds, closed candle and RVOL >= 1.2',
   coordinator.getCandleManager = () => ({ getCandles: () => historical });
   let discoveryCalls = 0;
   coordinator.getDiscoveryScheduler = () => ({
-    triggerDiscovery: () => { discoveryCalls++; return true; },
+    queueConfirmedNeutralBreakout: () => { discoveryCalls++; },
   });
   const watcher = new AlgorithmicWatcher(coordinator as any, registry);
   const neutral = testScenario({
@@ -152,7 +152,8 @@ test('Watcher: neutral range needs valid bounds, closed candle and RVOL >= 1.2',
     watcher.evaluateCandleClose(candle);
     assert.equal(registry.getScenario(neutral.id)?.status, 'NO_TRADE_OBSERVATION');
     assert.equal(discoveryCalls, 0);
-    watcher.evaluateCandleClose({ ...candle, volume: 150 });
+    // Idempotency: a separate later 15m close, not an edit of the same candle.
+    watcher.evaluateCandleClose({ ...candle, timestamp: time + 900000, volume: 150 });
     assert.equal(registry.getScenario(neutral.id)?.status, 'COMPLETED');
     assert.equal(discoveryCalls, 1);
   } finally { db.close(); }

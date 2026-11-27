@@ -12,6 +12,8 @@ type MarketSummary = {
   wsConnected: boolean;
   schedulerEnabled: boolean;
   activeWatchedScenarios: number;
+  candle15mStale?: boolean;
+  last15mClosedAt?: number | null;
 };
 type MarketStats = {
   symbol: string;
@@ -141,6 +143,14 @@ export function EthMarketPanel({
       {error && (
         <p role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-600 dark:text-amber-400">
           {error}. {lastSync ? 'Mostrando los últimos datos conocidos.' : 'BTCUSDT continúa independiente.'}
+        </p>
+      )}
+
+      {directory.some(m => m.candle15mStale) && (
+        <p role="alert" className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-4 py-3 text-xs font-semibold text-rose-700 dark:text-rose-300">
+          Alerta de datos: {directory.filter(m => m.candle15mStale).map(m => m.symbol).join(' / ')}
+          {' '}no tiene cierre de vela 15m reciente. El watchdog está intentando recuperar datos por REST.
+          No interpretar silencio del watcher como ausencia de oportunidades.
         </p>
       )}
 

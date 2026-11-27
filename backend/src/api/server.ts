@@ -321,10 +321,18 @@ export class ApiServer {
     const list = Array.from(this.markets.entries()).map(([symbol, coordinator]) => {
       const market = coordinator.getMarketState();
       const scheduler = coordinator.getDiscoveryScheduler().getStatus();
+      const closed = coordinator.getCandleManager?.()?.getLastClosedCandle?.('15m') || null;
+      const last15mClosedAt = closed ? closed.timestamp + 15 * 60000 : null;
+      const last15mLagMs = last15mClosedAt === null ? null : Date.now() - last15mClosedAt;
       return {
         symbol, status: market.status,
         lastPrice: market.ticker?.lastPrice ?? null,
         wsConnected: market.wsConnected,
+        last15mClosedAt,
+        last15mLagMs,
+        candle15mStale: last15mLagMs === null || last15mLagMs > 18 * 60000,
+        pendingNeutralBreakout: scheduler.pendingNeutralBreakout ?? null,
+        lastBlockedTrigger: scheduler.lastBlockedTrigger ?? null,
         schedulerEnabled: scheduler.enabled,
         activeWatchedScenarios: scheduler.activeWatchedScenarios,
         autonomousRunsSinceRestart: scheduler.totalAutonomousRuns,

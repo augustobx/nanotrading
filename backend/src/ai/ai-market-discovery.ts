@@ -945,6 +945,16 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       rrModeAvailable: 'NONE',
       uncertaintyLevel: 'HIGH',
       status: 'NO_TRADE_OBSERVATION',
+      // A range can already be broken intrabar at discovery. Show that state
+      // immediately, but do not assert a confirmed close or request paid AI.
+      neutralBreakoutProgress: {
+        state: summary.currentPrice > rangeHigh || summary.currentPrice < rangeLow
+          ? 'OUTSIDE_AWAITING_CLOSE' : 'WAITING_RANGE',
+        side: summary.currentPrice > rangeHigh ? 'CEILING'
+          : summary.currentPrice < rangeLow ? 'FLOOR' : undefined,
+        price: summary.currentPrice,
+        observedAt: Date.now(),
+      },
       validUntilTimestamp: Date.now() + 6 * 3600 * 1000,
       aiCostUsd,
       activationConditions: [`Esperar ruptura de rango consolidado [${rangeLow} - ${rangeHigh}]`],

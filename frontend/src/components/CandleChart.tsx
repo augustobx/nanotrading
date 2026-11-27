@@ -410,7 +410,8 @@ export function CandleChart({
             lineWidth: 2,
             lineStyle: 2,
             axisLabelVisible: true,
-            title: 'TECHO · ESPERA RUPTURA',
+            title: activeScenario.neutralBreakoutProgress?.side === 'CEILING'
+              ? 'TECHO · CONFIRMACION 15M' : 'TECHO · ESPERA RUPTURA',
           });
           const floor = candleSeriesRef.current.createPriceLine({
             price: activeScenario.entryZoneMin,
@@ -418,7 +419,8 @@ export function CandleChart({
             lineWidth: 2,
             lineStyle: 2,
             axisLabelVisible: true,
-            title: 'PISO · ESPERA RUPTURA',
+            title: activeScenario.neutralBreakoutProgress?.side === 'FLOOR'
+              ? 'PISO · CONFIRMACION 15M' : 'PISO · ESPERA RUPTURA',
           });
           priceLinesRef.current.push(ceiling, floor);
         } catch {}
@@ -579,7 +581,7 @@ export function CandleChart({
             </div>
             <div>
               <span className="text-slate-400 dark:text-slate-500">Vol: </span>
-              <span className="text-slate-700 dark:text-slate-300 font-semibold">{activeCandle.volume.toFixed(3)} BTC</span>
+              <span className="text-slate-700 dark:text-slate-300 font-semibold">{activeCandle.volume.toFixed(3)} {symbol.replace('USDT', '')}</span>
             </div>
           </div>
         )}
@@ -642,7 +644,7 @@ export function CandleChart({
             </span>
             <span className="font-mono text-slate-800 dark:text-slate-200">
               {isNeutralRange(selectedScenario)
-                ? `NEUTRAL · TECHO $${selectedScenario.entryZoneMax.toFixed(1)} · PISO $${selectedScenario.entryZoneMin.toFixed(1)} · Espera vela cerrada y volumen`
+                ? `NEUTRAL · TECHO ${selectedScenario.entryZoneMax.toFixed(1)} · PISO ${selectedScenario.entryZoneMin.toFixed(1)} · Validación ${selectedScenario.timeframe} + RVOL ≥ 1.20`
                 : `${selectedScenario.direction} · Entrada $${selectedScenario.targetEntry?.toFixed(1)} · SL $${selectedScenario.stopLossPrice?.toFixed(1)}${selectedScenario.target14Price ? ` · TP $${selectedScenario.target14Price.toFixed(1)}` : ''}`}
             </span>
           </div>
@@ -663,7 +665,15 @@ export function CandleChart({
             <>
               <span className="font-semibold text-amber-600 dark:text-amber-400">● Techo ${chartWatch.entryZoneMax.toFixed(1)}</span>
               <span className="font-semibold text-sky-600 dark:text-sky-400">● Piso ${chartWatch.entryZoneMin.toFixed(1)}</span>
-              <span className="text-slate-600 dark:text-slate-400">Rango neutral · esperando ruptura confirmada</span>
+              <span className="text-slate-600 dark:text-slate-400">{chartWatch.neutralBreakoutProgress?.state === 'OUTSIDE_AWAITING_CLOSE'
+                ? `Precio fuera de rango · Pendiente vela ${chartWatch.timeframe} y RVOL ≥ 1.20`
+                : chartWatch.neutralBreakoutProgress?.state === 'OUTSIDE_CLOSED_LOW_VOLUME'
+                ? `Cierre fuera sin volumen · RVOL ${chartWatch.neutralBreakoutProgress.relativeVolume?.toFixed(2)} / 1.20`
+                : chartWatch.neutralBreakoutProgress?.state === 'OUTSIDE_CLOSED_INSUFFICIENT_DATA'
+                ? 'Cierre fuera · Historial de volumen insuficiente'
+                : chartWatch.neutralBreakoutProgress?.state === 'BACK_INSIDE_RANGE'
+                ? 'El precio volvió al rango · Ruptura no confirmada'
+                : `Rango neutral · Esperando vela ${chartWatch.timeframe} cerrada + volumen`}</span>
             </>
           ) : (
             <>

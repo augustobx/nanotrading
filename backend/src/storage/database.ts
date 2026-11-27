@@ -1888,6 +1888,8 @@ export class DatabaseService {
       geminiInterpretation: scenario.geminiInterpretation,
       distanceToZonePct: scenario.distanceToZonePct,
       currentPrice: scenario.currentPrice,
+      neutralBreakoutProgress: scenario.neutralBreakoutProgress,
+      neutralLastEvaluatedCandleTimestamp: scenario.neutralLastEvaluatedCandleTimestamp,
       lastCheckedTimestamp: scenario.lastCheckedTimestamp,
       lastRevalidationTimestamp: scenario.lastRevalidationTimestamp,
       isSimulated: scenario.isSimulated,
@@ -2131,6 +2133,8 @@ export class DatabaseService {
       geminiInterpretation: payload.geminiInterpretation,
       distanceToZonePct: payload.distanceToZonePct,
       currentPrice: payload.currentPrice,
+      neutralBreakoutProgress: payload.neutralBreakoutProgress,
+      neutralLastEvaluatedCandleTimestamp: payload.neutralLastEvaluatedCandleTimestamp,
       lastCheckedTimestamp: payload.lastCheckedTimestamp,
       lastRevalidationTimestamp: payload.lastRevalidationTimestamp,
       isSimulated: payload.isSimulated,
@@ -2752,6 +2756,42 @@ export class DatabaseService {
     } catch {
       return [];
     }
+  }
+
+  /** Durable, symbol-scoped breakout queue; shares the existing runtime_flags
+   * SQLite table, so no schema migration is required. Fail closed on DB errors.
+   * null clears the queue only when discovery finished successfully. */
+  public savePendingNeutralBreakout(symbol: string,
+    pending: { price: number; confirmedAt: number } | null): void {
+    if (this.isClosed) throw new Error('No se puede guardar una ruptura con SQLite cerrada');
+    if (!/^(BTCUSDT|ETHUSDT)$/.test(symbol)) throw new Error('Símbolo no permitido');
+    const key = `pending_neutral_breakout_${symbol}`;
+    if (pending !== null && (!Number.isFinite(pending.price) || pending.price <= 0 ||
+        !Number.isFinite(pending.confirmedAt))) {
+      throw new Error('Datos de ruptura inválidos');
+    }
+    if (pending === null) {
+      this.db.prepare('DELETE FROM runtime_flags WHERE key = ?').run(key);
+      return;
+    }
+    this.db.prepare(`INSERT INTO runtime_flags(key, value) VALUES(?, ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(key, JSON.stringify(pending));
+  }
+
+  public getPendingNeutralBreakout(symbol: string): { price: number; confirmedAt: number } | null {
+    if (this.isClosed) throw new Error('SQLite cerrada al recuperar ruptura');
+    if (!/^(BTCUSDT|ETHUSDT)$/.test(symbol)) throw new Error('Símbolo no permitido');
+    const key = `pending_neutral_breakout_${symbol}`;
+    const row = this.db.prepare('SELECT value FROM runtime_flags WHERE key = ?')
+      .get(key) as { value: string } | undefined;
+    if (!row) return null;
+    const data = JSON.parse(row.value);
+    if (!Number.isFinite(data?.price) || data.price <= 0 ||
+        !Number.isFinite(data?.confirmedAt)) {
+      throw new Error(`Cola de ruptura dañada para ${symbol}; se requiere inspección`);
+    }
+    return { price: data.price, confirmedAt: data.confirmedAt };
   }
 
   public getKillSwitchState(): boolean | null {
