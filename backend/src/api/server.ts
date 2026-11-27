@@ -221,10 +221,10 @@ export class ApiServer {
       } else if (pathname === '/api/v1/discovery/market-intelligence' && req.method === 'GET') {
         this.sendMarketIntelligence(res);
       } else if (pathname === '/api/v1/discovery/audit' && req.method === 'GET') {
-        const analyses = this.db.getDiscoveryAudits(Number(url.searchParams.get('limit') || 20));
+        const analyses = this.db.getDiscoveryAudits(Number(url.searchParams.get('limit') || 20), this.coordinator.getMarketState().symbol);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, data: {
-          funnel: this.db.getDiscoveryFunnel(),
+          funnel: this.db.getDiscoveryFunnel(this.coordinator.getMarketState().symbol),
           policy: { ...effectiveRRMinimums(this.coordinator.getRiskPolicyManager().getPolicy()),
             mode: this.coordinator.getRiskPolicyManager().getPolicy().rrTargetMode },
           analyses: analyses.map(({ snapshot, policy, ...analysis }) => ({
@@ -2110,7 +2110,7 @@ export class ApiServer {
   }
 
   private sendWatchPlans(res: http.ServerResponse): void {
-    const plans = this.db.getActiveWatchPlans();
+    const plans = this.db.getActiveWatchPlans(this.coordinator.getMarketState().symbol);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, count: plans.length, data: plans }));
   }
