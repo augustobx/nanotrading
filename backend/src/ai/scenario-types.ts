@@ -77,6 +77,9 @@ export interface WatchConditionParams {
   level?: number;
   minLevel?: number;
   maxLevel?: number;
+  min?: number;
+  max?: number;
+  thresholdMultiplier?: number;
   timeframe?: Timeframe;
   threshold?: number;
   direction?: 'BULLISH' | 'BEARISH';
@@ -135,6 +138,8 @@ export interface AiWatchPlan {
   status: WatchPlanStatus;
   automatable: boolean;
   nonAutomatableConditions?: string[];
+  zoneTouchedTimestamp?: number;
+  zoneTouchedPrice?: number;
   lastEvaluatedTimestamp?: number;
   createdAt: number;
   updatedAt: number;
