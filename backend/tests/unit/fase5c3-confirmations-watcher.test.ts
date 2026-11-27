@@ -442,6 +442,19 @@ describe('Directional watcher regression — 2026-11-27', () => {
     assert.equal(requests, 1);
   });
 
+  it('allows a confirmed rejection just outside a narrow zone within existing drift limit', () => {
+    const { watcher, registry, scenario } = fixture();
+    // Mutate the in-memory fixture before observation; no retrospective entry.
+    scenario.entryZoneMin = 61475;
+    scenario.watchPlan!.observableConditions[0].params.min = 61475;
+    let requests = 0;
+    watcher.on('revalidation_requested', () => requests++);
+    watcher.evaluateTick(61485.7);
+    watcher.evaluateTick(61470);
+    assert.equal(registry.getScenario(scenario.id)?.status, 'REVALIDATION_REQUESTED');
+    assert.equal(requests, 1);
+  });
+
   it('does not promote persisted legacy confirmations to a retroactive entry', () => {
     const { watcher, registry, scenario } = fixture();
     for (const c of scenario.watchPlan!.observableConditions) c.isMet = true;
