@@ -6,6 +6,7 @@
  */
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, statSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 const path = process.env.DB_SQLITE_PATH || '/app/data/trading.db';
 const confirmation = process.env.CONFIRM_OPERATIONAL_RESET;
@@ -16,6 +17,14 @@ if (confirmation !== 'DELETE_NON_CONFIG_DATA') {
 }
 if (!existsSync(backup) || statSync(backup).size < 1024) {
   console.error('RESET RECHAZADO: falta archivo de respaldo SQLite en frío verificable');
+  process.exit(2);
+}
+const listing = spawnSync('tar', ['-tf', backup], {
+  encoding: 'utf8', timeout: 15_000, maxBuffer: 4 * 1024 * 1024,
+});
+if (listing.status !== 0 || !listing.stdout.split('\n').some(f =>
+    f === './trading.db' || f === 'trading.db')) {
+  console.error('RESET RECHAZADO: el backup no es un tar SQLite válido con trading.db');
   process.exit(2);
 }
 if (!existsSync(path) || statSync(path).size === 0) {
