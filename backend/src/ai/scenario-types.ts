@@ -215,6 +215,7 @@ export interface Scenario {
   distanceToZonePct?: number;
   currentPrice?: number;
   neutralBreakoutProgress?: NeutralBreakoutProgress;
+  neutralLastEvaluatedCandleTimestamp?: number;
   lastCheckedTimestamp?: number;
   lastRevalidationTimestamp?: number;
   isSimulated?: boolean;
