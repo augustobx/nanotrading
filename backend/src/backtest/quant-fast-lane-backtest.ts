@@ -107,7 +107,7 @@ export function runQuantFastLaneBacktest(input: {
         qtyStep: symbol === 'BTCUSDT' ? 0.001 : 0.01,
         minOrderQty: symbol === 'BTCUSDT' ? 0.001 : 0.01,
         spread: input.spreadUsdt ?? (symbol === 'BTCUSDT' ? 0.1 : 0.02),
-        minRequiredRR: netMinimum,
+        minRequiredRR: mode.name === '2R_MIN' ? 2 : 4,
       });
       if (!r.isValid || r.netLossUSDT <= 0) {
         counts.overall[2]++;

@@ -52,7 +52,7 @@ test('5m EMA21 pullback uses 15m trend but no AI',()=>{
   const {c5,c15}=createTrend();
   c5[c5.length-2].low=116.2;
   const last=c5[c5.length-1];
-  c5[c5.length-1]={...last,open:117.2,close:118.2,low:117.0,high:118.8};
+  c5[c5.length-1]={...last,open:117.2,close:118.2,low:117.0,high:118.5};
   const result=detectQuantSetup('BTCUSDT',c5,c15);
   assert.equal(result.regime,'BULL_TREND');
   assert.equal(result.candidate?.strategy,'QUANT_TREND_PULLBACK');
