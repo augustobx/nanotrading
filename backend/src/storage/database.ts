@@ -510,6 +510,29 @@ export class DatabaseService {
       ON backtest_trades(run_id, entry_timestamp ASC);
     `);
 
+    // Persist one deterministic decision per closed 5m candle and market.
+    // This is an auditable funnel, independent of paid AI and paper execution.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS quant_decisions (
+        id TEXT PRIMARY KEY,
+        symbol TEXT NOT NULL,
+        candle_timestamp INTEGER NOT NULL,
+        regime TEXT NOT NULL,
+        strategy TEXT,
+        direction TEXT,
+        outcome TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        entry_price REAL,
+        stop_loss REAL,
+        take_profit REAL,
+        net_rr REAL,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_quant_decisions_symbol_time
+      ON quant_decisions(symbol, candle_timestamp DESC);
+    `);
+
     // Signal columns migration for tracking metrics
     const extraCols = [
       'simulated_entry_time INTEGER',
@@ -886,6 +909,58 @@ export class DatabaseService {
       SELECT * FROM system_events ORDER BY timestamp DESC LIMIT ?
     `);
     return stmt.all(limit);
+  }
+
+  /** Immutable deduplication by (symbol, 5m candle opening time). */
+  public saveQuantDecision(event: {
+    id: string; symbol: string; candleTimestamp: number; regime: string;
+    strategy?: string | null; direction?: string | null;
+    outcome: string; reason: string; entryPrice?: number | null;
+    stopLoss?: number | null; takeProfit?: number | null;
+    netRR?: number | null; metadata?: Record<string, unknown>;
+  }): boolean {
+    if (this.isClosed) throw new Error('Database closed during quant decision');
+    const result = this.db.prepare(`INSERT OR IGNORE INTO quant_decisions
+      (id, symbol, candle_timestamp, regime, strategy, direction, outcome, reason,
+       entry_price, stop_loss, take_profit, net_rr, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      event.id, event.symbol, event.candleTimestamp, event.regime,
+      event.strategy ?? null, event.direction ?? null,
+      event.outcome, event.reason, event.entryPrice ?? null,
+      event.stopLoss ?? null, event.takeProfit ?? null, event.netRR ?? null,
+      JSON.stringify(event.metadata || {}), Date.now()
+    );
+    return result.changes === 1;
+  }
+
+  public getQuantDecisions(symbol: string, limit = 40): any[] {
+    if (this.isClosed) return [];
+    return (this.db.prepare(`SELECT * FROM quant_decisions
+      WHERE symbol = ? ORDER BY candle_timestamp DESC LIMIT ?`)
+      .all(symbol, Math.max(1, Math.min(300, Math.floor(limit)))) as any[]).map(row => ({
+        id: row.id, symbol: row.symbol, candleTimestamp: row.candle_timestamp,
+        regime: row.regime, strategy: row.strategy, direction: row.direction,
+        outcome: row.outcome, reason: row.reason,
+        entryPrice: row.entry_price, stopLoss: row.stop_loss,
+        takeProfit: row.take_profit, netRR: row.net_rr,
+        metadata: JSON.parse(row.metadata_json), createdAt: row.created_at,
+      }));
+  }
+
+  public getQuantSummary(symbol: string, since = Date.now() - 86400000): any {
+    if (this.isClosed) return { total: 0, outcomes: {}, strategy: {} };
+    const rows = this.db.prepare(`SELECT outcome, count(*) as total
+      FROM quant_decisions WHERE symbol = ? AND candle_timestamp >= ?
+      GROUP BY outcome`).all(symbol, since) as any[];
+    const strategies = this.db.prepare(`SELECT strategy, count(*) as total
+      FROM quant_decisions WHERE symbol = ? AND candle_timestamp >= ? AND strategy IS NOT NULL
+      GROUP BY strategy`).all(symbol, since) as any[];
+    const latest = this.getQuantDecisions(symbol, 1)[0] ?? null;
+    return {
+      since, latest, evaluatedCandles: rows.reduce((n, r) => n + r.total, 0),
+      outcomes: Object.fromEntries(rows.map(r => [r.outcome, r.total])),
+      strategies: Object.fromEntries(strategies.map(r => [r.strategy, r.total])),
+    };
   }
 
   public saveSetup(setup: any): void {
