@@ -116,7 +116,8 @@ export function QuantCockpit() {
   const observedSignals = signals.filter(s => !closedStates.has(s.status));
   const latestCandidate = recent.find(d => d.strategy && d.entryPrice != null && d.stopLoss != null);
   const chartScenarios = useMemo(() => {
-    if (!latestCandidate || !latestCandidate.entryPrice || !latestCandidate.stopLoss) return [];
+    if (!latestCandidate || !latestCandidate.entryPrice || !latestCandidate.stopLoss ||
+        !['SHADOW_QUALIFIED', 'PAPER_SIGNAL'].includes(latestCandidate.outcome)) return [];
     if (Date.now() - latestCandidate.candleTimestamp > 45 * 60000) return [];
     return [{
       id: latestCandidate.id, symbol, kind: 'TRADE_SCENARIO',
@@ -201,7 +202,8 @@ export function QuantCockpit() {
           <div className="min-w-0 space-y-3">
             <CandleChart symbol={symbol} isDark={isDark} candles={candles}
               currentCandle={marketState?.currentCandle?.[tf] || null}
-              timeframe={tf} onTimeframeChange={setTf} scenarios={chartScenarios}/>
+              timeframe={tf} onTimeframeChange={setTf} scenarios={chartScenarios}
+              overlayLabel="Señal matemática"/>
             <p className="text-xs text-slate-500 dark:text-slate-400 px-1">El gráfico muestra los niveles del último candidato vigente. Los datos se actualizan automáticamente cada 15 segundos.</p>
           </div>
 
