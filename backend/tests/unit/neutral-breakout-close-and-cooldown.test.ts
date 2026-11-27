@@ -237,8 +237,12 @@ test('when SQLite queue persistence fails, the watcher MUST NOT finish the neutr
   } finally { ctx.db.close(); }
 });
 
-test('scheduler reloads pending breakout and restores cooldown from latest analysis audit', () => {
+test('scheduler reloads pending breakout and restores cooldown from latest analysis audit', async () => {
   const db = new DatabaseService(':memory:');
+  db.saveDiscoveryAudit({
+    id: 'historical-btc-audit', timestamp: Date.now(), outcome: 'AI_NO_TRADE',
+    snapshot: { symbol: 'BTCUSDT' }, providers: {}, candidates: [], scenarioIds: [],
+  } as any);
   const coordinator = new EventEmitter() as EventEmitter & Record<string, any>;
   coordinator.getScenarioRegistry = () => ({ getAllActive: () => [] });
   coordinator.getSetupEngine = () => null;
@@ -264,6 +268,11 @@ test('scheduler reloads pending breakout and restores cooldown from latest analy
     restarted.start();
     (restarted as any).evaluatePeriodicTrigger();
     assert.equal(paidCalls, 0, 'cooldown recovery must not issue unexpected AI analysis');
+    (restarted as any).lastTriggerTimestamp = Date.now() - 16 * 60 * 1000;
+    (restarted as any).evaluatePeriodicTrigger();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(paidCalls, 1, 'pending breakout should resume after cooldown');
+    assert.equal(db.getPendingNeutralBreakout('BTCUSDT'), null);
     restarted.stop();
   } finally { db.close(); }
 });
