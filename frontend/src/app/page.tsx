@@ -1389,7 +1389,7 @@ export default function DashboardPage() {
             />
               </>
             ) : (
-              <EthMarketPanel isDark={isDark} />
+              <EthMarketPanel isDark={isDark} focusScenarioId={selectedScenarioId} />
             )}
           </div>
         )}
@@ -1399,8 +1399,7 @@ export default function DashboardPage() {
         {/* ========================================================================= */}
         {activeMainTab === 'scenarios' && (
           <div className="space-y-4">
-            <AiTradingIntelligence onShowScenarioOnChart={(id) => {
-              setSelectedMarket('BTCUSDT');
+            <AiTradingIntelligence marketSymbol={selectedMarket} onShowScenarioOnChart={(id) => {
               setSelectedScenarioId(id);
               setActiveMainTab('terminal');
               setPendingChartFocus(true);
