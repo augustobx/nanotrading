@@ -20,6 +20,9 @@ function coordinatorFor(symbol: string, db: DatabaseService) {
       totalAutonomousRuns: 0,
     }),
   });
+  emitter.getSignalStateMachine = () => ({ getActiveSignals: () => [{
+    id: `paper_${symbol}`, symbol, direction: 'LONG', state: 'TRACKING', riskUsdt: 100,
+  }] });
   emitter.getCandles = (_tf: string, _limit: number) => ([{
     symbol, timeframe: '15m', timestamp: 100, open: 3000, high: 3060,
     low: 2950, close: 3050, volume: 100, confirmed: true,
@@ -64,6 +67,11 @@ test('Multi-market API validates symbol and never returns BTC data under ETH rou
 
     const markets = await get('/api/v1/markets');
     assert.equal(markets.code, 200);
+    const exposure = await get('/api/v1/markets/portfolio');
+    assert.equal(exposure.code, 200);
+    assert.equal(exposure.body.data.correlatedSameDirection, true);
+    assert.deepEqual(exposure.body.data.overlappingDirections, ['LONG']);
+    assert.equal(exposure.body.data.combinedRiskUsdt, 200);
     assert.deepEqual(markets.body.data.map((s: any) => s.symbol).sort(), ['BTCUSDT', 'ETHUSDT']);
 
     const ethState = await get('/api/v1/markets/ETHUSDT/state');
