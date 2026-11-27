@@ -254,7 +254,7 @@ export class AlgorithmicWatcher extends EventEmitter {
       // 4. Evaluate Observable Conditions in Strict Sequential Order (1 -> 2 -> 3...)
       let allRequiredConditionsMet = !plan?.observableConditions?.length || !!plan.zoneTouchedTimestamp;
       if (entryPending && plan?.zoneTouchedTimestamp && plan.observableConditions.length > 0) {
-        const sortedConditions = [...sc.watchPlan.observableConditions].sort(
+        const sortedConditions = [...plan.observableConditions].sort(
           (a, b) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
         );
         let sequenceBlocked = false;
@@ -596,7 +596,7 @@ export class AlgorithmicWatcher extends EventEmitter {
         }
       }
 
-      if (sc.status === 'WAITING_CONFIRMATION') {
+      if (sc.status === 'WAITING_CONFIRMATION' && this.scenarioRegistry.getAllActive().some(s => s.id === sc.id)) {
         const lastReview = sc.lastRevalidationTimestamp ?? sc.discoveryTimestamp;
         const planConditions = sc.watchPlan?.observableConditions || [];
         const allMet = planConditions.every((cond) => cond.automatable && cond.isMet);
@@ -620,7 +620,7 @@ export class AlgorithmicWatcher extends EventEmitter {
     // The queue was already persisted synchronously before closing the watch.
     // Do not replay historical prices into live directional signal handling.
     const ticker = this.coordinator.getMarketState?.()?.ticker;
-    if (!neutralRecoveryOnly && Number.isFinite(ticker?.lastPrice) && ticker.lastPrice > 0) {
+    if (!neutralRecoveryOnly && ticker && Number.isFinite(ticker.lastPrice) && ticker.lastPrice > 0) {
       this.evaluateTick(ticker.lastPrice, ticker.spreadPcnt);
     }
   }
