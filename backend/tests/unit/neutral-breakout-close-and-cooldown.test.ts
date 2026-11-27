@@ -163,6 +163,7 @@ test('neutral breakout is queued across scheduler cooldown, without bypassing sh
     assert.equal(await scheduler.triggerDiscovery('MANUAL_TEST', 100), true);
     assert.equal(discoveryCalls, 1);
     scheduler.queueConfirmedNeutralBreakout(112);
+    await new Promise(resolve => setTimeout(resolve, 0));
     assert.equal(discoveryCalls, 1, 'cooldown must prevent immediate paid analysis');
     assert.equal(scheduler.getStatus().pendingNeutralBreakout?.price, 112);
     assert.equal(scheduler.getStatus().lastBlockedTrigger?.code, 'COOLDOWN');
