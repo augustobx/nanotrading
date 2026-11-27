@@ -41,7 +41,7 @@ describe('Observación Independiente: Comportamiento de WAITING_CONFIRMATION ant
       proposedBy: 'CONSENSUS',
       modelsUsed: ['gpt-4o', 'gemini-2.5-flash'],
       snapshotId: 'snap_1',
-      discoveryTimestamp: now,
+      discoveryTimestamp: now - 20 * 60000,
       entryZoneMin: 50400,
       entryZoneMax: 50600,
       targetEntry: 50500,
@@ -127,7 +127,7 @@ describe('Observación Independiente: Comportamiento de WAITING_CONFIRMATION ant
       close: 50500, // Cierra dentro de zona
       timeframe: '15m',
       confirmed: true,
-      timestamp: now + 15 * 60000, // Solo pasaron 15 minutos (< 30 min cooldown)
+      timestamp: now - 16 * 60000, // Cerró hace 1 minuto; cooldown todavía inferior a 30 min
     };
 
     watcher.evaluateCandleClose(earlyCandle);
@@ -140,6 +140,9 @@ describe('Observación Independiente: Comportamiento de WAITING_CONFIRMATION ant
 
     // 4. Simulación: Pasan los 30 minutos de cooldown, pero la vela de 15m cierra fuera de la zona (ej. 50650)
     // aunque la mecha llegó a 50500
+    const targetSc = registry.getScenario(scenario.id)!;
+    targetSc.lastRevalidationTimestamp = Date.now() - 35 * 60000;
+    targetSc.discoveryTimestamp = Date.now() - 35 * 60000;
     const outOfZoneCandle = {
       open: 50500,
       high: 50680,
@@ -147,7 +150,7 @@ describe('Observación Independiente: Comportamiento de WAITING_CONFIRMATION ant
       close: 50650, // Cerró fuera de [50400, 50600]
       timeframe: '15m',
       confirmed: true,
-      timestamp: now + 35 * 60000, // Ya pasaron 35 minutos (> 30 min cooldown)
+      timestamp: now - 16 * 60000, // Vela realmente cerrada, cooldown superado
     };
 
     watcher.evaluateCandleClose(outOfZoneCandle);
@@ -159,10 +162,7 @@ describe('Observación Independiente: Comportamiento de WAITING_CONFIRMATION ant
     assert.strictEqual(revalidationRequestedEmitted, false);
 
     // 5. Simulación: Pasan 35 minutos de tiempo real (cooldown superado en wall clock) y llega vela cerrada en zona
-    // Modificamos lastRevalidationTimestamp y discoveryTimestamp en el registro para simular el paso del tiempo real
-    const targetSc = registry.getScenario(scenario.id)!;
-    targetSc.lastRevalidationTimestamp = Date.now() - 35 * 60000;
-    targetSc.discoveryTimestamp = Date.now() - 35 * 60000;
+    // El cooldown ya fue superado en el paso anterior; ahora llega un cierre posterior en zona.
 
     const qualifyingCandle = {
       open: 50550,
@@ -171,7 +171,7 @@ describe('Observación Independiente: Comportamiento de WAITING_CONFIRMATION ant
       close: 50510, // Cierra dentro de zona
       timeframe: '15m',
       confirmed: true,
-      timestamp: Date.now(),
+      timestamp: Date.now() - 15 * 60000,
     };
 
     watcher.evaluateCandleClose(qualifyingCandle);
