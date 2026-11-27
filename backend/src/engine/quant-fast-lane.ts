@@ -164,7 +164,7 @@ export class QuantFastLane {
     if (candle.timeframe !== '5m' || candle.symbol !== symbol || !candle.confirmed) return;
     const id = `quant_${symbol}_5m_${candle.timestamp}`;
     // Replay/WS duplications must not generate a second signal.
-    if (db.getQuantDecisions(symbol, 3).some(d => d.id === id)) return;
+    if (db.hasQuantDecision(id)) return;
     const history5m = candleManager.getCandles('5m', 120)
       .filter(c => c.timestamp <= candle.timestamp && c.confirmed);
     const history15m = candleManager.getCandles('15m', 120)

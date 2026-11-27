@@ -933,6 +933,11 @@ export class DatabaseService {
     return result.changes === 1;
   }
 
+  public hasQuantDecision(id: string): boolean {
+    if (this.isClosed) throw new Error('Database closed');
+    return Boolean(this.db.prepare('SELECT 1 FROM quant_decisions WHERE id = ? LIMIT 1').get(id));
+  }
+
   public getQuantDecisions(symbol: string, limit = 40): any[] {
     if (this.isClosed) return [];
     return (this.db.prepare(`SELECT * FROM quant_decisions
