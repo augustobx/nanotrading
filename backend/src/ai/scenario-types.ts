@@ -164,6 +164,24 @@ export interface ScenarioInterpretation {
   costUsd?: number;
 }
 
+export type NeutralBreakoutState =
+  | 'WAITING_RANGE'
+  | 'OUTSIDE_AWAITING_CLOSE'
+  | 'OUTSIDE_CLOSED_LOW_VOLUME'
+  | 'OUTSIDE_CLOSED_INSUFFICIENT_DATA'
+  | 'BACK_INSIDE_RANGE'
+  | 'BREAKOUT_CONFIRMED';
+
+export interface NeutralBreakoutProgress {
+  state: NeutralBreakoutState;
+  side?: 'CEILING' | 'FLOOR';
+  price?: number;
+  observedAt: number;
+  candleTimestamp?: number;
+  relativeVolume?: number;
+  baselineCount?: number;
+}
+
 export interface Scenario {
   id: string;
   symbol: string;
@@ -196,6 +214,7 @@ export interface Scenario {
   geminiInterpretation?: ScenarioInterpretation;
   distanceToZonePct?: number;
   currentPrice?: number;
+  neutralBreakoutProgress?: NeutralBreakoutProgress;
   lastCheckedTimestamp?: number;
   lastRevalidationTimestamp?: number;
   isSimulated?: boolean;

@@ -3,7 +3,8 @@ import { MarketCoordinator } from '../market/market-coordinator.js';
 import { ScenarioRegistry } from './scenario-registry.js';
 import { TelegramNotifier } from '../notifications/telegram-notifier.js';
 import { WebPushNotifier } from '../notifications/web-push-notifier.js';
-import { Scenario, WatchCondition, AiWatchPlan } from '../ai/scenario-types.js';
+import { Scenario, WatchCondition, AiWatchPlan, NeutralBreakoutProgress } from '../ai/scenario-types.js';
+import { TIMEFRAME_DURATION_MS } from '../types/market.js';
 
 export interface WatcherOptions {
   approachThresholdPct?: number; // default 0.35%
@@ -56,6 +57,46 @@ export class AlgorithmicWatcher extends EventEmitter {
     this.coordinator.off('candle_closed', this.onCandleClosed);
   }
 
+
+  /** Save one meaningful change, not every Bybit tick. This is observation
+   * telemetry only: it cannot create a trading signal or spend AI tokens. */
+  private setNeutralProgress(
+    scenario: Scenario, progress: NeutralBreakoutProgress, reason: string, log: boolean
+  ): void {
+    this.scenarioRegistry.updateMetrics(scenario.id, {
+      neutralBreakoutProgress: progress,
+      currentPrice: progress.price,
+      lastCheckedTimestamp: progress.observedAt,
+    });
+    if (log) {
+      this.scenarioRegistry.logLifecycle({
+        scenarioId: scenario.id,
+        fromStatus: 'NO_TRADE_OBSERVATION',
+        toStatus: 'NO_TRADE_OBSERVATION',
+        timestamp: progress.observedAt,
+        reason,
+        metadata: {
+          neutralObservation: true,
+          progress: progress.state,
+          side: progress.side,
+          price: progress.price,
+          candleTimestamp: progress.candleTimestamp,
+          relativeVolume: progress.relativeVolume,
+          baselineCount: progress.baselineCount,
+        },
+      });
+    }
+  }
+
+  private neutralSide(scenario: Scenario, price: number): 'CEILING' | 'FLOOR' | null {
+    if (!Number.isFinite(price) ||
+        !Number.isFinite(scenario.entryZoneMin) || !Number.isFinite(scenario.entryZoneMax)) {
+      return null;
+    }
+    return price > scenario.entryZoneMax ? 'CEILING'
+      : price < scenario.entryZoneMin ? 'FLOOR' : null;
+  }
+
   public evaluateTick(currentPrice: number, spreadPcnt: number = 0.001): void {
     const inactiveStatuses = ['EXPIRED', 'INVALIDATED', 'CANCELLED', 'COMPLETED', 'DISCARDED'];
     const activeScenarios = this.scenarioRegistry.getAllActive().filter((s) => !inactiveStatuses.includes(s.status));
@@ -80,9 +121,24 @@ export class AlgorithmicWatcher extends EventEmitter {
         continue;
       }
 
-      // NEUTRAL is a market observation, not a trade or tick-level breakout.
-      // Wait for an explicit matching CLOSED candle in evaluateCandleClose.
+      // A tick outside is visible evidence, NOT a confirmed neutral breakout.
+      // It never launches AI or paper entries: only a confirmed 15m close can.
       if (sc.kind === 'NEUTRAL_OBSERVATION' || sc.direction === 'NEUTRAL') {
+        const side = this.neutralSide(sc, currentPrice);
+        const previous = sc.neutralBreakoutProgress;
+        if (side && (previous?.side !== side ||
+            !['OUTSIDE_AWAITING_CLOSE', 'OUTSIDE_CLOSED_LOW_VOLUME',
+              'OUTSIDE_CLOSED_INSUFFICIENT_DATA'].includes(previous.state))) {
+          this.setNeutralProgress(sc, {
+            state: 'OUTSIDE_AWAITING_CLOSE', side, price: currentPrice, observedAt: now,
+          }, `Precio ${side === 'CEILING' ? 'sobre techo' : 'bajo piso'} en tiempo real; esperando cierre de vela ${sc.timeframe} y RVOL >= 1.2. No es señal.`, true);
+        } else if (!side && previous?.side &&
+          ['OUTSIDE_AWAITING_CLOSE', 'OUTSIDE_CLOSED_LOW_VOLUME',
+            'OUTSIDE_CLOSED_INSUFFICIENT_DATA'].includes(previous.state)) {
+          this.setNeutralProgress(sc, {
+            state: 'BACK_INSIDE_RANGE', price: currentPrice, observedAt: now,
+          }, 'Precio volvió al rango antes de una ruptura validada; observación continúa.', true);
+        }
         continue;
       }
 
@@ -265,15 +321,21 @@ export class AlgorithmicWatcher extends EventEmitter {
    * A neutral breakout must have meaningful relative volume. Claims in the
    * AI plan are not evidence: verify against >= 10 historical closed candles.
    */
-  private hasConfirmedNeutralVolume(candle: any, timeframe: string): boolean {
+  private neutralVolumeEvidence(candle: any, timeframe: string): {
+    confirmed: boolean; relativeVolume?: number; baselineCount: number;
+  } {
     const recent = this.coordinator.getCandleManager?.()?.getCandles(timeframe as any, 30) || [];
     const prior = recent.filter((c: any) =>
-      c.confirmed !== false && Number.isFinite(c.timestamp) && c.timestamp < candle.timestamp &&
+      c.confirmed === true && Number.isFinite(c.timestamp) && c.timestamp < candle.timestamp &&
       Number.isFinite(c.volume) && c.volume > 0
     ).slice(-20);
-    if (prior.length < 10 || !Number.isFinite(candle.volume) || candle.volume <= 0) return false;
-    const avg = prior.reduce((sum: number, c: any) => sum + c.volume, 0) / prior.length;
-    return avg > 0 && candle.volume / avg >= 1.2;
+    if (prior.length < 10 || !Number.isFinite(candle.volume) || candle.volume <= 0) {
+      return { confirmed: false, baselineCount: prior.length };
+    }
+    const average = prior.reduce((sum: number, c: any) => sum + c.volume, 0) / prior.length;
+    if (average <= 0) return { confirmed: false, baselineCount: prior.length };
+    const relativeVolume = candle.volume / average;
+    return { confirmed: relativeVolume >= 1.2, relativeVolume, baselineCount: prior.length };
   }
 
   public evaluateCandleClose(candle: any): void {
@@ -289,37 +351,61 @@ export class AlgorithmicWatcher extends EventEmitter {
       // 1. NEUTRAL_OBSERVATION check on candle close
       if (sc.kind === 'NEUTRAL_OBSERVATION' || sc.direction === 'NEUTRAL') {
         if (candle.timeframe !== sc.timeframe ||
-            !Number.isFinite(candle.timestamp) ||
-            candle.timestamp < sc.discoveryTimestamp) continue;
+            candle.symbol && candle.symbol !== sc.symbol ||
+            !Number.isFinite(candle.timestamp)) continue;
+        // Bybit kline.timestamp is the OPEN time. A 15m candle beginning
+        // before discovery may legitimately CLOSE after the watch was created.
+        const duration = TIMEFRAME_DURATION_MS[sc.timeframe];
+        if (!duration || candle.timestamp + duration <= sc.discoveryTimestamp) continue;
         if (!Number.isFinite(sc.entryZoneMin) || !Number.isFinite(sc.entryZoneMax) ||
-            sc.entryZoneMin <= 0 || sc.entryZoneMax <= sc.entryZoneMin ||
-            !this.hasConfirmedNeutralVolume(candle, sc.timeframe)) continue;
-        let breakoutOccurred = false;
-        let breakoutReason = '';
+            sc.entryZoneMin <= 0 || sc.entryZoneMax <= sc.entryZoneMin) continue;
 
-        if (sc.entryZoneMax > 0 && candle.close > sc.entryZoneMax) {
-          breakoutOccurred = true;
-          breakoutReason = `Ruptura confirmada de rango neutral en vela cerrada: precio $${candle.close.toFixed(1)} superó techo $${sc.entryZoneMax.toFixed(1)}`;
-        } else if (sc.entryZoneMin > 0 && candle.close < sc.entryZoneMin) {
-          breakoutOccurred = true;
-          breakoutReason = `Ruptura confirmada de rango neutral en vela cerrada: precio $${candle.close.toFixed(1)} perforó piso $${sc.entryZoneMin.toFixed(1)}`;
-        }
-
-        if (breakoutOccurred) {
-          this.scenarioRegistry.transitionStatus(
-            sc.id,
-            'COMPLETED',
-            `${breakoutReason}. Ruptura confirmada: solicitando nuevo descubrimiento de IA.`,
-            { currentPrice: candle.close }
-          );
-          if (sc.watchPlan) {
-            sc.watchPlan.status = 'COMPLETED';
+        const side = this.neutralSide(sc, candle.close);
+        if (!side) {
+          if (sc.neutralBreakoutProgress?.side) {
+            this.setNeutralProgress(sc, {
+              state: 'BACK_INSIDE_RANGE', price: candle.close, observedAt: now,
+              candleTimestamp: candle.timestamp,
+            }, `Vela ${sc.timeframe} cerró nuevamente dentro del rango; sin ruptura confirmada.`, true);
           }
-          this.emit('neutral_range_breakout', { scenario: sc, breakoutPrice: candle.close, reason: breakoutReason });
-          // Multiple overlapping neutral watches in the same candle must not
-          // individually charge the AI. One coalesced scheduler request only.
-          if (!neutralBreakout) neutralBreakout = { price: candle.close, reason: breakoutReason };
+          continue;
         }
+
+        const evidence = this.neutralVolumeEvidence(candle, sc.timeframe);
+        if (!evidence.confirmed) {
+          const state = evidence.relativeVolume === undefined
+            ? 'OUTSIDE_CLOSED_INSUFFICIENT_DATA' : 'OUTSIDE_CLOSED_LOW_VOLUME';
+          const ratio = evidence.relativeVolume === undefined
+            ? `historial válido insuficiente (${evidence.baselineCount}/10)`
+            : `RVOL ${evidence.relativeVolume.toFixed(2)} < 1.20`;
+          this.setNeutralProgress(sc, {
+            state, side, price: candle.close, observedAt: now,
+            candleTimestamp: candle.timestamp,
+            relativeVolume: evidence.relativeVolume,
+            baselineCount: evidence.baselineCount,
+          }, `Cierre ${sc.timeframe} fuera del rango ${side === 'CEILING' ? 'alcista' : 'bajista'} pero ${ratio}; no se solicita IA.`, true);
+          continue;
+        }
+
+        const breakoutReason = `Ruptura confirmada en vela ${sc.timeframe} cerrada: ${candle.close.toFixed(1)} ${side === 'CEILING'
+          ? `superó techo ${sc.entryZoneMax.toFixed(1)}`
+          : `perforó piso ${sc.entryZoneMin.toFixed(1)}`}, RVOL ${evidence.relativeVolume!.toFixed(2)}.`;
+        this.setNeutralProgress(sc, {
+          state: 'BREAKOUT_CONFIRMED', side, price: candle.close, observedAt: now,
+          candleTimestamp: candle.timestamp,
+          relativeVolume: evidence.relativeVolume,
+          baselineCount: evidence.baselineCount,
+        }, breakoutReason, false);
+        this.scenarioRegistry.transitionStatus(
+          sc.id, 'COMPLETED',
+          `${breakoutReason} Descubrimiento solicitado al scheduler, sujeto a cooldown y presupuesto.`,
+          { currentPrice: candle.close, relativeVolume: evidence.relativeVolume }
+        );
+        this.emit('neutral_range_breakout', {
+          scenario: sc, breakoutPrice: candle.close, reason: breakoutReason,
+        });
+        // One coalesced scheduler request for multiple neutral watches.
+        if (!neutralBreakout) neutralBreakout = { price: candle.close, reason: breakoutReason };
         continue;
       }
 
@@ -395,8 +481,8 @@ export class AlgorithmicWatcher extends EventEmitter {
     }
 
     if (neutralBreakout) {
-      this.coordinator.getDiscoveryScheduler?.()?.triggerDiscovery?.(
-        'RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', neutralBreakout.price
+      this.coordinator.getDiscoveryScheduler?.()?.queueConfirmedNeutralBreakout?.(
+        neutralBreakout.price
       );
     }
     this.evaluateTick(candle.close);
