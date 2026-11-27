@@ -105,7 +105,9 @@ export class ApiServer {
     }
 
     try {
-      if (pathname === '/api/v1/markets' && req.method === 'GET') {
+      if (pathname === '/api/v1/markets/portfolio' && req.method === 'GET') {
+        this.sendCrossMarketExposure(res);
+      } else if (pathname === '/api/v1/markets' && req.method === 'GET') {
         this.sendMarketDirectory(res);
       } else if (pathname.startsWith('/api/v1/markets/')) {
         this.handleMultiMarketRequest(req, res, url, pathname);
@@ -289,6 +291,28 @@ export class ApiServer {
     }
   }
 
+
+  /** Read-only BTC/ETH overlap audit for correlated paper positions. */
+  private sendCrossMarketExposure(res: http.ServerResponse): void {
+    const liveStates = new Set(['ENTRY_VALIDATED', 'ALERT_SENT', 'APPROACHING_ZONE',
+      'IN_ZONE', 'ENTRY_TRIGGERED', 'TRACKING']);
+    const entries = Array.from(this.markets.entries()).flatMap(([symbol, coordinator]) =>
+      coordinator.getSignalStateMachine().getActiveSignals()
+        .filter(s => liveStates.has(s.state))
+        .map(s => ({ symbol, id: s.id, direction: s.direction, state: s.state,
+          paperRiskUsdt: Number(s.riskUsdt) || 0 })));
+    const overlappingDirections = ['LONG', 'SHORT'].filter(direction =>
+      new Set(entries.filter(s => s.direction === direction).map(s => s.symbol)).size > 1);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: {
+      concurrentPaperSignals: entries,
+      overlappingDirections,
+      correlatedSameDirection: overlappingDirections.length > 0,
+      combinedRiskUsdt: Number(entries.reduce((sum, s) => sum + s.paperRiskUsdt, 0).toFixed(2)),
+      advisoryOnly: true,
+      note: 'BTC y ETH pueden estar correlacionados. La alerta no modifica la política de 4R ni las decisiones paper.',
+    } }));
+  }
 
   /** Read-only per-market API. The legacy /api/v1/market endpoints remain BTC-compatible.
    * No paid AI invocation is performed by GET requests. Writes require admin authentication.
