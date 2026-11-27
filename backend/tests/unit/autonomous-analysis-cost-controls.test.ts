@@ -137,7 +137,7 @@ test('Watcher: neutral range needs valid bounds, closed candle and RVOL >= 1.2',
   coordinator.getCandleManager = () => ({ getCandles: () => historical });
   let discoveryCalls = 0;
   coordinator.getDiscoveryScheduler = () => ({
-    triggerDiscovery: () => { discoveryCalls++; return true; },
+    queueConfirmedNeutralBreakout: () => { discoveryCalls++; },
   });
   const watcher = new AlgorithmicWatcher(coordinator as any, registry);
   const neutral = testScenario({
