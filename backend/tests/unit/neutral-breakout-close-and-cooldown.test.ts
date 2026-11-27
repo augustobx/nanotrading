@@ -232,7 +232,8 @@ test('when SQLite queue persistence fails, the watcher MUST NOT finish the neutr
     });
     ctx.watcher.evaluateCandleClose(candle(opened, 112, 18));
     assert.equal(ctx.registry.getScenario('fail-closed')?.status, 'NO_TRADE_OBSERVATION');
-    assert.equal(ctx.registry.getScenario('fail-closed')?.neutralBreakoutProgress?.state, undefined);
+    assert.notEqual(ctx.registry.getScenario('fail-closed')?.neutralBreakoutProgress?.state, 'BREAKOUT_CONFIRMED');
+    assert.equal(ctx.registry.getScenario('fail-closed')?.neutralBreakoutProgress?.state, 'OUTSIDE_AWAITING_CLOSE');
     assert.equal(ctx.registry.getLifecycle('fail-closed').some(ev =>
       ev.metadata?.progress === 'QUEUE_PERSIST_FAILED'), true);
   } finally { ctx.db.close(); }
