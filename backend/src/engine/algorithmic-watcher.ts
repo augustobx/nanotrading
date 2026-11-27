@@ -252,8 +252,8 @@ export class AlgorithmicWatcher extends EventEmitter {
       }
 
       // 4. Evaluate Observable Conditions in Strict Sequential Order (1 -> 2 -> 3...)
-      let allRequiredConditionsMet = true;
-      if (entryPending && plan?.observableConditions && plan.observableConditions.length > 0) {
+      let allRequiredConditionsMet = !plan?.observableConditions?.length || !!plan.zoneTouchedTimestamp;
+      if (entryPending && plan?.zoneTouchedTimestamp && plan.observableConditions.length > 0) {
         const sortedConditions = [...sc.watchPlan.observableConditions].sort(
           (a, b) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
         );
@@ -807,7 +807,7 @@ export class AlgorithmicWatcher extends EventEmitter {
         if (!evalCandle && this.coordinator.getCandleManager) {
           evalCandle = this.coordinator.getCandleManager()?.getLastClosedCandle(tf);
         }
-        if (!evalCandle) return false;
+        if (!evalCandle || evalCandle.confirmed !== true) return false;
         if (discoveryTimestamp && evalCandle.timestamp && evalCandle.timestamp < discoveryTimestamp) return false;
         if (previousStepMetTimestamp && evalCandle.timestamp && evalCandle.timestamp < previousStepMetTimestamp) return false;
         if (dir !== 'BEARISH' && dir !== 'BULLISH') return false;
