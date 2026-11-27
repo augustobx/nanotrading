@@ -321,7 +321,7 @@ export class ApiServer {
     const list = Array.from(this.markets.entries()).map(([symbol, coordinator]) => {
       const market = coordinator.getMarketState();
       const scheduler = coordinator.getDiscoveryScheduler().getStatus();
-      const closed = coordinator.getCandleManager().getLastClosedCandle('15m');
+      const closed = coordinator.getCandleManager?.()?.getLastClosedCandle?.('15m') || null;
       const last15mClosedAt = closed ? closed.timestamp + 15 * 60000 : null;
       const last15mLagMs = last15mClosedAt === null ? null : Date.now() - last15mClosedAt;
       return {
