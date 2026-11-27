@@ -330,7 +330,7 @@ export class ApiServer {
         wsConnected: market.wsConnected,
         last15mClosedAt,
         last15mLagMs,
-        candle15mStale: last15mLagMs === null || last15mLagMs > 3 * 60000,
+        candle15mStale: last15mLagMs === null || last15mLagMs > 18 * 60000,
         pendingNeutralBreakout: scheduler.pendingNeutralBreakout ?? null,
         lastBlockedTrigger: scheduler.lastBlockedTrigger ?? null,
         schedulerEnabled: scheduler.enabled,
