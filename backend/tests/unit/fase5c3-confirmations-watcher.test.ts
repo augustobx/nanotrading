@@ -368,3 +368,101 @@ describe('Fase 5C.3: Algorithmic Confirmation Operators & Sequential Watcher', (
     assert.ok(stats.totalDiscountUsd >= 0.010, 'Descuento total debe reflejar la bonificación');
   });
 });
+
+describe('Directional watcher regression — 2026-11-27', () => {
+  function fixture() {
+    const db = new DatabaseService(':memory:');
+    const registry = new ScenarioRegistry(db);
+    const coordinator: any = {
+      getCandleManager: () => ({ getCandles: () => [], getLastClosedCandle: () => null }),
+    };
+    const watcher = new AlgorithmicWatcher(coordinator, registry);
+    const now = Date.now();
+    const scenario = {
+      id: 'sc_regression', symbol: 'BTCUSDT', direction: 'SHORT', kind: 'TRADE_SCENARIO',
+      timeframe: '15m', structureType: 'OB_BEARISH_RETEST', proposedBy: 'GEMINI',
+      modelsUsed: ['test'], snapshotId: 'snap_test', discoveryTimestamp: now - 60000,
+      entryZoneMin: 61437.5, entryZoneMax: 61487.2, targetEntry: 61480,
+      stopLossPrice: 61625, target12Price: 60849.9, target14Price: 60351,
+      rrModeAvailable: 'RR_1_4', uncertaintyLevel: 'MEDIUM', status: 'SCENARIO_REGISTERED',
+      validUntilTimestamp: now + 3600000, aiCostUsd: 0, activationConditions: [],
+      invalidationTriggers: [], argumentsFor: [], argumentsAgainst: [],
+      watchPlan: {
+        id: 'wp_regression', scenarioId: 'sc_regression', symbol: 'BTCUSDT', direction: 'SHORT',
+        marketThesis: 'test', horizon: 'INTRADAY', primaryTimeframe: '15m',
+        watchZone: { minPrice: 61437.5, maxPrice: 61487.2, targetEntry: 61480 },
+        candidateStopLoss: 61625, candidateTakeProfits: { tp14: 60351 },
+        rrEligibility: 'RR_1_4', confirmationSequence: [], invalidationConditions: [],
+        observableConditions: [
+          { id: 'touch', description: 'touch', operator: 'PRICE_IN_RANGE',
+            params: { min: 61437.5, max: 61487.2 }, automatable: true, sequenceOrder: 1 },
+          { id: 'confirmation', description: 'confirmation', operator: 'PRICE_CROSS_BELOW',
+            params: { level: 61475 }, automatable: true, sequenceOrder: 2 },
+        ],
+        expirationTimestamp: now + 3600000, reevaluationTriggers: [], reasoningVersion: 'test',
+        status: 'ACTIVE', automatable: true, createdAt: now, updatedAt: now,
+      },
+      createdAt: now, updatedAt: now,
+    } as Scenario;
+    registry.registerScenario(scenario);
+    return { db, registry, watcher, scenario };
+  }
+
+  it('never marks min/max alias range outside its bounds or accepts missing bounds', () => {
+    const { watcher, registry, scenario } = fixture();
+    watcher.evaluateTick(61408.4);
+    assert.notEqual(registry.getScenario(scenario.id)?.watchPlan?.observableConditions[0].isMet, true);
+    assert.equal(watcher.evaluateCondition({
+      id: 'missing', description: 'missing', operator: 'PRICE_IN_RANGE', params: {}, automatable: true,
+    }, 61480, 0.001), false);
+    watcher.evaluateTick(61485.7);
+    assert.equal(registry.getScenario(scenario.id)?.watchPlan?.observableConditions[0].isMet, true);
+    assert.ok(registry.getScenario(scenario.id)?.watchPlan?.zoneTouchedTimestamp);
+  });
+
+  it('records completed confirmations outside the entry margin as missed, without revalidation', () => {
+    const { watcher, registry, scenario } = fixture();
+    let requests = 0;
+    watcher.on('revalidation_requested', () => requests++);
+    watcher.evaluateTick(61485.7);
+    watcher.evaluateTick(61130.6);
+    assert.equal(registry.getScenario(scenario.id)?.status, 'EXPIRED');
+    assert.match(registry.getScenario(scenario.id)?.rejectionReason || '', /OPPORTUNITY_MISSED/);
+    assert.equal(requests, 0);
+  });
+
+  it('revalidates once inside the valid entry margin, after an observed live touch', () => {
+    const { watcher, registry, scenario } = fixture();
+    let requests = 0;
+    watcher.on('revalidation_requested', () => requests++);
+    watcher.evaluateTick(61485.7);
+    watcher.evaluateTick(61470);
+    watcher.evaluateTick(61470);
+    assert.equal(registry.getScenario(scenario.id)?.status, 'REVALIDATION_REQUESTED');
+    assert.equal(requests, 1);
+  });
+
+  it('allows a confirmed rejection just outside a narrow zone within existing drift limit', () => {
+    const { watcher, registry, scenario } = fixture();
+    // Mutate the in-memory fixture before observation; no retrospective entry.
+    scenario.entryZoneMin = 61475;
+    scenario.watchPlan!.observableConditions[0].params.min = 61475;
+    let requests = 0;
+    watcher.on('revalidation_requested', () => requests++);
+    watcher.evaluateTick(61485.7);
+    watcher.evaluateTick(61470);
+    assert.equal(registry.getScenario(scenario.id)?.status, 'REVALIDATION_REQUESTED');
+    assert.equal(requests, 1);
+  });
+
+  it('does not promote persisted legacy confirmations to a retroactive entry', () => {
+    const { watcher, registry, scenario } = fixture();
+    for (const c of scenario.watchPlan!.observableConditions) c.isMet = true;
+    registry.updateMetrics(scenario.id, { watchPlan: scenario.watchPlan });
+    let requests = 0;
+    watcher.on('revalidation_requested', () => requests++);
+    watcher.evaluateTick(61036.2);
+    assert.equal(registry.getScenario(scenario.id)?.status, 'EXPIRED');
+    assert.equal(requests, 0);
+  });
+});

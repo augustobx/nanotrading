@@ -115,10 +115,13 @@ test('Watcher: WAITING_CONFIRMATION cannot be revalidated by repeated ticks', ()
     registry.registerScenario(scenario);
     for (let i = 0; i < 100; i++) watcher.evaluateTick(60000);
     assert.equal(revalidations, 0, 'No debe facturarse IA en cada tick de espera');
-    watcher.evaluateCandleClose({
-      timeframe: '15m', timestamp: Date.now(), confirmed: true,
+    const confirmedCandle = {
+      timeframe: '15m', timestamp: Date.now() - 15 * 60000 - 1000, confirmed: true,
       open: 59950, high: 60200, low: 59900, close: 60000, volume: 300,
-    });
+    };
+    watcher.evaluateCandleClose({ ...confirmedCandle, timestamp: Date.now() });
+    assert.equal(revalidations, 0, 'Una vela cuyo cierre todavía está en el futuro no permite reevaluación');
+    watcher.evaluateCandleClose(confirmedCandle);
     assert.equal(revalidations, 1, 'Una nueva vela cerrada permite reevaluación controlada');
     for (let i = 0; i < 100; i++) watcher.evaluateTick(60000);
     assert.equal(revalidations, 1);
