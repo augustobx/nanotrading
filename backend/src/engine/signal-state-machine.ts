@@ -3,6 +3,8 @@ import { DatabaseService } from '../storage/database.js';
 import { SetupCandidate } from './strategy-a-trend.js';
 import { ConsensusResult, AiEvaluationMode } from '../ai/types.js';
 import { Scenario } from '../ai/scenario-types.js';
+import type { QuantCandidate } from './quant-fast-lane.js';
+import type { RiskCalculationResult } from './risk-calculator.js';
 
 export type SignalState =
   | 'OBSERVING'
@@ -157,6 +159,49 @@ export class SignalStateMachine extends EventEmitter {
 
     this.emit('signal_created', instance);
     return instance;
+  }
+
+  /** Independent mathematically authorized paper signal; no LLM consensus. */
+  public registerQuantSignal(candidate: QuantCandidate, calc: RiskCalculationResult): SignalInstance {
+    if (this.symbol && candidate.symbol !== this.symbol) throw new Error('Symbol mismatch on quant paper signal');
+    if (!calc.isValid || calc.netLossUSDT <= 0 || calc.positionSizeBTC <= 0) {
+      throw new Error('Quant signal without valid net risk calculation');
+    }
+    const id = `sig_${candidate.id}`;
+    const old = this.signals.get(id);
+    if (old) return old;
+    const now = Date.now();
+    const signal: SignalInstance = {
+      id, setupId: candidate.id, symbol: candidate.symbol,
+      strategy: candidate.strategy, direction: candidate.direction,
+      timeframe: '5m', entryPrice: calc.entryPrice,
+      stopLossPrice: calc.stopLossPrice, takeProfitPrice: calc.takeProfitPrice,
+      grossRR: calc.grossRR, netRR: calc.netRR,
+      riskUsdt: calc.netLossUSDT, positionSizeBTC: calc.positionSizeBTC,
+      state: 'ENTRY_VALIDATED', entryMode: 'EMITTED_SIGNAL',
+      evaluationMode: 'QUANT_RULES', mfePrice: calc.entryPrice,
+      mfeR: 0, maePrice: calc.entryPrice, maeR: 0,
+      createdAt: now, lastStateChangeTimestamp: now,
+      reason: 'Condición matemática verificada; IA no participa del gatillo',
+    };
+    this.db.saveSignal({
+      id, setupId: candidate.id, timestamp: now, symbol: candidate.symbol,
+      strategy: candidate.strategy, direction: candidate.direction,
+      timeframe: '5m', entryPrice: calc.entryPrice,
+      stopLoss: calc.stopLossPrice, takeProfit: calc.takeProfitPrice,
+      rrNet: calc.netRR, consensusVerdict: 'AUTHORIZED',
+      status: 'ENTRY_VALIDATED', evaluationMode: 'QUANT_RULES',
+      riskUsdt: calc.netLossUSDT, positionSizeBTC: calc.positionSizeBTC,
+      createdAt: now,
+    });
+    this.db.recordSignalTransition({
+      signalId: id, fromState: 'SETUP_DETECTED', toState: 'ENTRY_VALIDATED',
+      timestamp: now, reason: 'Señal paper cuantitativa; sin llamadas IA',
+      metadata: { regime: candidate.regime, strategy: candidate.strategy, netRR: calc.netRR },
+    });
+    this.signals.set(id, signal);
+    this.emit('signal_created', signal);
+    return signal;
   }
 
   public registerSignalFromScenario(

@@ -30,6 +30,7 @@ function coordinatorFor(symbol: string, db: DatabaseService) {
   emitter.getAnalyses = () => ({ '15m': { timeframe: '15m', lastClose: symbol === 'ETHUSDT' ? 3050 : 60000 } });
   emitter.getInstrumentInfo = () => ({ symbol });
   emitter.getScenarioRegistry = () => registry;
+  emitter.getQuantFastLane = () => ({ getMode: () => 'SHADOW' });
   return emitter as any;
 }
 
@@ -83,6 +84,12 @@ test('Multi-market API validates symbol and never returns BTC data under ETH rou
     const candles = await get('/api/v1/markets/ETHUSDT/candles?timeframe=15m');
     assert.deepEqual(candles.body.data.map((c: any) => c.symbol), ['ETHUSDT']);
 
+    const ethQuant = await get('/api/v1/markets/ETHUSDT/quant');
+    const btcQuant = await get('/api/v1/markets/BTCUSDT/quant');
+    assert.equal(ethQuant.code, 200);
+    assert.equal(ethQuant.body.data.mode, 'SHADOW');
+    assert.equal(ethQuant.body.symbol, 'ETHUSDT');
+    assert.equal(btcQuant.body.symbol, 'BTCUSDT');
     const ethScenarios = await get('/api/v1/markets/ETHUSDT/scenarios');
     const btcScenarios = await get('/api/v1/markets/BTCUSDT/scenarios');
     assert.deepEqual(ethScenarios.body.data.map((s: any) => s.symbol), ['ETHUSDT']);

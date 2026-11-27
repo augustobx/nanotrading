@@ -323,11 +323,16 @@ export class ApiServer {
       const scheduler = coordinator.getDiscoveryScheduler().getStatus();
       const closed = coordinator.getCandleManager?.()?.getLastClosedCandle?.('15m') || null;
       const last15mClosedAt = closed ? closed.timestamp + 15 * 60000 : null;
+      const last5m = coordinator.getCandleManager?.()?.getLastClosedCandle?.('5m') || null;
+      const last5mClosedAt = last5m ? last5m.timestamp + 5 * 60000 : null;
+      const last5mLagMs = last5mClosedAt === null ? null : Date.now() - last5mClosedAt;
       const last15mLagMs = last15mClosedAt === null ? null : Date.now() - last15mClosedAt;
       return {
         symbol, status: market.status,
         lastPrice: market.ticker?.lastPrice ?? null,
         wsConnected: market.wsConnected,
+        last5mClosedAt,
+        candle5mStale: last5mLagMs === null || last5mLagMs > 8 * 60000,
         last15mClosedAt,
         last15mLagMs,
         candle15mStale: last15mLagMs === null || last15mLagMs > 18 * 60000,
@@ -396,6 +401,14 @@ export class ApiServer {
     }
     const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit')) || 100));
     const state = coordinator.getMarketState();
+    if (resource === 'quant') {
+      return reply({
+        mode: coordinator.getQuantFastLane().getMode(),
+        summary: this.db.getQuantSummary(symbol),
+        decisions: this.db.getQuantDecisions(symbol, limit),
+        executionMode: 'SIGNALS_ONLY',
+      });
+    }
     if (resource === 'state') return reply(state);
     if (resource === 'orderbook') return reply(state.orderBook);
     if (resource === 'instrument') return reply(coordinator.getInstrumentInfo());

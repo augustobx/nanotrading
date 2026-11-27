@@ -15,6 +15,7 @@ import { CandleManager, GapInfo } from './candle-manager.js';
 import { OrderBookManager } from './orderbook-manager.js';
 import { DatabaseService } from '../storage/database.js';
 import { SetupEngine } from '../engine/setup-engine.js';
+import { QuantFastLane } from '../engine/quant-fast-lane.js';
 import { ConsensusEngine } from '../ai/consensus-engine.js';
 import { SignalStateMachine } from '../engine/signal-state-machine.js';
 import { TelegramNotifier } from '../notifications/telegram-notifier.js';
@@ -40,6 +41,7 @@ export class MarketCoordinator extends EventEmitter {
   private candleManager: CandleManager;
   private orderBookManager: OrderBookManager;
   private setupEngine: SetupEngine;
+  private quantFastLane: QuantFastLane;
   private consensusEngine: ConsensusEngine;
   private signalStateMachine: SignalStateMachine;
   private telegramNotifier: TelegramNotifier;
@@ -137,6 +139,12 @@ export class MarketCoordinator extends EventEmitter {
     this.riskPolicyManager = shared?.riskPolicyManager || new RiskPolicyManager(this.db.getActiveRiskPolicy() || undefined);
     this.bybitCredentialsManager = new BybitCredentialsManager(this.db.getBybitCredentials() || undefined);
     this.aiRouter = shared?.aiRouter || new AiModelRouter(this.db.getRouterConfig() || undefined);
+    this.quantFastLane = new QuantFastLane({
+      symbol: this.symbol, candleManager: this.candleManager, db: this.db,
+      riskPolicyManager: this.riskPolicyManager, stateMachine: this.signalStateMachine,
+      getMarketState: () => this.getMarketState(),
+      getInstrumentInfo: () => this.getInstrumentInfo(),
+    });
     this.marketMonitorWorker = new MarketMonitorWorker({
       coordinator: this,
       stateMachine: this.signalStateMachine,
@@ -248,6 +256,24 @@ export class MarketCoordinator extends EventEmitter {
     });
 
     this.candleManager.on('candle_closed', (candle) => {
+      if (candle.timeframe === '5m') {
+        try {
+          this.quantFastLane.evaluateCandle(candle);
+        } catch (err: any) {
+          this.db.logEvent('ERROR', 'QuantFastLane', 'Falló evaluación de vela cerrada', {
+            symbol: this.symbol, candleTimestamp: candle.timestamp, reason: err?.message || String(err),
+          });
+          try {
+            this.db.saveQuantDecision({
+              id: `quant_${this.symbol}_5m_${candle.timestamp}`,
+              symbol: this.symbol, candleTimestamp: candle.timestamp,
+              regime: 'DATA_NOT_READY', outcome: 'DATA_NOT_READY',
+              reason: `Error temporal en evaluación: ${err?.message || String(err)}`,
+              metadata: { source: 'COORDINATOR_ERROR', retryable: true },
+            });
+          } catch { /* DB failure is already audited via system_events when possible */ }
+        }
+      }
       this.emit('candle_closed', candle);
       this.emit('state_updated', this.getMarketState());
     });
@@ -291,6 +317,10 @@ export class MarketCoordinator extends EventEmitter {
     this.scenarioRegistry.on('scenario_updated', (sc) => this.emit('scenario_updated', sc));
     this.algorithmicWatcher.on('scenario_approaching', (evt) => this.emit('scenario_approaching', evt));
     this.aiRevalidation.on('entry_validated', (evt: any) => {
+      if (this.quantFastLane.getMode() === 'PAPER') {
+        this.db.logEvent('WARN', 'Coordinator', 'Legacy AI authorization ignored: quant-only paper mode');
+        return;
+      }
       this.emit('scenario_entry_validated', evt);
       const { scenario, currentPrice, riskCalc } = evt;
       if (scenario && scenario.direction !== 'NEUTRAL') {
@@ -356,10 +386,18 @@ export class MarketCoordinator extends EventEmitter {
       // 6. Run quantitative setup engine analysis across loaded candles
       this.setupEngine.runFullAnalysis(this.currentTicker?.spread || 0.1);
 
+      // Audit recently closed 5m candles recovered by REST before live monitoring.
+      this.quantFastLane.reconcileRecentClosedCandles();
+
       // 7. Start 24/7 background monitor worker & Algorithmic Watcher
       this.marketMonitorWorker.start();
-      this.algorithmicWatcher.start();
-      this.discoveryScheduler.start();
+      if (this.quantFastLane.getMode() !== 'PAPER') {
+        this.algorithmicWatcher.start();
+        this.discoveryScheduler.start();
+      } else {
+        this.db.logEvent('INFO', 'Coordinator',
+          'PAPER cuantitativo: descubrimiento autónomo IA y watcher IA desactivados como fuente de señales');
+      }
 
       // 8. Start periodic audit snapshot timer (every 60s)
       this.startSnapshotTimer();
@@ -438,6 +476,9 @@ export class MarketCoordinator extends EventEmitter {
       this.candleManager.loadHistoricalCandles(timeframe, freshCandles);
       // Historical backfill does not emit candle_closed; recover neutral
       // confirmations without replaying directional/paper trades.
+      if (timeframe === '5m' || timeframe === '15m') {
+        this.quantFastLane.reconcileRecentClosedCandles();
+      }
       if (timeframe === '15m') {
         // Discovery must see current structure after REST recovery, not a
         // pre-disconnect SMC snapshot.
@@ -470,6 +511,12 @@ export class MarketCoordinator extends EventEmitter {
       if (this.isBootstrapped && !this.isStopped &&
           (!lastClosedAt || Date.now() - lastClosedAt > 18 * 60000)) {
         void this.backfillGap('15m');
+      }
+      const last5 = this.candleManager.getLastClosedCandle('5m');
+      const last5Close = last5 ? last5.timestamp + 5 * 60000 : 0;
+      if (this.isBootstrapped && !this.isStopped &&
+          (!last5Close || Date.now() - last5Close > 8 * 60000)) {
+        void this.backfillGap('5m');
       }
       if (this.currentTicker) {
         this.db.saveSnapshot(
@@ -521,6 +568,10 @@ export class MarketCoordinator extends EventEmitter {
 
   public getSetupEngine(): SetupEngine {
     return this.setupEngine;
+  }
+
+  public getQuantFastLane(): QuantFastLane {
+    return this.quantFastLane;
   }
 
   public getInstrumentInfo(): InstrumentInfo | null {

@@ -75,6 +75,7 @@ interface CandleChartProps {
   onSelectScenario?: (id: string | null) => void;
   symbol?: string;
   isDark?: boolean;
+  overlayLabel?: string;
 }
 
 const TIMEFRAMES: Timeframe[] = ['1m', '5m', '15m', '1h', '4h', '1d'];
@@ -134,6 +135,7 @@ export function CandleChart({
   onSelectScenario,
   symbol = 'BTCUSDT',
   isDark = true,
+  overlayLabel = 'Escenario IA / zonas',
 }: CandleChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -629,7 +631,7 @@ export function CandleChart({
                 : 'border-slate-200 dark:border-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
             }`}
           >
-            ● Escenario IA / zonas
+            ● {overlayLabel}
           </button>
         </div>
       </div>
