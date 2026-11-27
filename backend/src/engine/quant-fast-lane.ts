@@ -161,6 +161,18 @@ export class QuantFastLane {
 
   public getMode(): QuantSignalMode { return this.mode; }
 
+  /** Catch up from REST after WebSocket disconnect. Historical bars never
+   * generate late paper fills: the 120s freshness gate remains mandatory. */
+  public reconcileRecentClosedCandles(): void {
+    const now = Date.now();
+    const candles = this.deps.candleManager.getCandles('5m', 24)
+      .filter(c => c.confirmed && c.symbol === this.deps.symbol &&
+        c.timestamp + FIVE_MINUTES <= now &&
+        now - (c.timestamp + FIVE_MINUTES) <= 60 * 60000)
+      .sort((a,b) => a.timestamp-b.timestamp);
+    for (const c of candles) this.evaluateCandle(c);
+  }
+
   public evaluateCandle(candle: Candle): void {
     const { db, symbol, candleManager } = this.deps;
     if (candle.timeframe !== '5m' || candle.symbol !== symbol || !candle.confirmed) return;

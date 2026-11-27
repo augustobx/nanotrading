@@ -923,7 +923,20 @@ export class DatabaseService {
     const result = this.db.prepare(`INSERT OR IGNORE INTO quant_decisions
       (id, symbol, candle_timestamp, regime, strategy, direction, outcome, reason,
        entry_price, stop_loss, take_profit, net_rr, metadata_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         regime=excluded.regime,
+         strategy=excluded.strategy,
+         direction=excluded.direction,
+         outcome=excluded.outcome,
+         reason=excluded.reason,
+         entry_price=excluded.entry_price,
+         stop_loss=excluded.stop_loss,
+         take_profit=excluded.take_profit,
+         net_rr=excluded.net_rr,
+         metadata_json=excluded.metadata_json,
+         created_at=excluded.created_at
+       WHERE quant_decisions.outcome = 'DATA_NOT_READY'`).run(
       event.id, event.symbol, event.candleTimestamp, event.regime,
       event.strategy ?? null, event.direction ?? null,
       event.outcome, event.reason, event.entryPrice ?? null,
@@ -935,7 +948,9 @@ export class DatabaseService {
 
   public hasQuantDecision(id: string): boolean {
     if (this.isClosed) throw new Error('Database closed');
-    return Boolean(this.db.prepare('SELECT 1 FROM quant_decisions WHERE id = ? LIMIT 1').get(id));
+    const row = this.db.prepare('SELECT outcome FROM quant_decisions WHERE id = ? LIMIT 1')
+      .get(id) as {outcome: string} | undefined;
+    return Boolean(row && row.outcome !== 'DATA_NOT_READY');
   }
 
   public getQuantDecisions(symbol: string, limit = 40): any[] {

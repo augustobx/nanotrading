@@ -263,6 +263,15 @@ export class MarketCoordinator extends EventEmitter {
           this.db.logEvent('ERROR', 'QuantFastLane', 'Falló evaluación de vela cerrada', {
             symbol: this.symbol, candleTimestamp: candle.timestamp, reason: err?.message || String(err),
           });
+          try {
+            this.db.saveQuantDecision({
+              id: `quant_${this.symbol}_5m_${candle.timestamp}`,
+              symbol: this.symbol, candleTimestamp: candle.timestamp,
+              regime: 'DATA_NOT_READY', outcome: 'DATA_NOT_READY',
+              reason: `Error temporal en evaluación: ${err?.message || String(err)}`,
+              metadata: { source: 'COORDINATOR_ERROR', retryable: true },
+            });
+          } catch { /* DB failure is already audited via system_events when possible */ }
         }
       }
       this.emit('candle_closed', candle);
@@ -373,6 +382,9 @@ export class MarketCoordinator extends EventEmitter {
       // 6. Run quantitative setup engine analysis across loaded candles
       this.setupEngine.runFullAnalysis(this.currentTicker?.spread || 0.1);
 
+      // Audit recently closed 5m candles recovered by REST before live monitoring.
+      this.quantFastLane.reconcileRecentClosedCandles();
+
       // 7. Start 24/7 background monitor worker & Algorithmic Watcher
       this.marketMonitorWorker.start();
       this.algorithmicWatcher.start();
@@ -455,6 +467,9 @@ export class MarketCoordinator extends EventEmitter {
       this.candleManager.loadHistoricalCandles(timeframe, freshCandles);
       // Historical backfill does not emit candle_closed; recover neutral
       // confirmations without replaying directional/paper trades.
+      if (timeframe === '5m' || timeframe === '15m') {
+        this.quantFastLane.reconcileRecentClosedCandles();
+      }
       if (timeframe === '15m') {
         // Discovery must see current structure after REST recovery, not a
         // pre-disconnect SMC snapshot.
@@ -487,6 +502,12 @@ export class MarketCoordinator extends EventEmitter {
       if (this.isBootstrapped && !this.isStopped &&
           (!lastClosedAt || Date.now() - lastClosedAt > 18 * 60000)) {
         void this.backfillGap('15m');
+      }
+      const last5 = this.candleManager.getLastClosedCandle('5m');
+      const last5Close = last5 ? last5.timestamp + 5 * 60000 : 0;
+      if (this.isBootstrapped && !this.isStopped &&
+          (!last5Close || Date.now() - last5Close > 8 * 60000)) {
+        void this.backfillGap('5m');
       }
       if (this.currentTicker) {
         this.db.saveSnapshot(
