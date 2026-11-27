@@ -111,7 +111,7 @@ function isVisibleWatch(scenario: any): boolean {
     Number.isFinite(scenario.stopLossPrice);
 }
 
-function resolveWatchForChart(scenarios: any[], selectedId: string | null, symbol: string): any | null {
+export function resolveWatchForChart(scenarios: any[], selectedId: string | null, symbol: string): any | null {
   const matchesSymbol = (s: any) => !s.symbol || s.symbol === symbol;
   if (selectedId) {
     const selected = scenarios.find(s => s.id === selectedId && matchesSymbol(s));
