@@ -66,7 +66,7 @@ export function detectQuantSetup(
   const last5Bars = five.slice(-21);
   if (last5Bars.some((bar, i) => i > 0 &&
       bar.timestamp - last5Bars[i - 1].timestamp !== FIVE_MINUTES) ||
-      closeTime - (fifteen[fifteen.length - 1].timestamp + FIFTEEN_MINUTES) >= FIFTEEN_MINUTES) {
+      closeTime - (fifteen[fifteen.length - 1].timestamp + FIFTEEN_MINUTES) > FIFTEEN_MINUTES) {
     return { regime: 'DATA_NOT_READY', reason: 'Hay un gap 5m/15m: recuperar datos Bybit antes de evaluar', candidate: null, indicators: {} };
   }
 

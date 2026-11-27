@@ -396,6 +396,14 @@ export class ApiServer {
     }
     const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit')) || 100));
     const state = coordinator.getMarketState();
+    if (resource === 'quant') {
+      return reply({
+        mode: coordinator.getQuantFastLane().getMode(),
+        summary: this.db.getQuantSummary(symbol),
+        decisions: this.db.getQuantDecisions(symbol, limit),
+        executionMode: 'SIGNALS_ONLY',
+      });
+    }
     if (resource === 'state') return reply(state);
     if (resource === 'orderbook') return reply(state.orderBook);
     if (resource === 'instrument') return reply(coordinator.getInstrumentInfo());

@@ -15,6 +15,7 @@ import { CandleManager, GapInfo } from './candle-manager.js';
 import { OrderBookManager } from './orderbook-manager.js';
 import { DatabaseService } from '../storage/database.js';
 import { SetupEngine } from '../engine/setup-engine.js';
+import { QuantFastLane } from '../engine/quant-fast-lane.js';
 import { ConsensusEngine } from '../ai/consensus-engine.js';
 import { SignalStateMachine } from '../engine/signal-state-machine.js';
 import { TelegramNotifier } from '../notifications/telegram-notifier.js';
@@ -40,6 +41,7 @@ export class MarketCoordinator extends EventEmitter {
   private candleManager: CandleManager;
   private orderBookManager: OrderBookManager;
   private setupEngine: SetupEngine;
+  private quantFastLane: QuantFastLane;
   private consensusEngine: ConsensusEngine;
   private signalStateMachine: SignalStateMachine;
   private telegramNotifier: TelegramNotifier;
@@ -137,6 +139,12 @@ export class MarketCoordinator extends EventEmitter {
     this.riskPolicyManager = shared?.riskPolicyManager || new RiskPolicyManager(this.db.getActiveRiskPolicy() || undefined);
     this.bybitCredentialsManager = new BybitCredentialsManager(this.db.getBybitCredentials() || undefined);
     this.aiRouter = shared?.aiRouter || new AiModelRouter(this.db.getRouterConfig() || undefined);
+    this.quantFastLane = new QuantFastLane({
+      symbol: this.symbol, candleManager: this.candleManager, db: this.db,
+      riskPolicyManager: this.riskPolicyManager, stateMachine: this.signalStateMachine,
+      getMarketState: () => this.getMarketState(),
+      getInstrumentInfo: () => this.getInstrumentInfo(),
+    });
     this.marketMonitorWorker = new MarketMonitorWorker({
       coordinator: this,
       stateMachine: this.signalStateMachine,
@@ -248,6 +256,15 @@ export class MarketCoordinator extends EventEmitter {
     });
 
     this.candleManager.on('candle_closed', (candle) => {
+      if (candle.timeframe === '5m') {
+        try {
+          this.quantFastLane.evaluateCandle(candle);
+        } catch (err: any) {
+          this.db.logEvent('ERROR', 'QuantFastLane', 'Falló evaluación de vela cerrada', {
+            symbol: this.symbol, candleTimestamp: candle.timestamp, reason: err?.message || String(err),
+          });
+        }
+      }
       this.emit('candle_closed', candle);
       this.emit('state_updated', this.getMarketState());
     });
@@ -521,6 +538,10 @@ export class MarketCoordinator extends EventEmitter {
 
   public getSetupEngine(): SetupEngine {
     return this.setupEngine;
+  }
+
+  public getQuantFastLane(): QuantFastLane {
+    return this.quantFastLane;
   }
 
   public getInstrumentInfo(): InstrumentInfo | null {
