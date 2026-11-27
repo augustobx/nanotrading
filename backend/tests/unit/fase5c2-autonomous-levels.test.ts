@@ -70,9 +70,10 @@ class MockMarketCoordinator extends EventEmitter {
       getActiveSetups: () => [],
     };
     this.discoveryScheduler = {
-      triggerDiscovery: (reason: string, price?: number) => {
-        this.emit('discovery_triggered', { reason, price });
-        return true;
+      queueConfirmedNeutralBreakout: (price: number) => {
+        this.emit('discovery_triggered', {
+          reason: 'RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', price,
+        });
       },
     };
   }
