@@ -438,7 +438,17 @@ export class MarketCoordinator extends EventEmitter {
       this.candleManager.loadHistoricalCandles(timeframe, freshCandles);
       // Historical backfill does not emit candle_closed; recover neutral
       // confirmations without replaying directional/paper trades.
-      if (timeframe === '15m') this.algorithmicWatcher.reconcileNeutralConfirmedCandles();
+      if (timeframe === '15m') {
+        // Discovery must see current structure after REST recovery, not a
+        // pre-disconnect SMC snapshot.
+        try {
+          this.setupEngine.runFullAnalysis(this.currentTicker?.spread || 0.1);
+        } catch (err: any) {
+          this.db.logEvent('ERROR', 'Coordinator',
+            `Technical analysis refresh failed after ${this.symbol} 15m REST backfill: ${err.message}`);
+        }
+        this.algorithmicWatcher.reconcileNeutralConfirmedCandles();
+      }
       this.db.logEvent('INFO', 'Coordinator',
         `Backfill complete for ${this.symbol} ${timeframe}, merged ${freshCandles.length} candles`);
     } catch (err: any) {
