@@ -38,6 +38,7 @@ export function EthMarketPanel({ isDark = true }: { isDark?: boolean }) {
   const [audits, setAudits] = useState<any[]>([]);
   const [stats, setStats] = useState<Record<string, MarketStats>>({});
   const [directory, setDirectory] = useState<MarketSummary[]>([]);
+  const [exposure, setExposure] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [lastSync, setLastSync] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +54,7 @@ export function EthMarketPanel({ isDark = true }: { isDark?: boolean }) {
   const refresh = useCallback(async () => {
     try {
       const [marketState, marketCandles, analysis, liveScenarios, schedule, recentAudits,
-        btcStats, ethStats, marketDirectory] = await Promise.all([
+        btcStats, ethStats, marketDirectory, correlatedRisk] = await Promise.all([
         request('state'),
         request(`candles?timeframe=${timeframe}&limit=150`),
         request('analysis'),
@@ -66,6 +67,10 @@ export function EthMarketPanel({ isDark = true }: { isDark?: boolean }) {
           if (!r.ok) throw new Error(`Listado de mercados: HTTP ${r.status}`);
           return (await r.json()).data as MarketSummary[];
         }),
+        fetch(`${getApiBaseUrl()}/api/v1/markets/portfolio`, { cache: 'no-store' }).then(async r => {
+          if (!r.ok) throw new Error(`Auditoría de exposición: HTTP ${r.status}`);
+          return (await r.json()).data;
+        }),
       ]);
       setState(marketState);
       setCandles(marketCandles);
@@ -75,6 +80,7 @@ export function EthMarketPanel({ isDark = true }: { isDark?: boolean }) {
       setAudits(recentAudits);
       setStats({ BTCUSDT: btcStats, ETHUSDT: ethStats });
       setDirectory(marketDirectory);
+      setExposure(correlatedRisk);
       setError(null);
       setLastSync(Date.now());
     } catch (err: any) {
@@ -94,7 +100,6 @@ export function EthMarketPanel({ isDark = true }: { isDark?: boolean }) {
   const liveScenario = scenarios.filter(s =>
     !['EXPIRED', 'INVALIDATED', 'CANCELLED', 'COMPLETED', 'DISCARDED', 'SIGNAL_GENERATED']
       .includes(s.status) && (!s.validUntilTimestamp || s.validUntilTimestamp > Date.now()));
-  const eth = directory.find(s => s.symbol === 'ETHUSDT');
 
   return (
     <section className="space-y-4" aria-label="Terminal independiente ETHUSDT">
@@ -129,6 +134,13 @@ export function EthMarketPanel({ isDark = true }: { isDark?: boolean }) {
       {error && (
         <p role="alert" className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-600 dark:text-amber-400">
           {error}. {lastSync ? 'Mostrando los últimos datos conocidos.' : 'BTCUSDT continúa independiente.'}
+        </p>
+      )}
+
+      {exposure?.correlatedSameDirection && (
+        <p role="status" className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-700 dark:text-amber-300">
+          Exposición paper correlacionada: BTC y ETH tienen señales {exposure.overlappingDirections.join(' / ')} simultáneas.
+          Riesgo teórico combinado: ${exposure.combinedRiskUsdt} USDT. Aviso informativo; el modo SIGNALS_ONLY no emite órdenes reales.
         </p>
       )}
 
