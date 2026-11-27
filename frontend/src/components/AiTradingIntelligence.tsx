@@ -149,11 +149,17 @@ export function AiTradingIntelligence({
   }, [marketSymbol]);
 
   useEffect(() => {
-    if (selectedScenarioId) {
-      fetchDetail(selectedScenarioId);
-    } else {
+    if (!selectedScenarioId) {
       setScenarioDetail(null);
+      return;
     }
+    // A detail drawer can remain open through several candle closes.
+    // Refresh persisted lifecycle/progress instead of showing a frozen snapshot.
+    void fetchDetail(selectedScenarioId);
+    const refresh = setInterval(() => {
+      void fetchDetail(selectedScenarioId);
+    }, 15000);
+    return () => clearInterval(refresh);
   }, [selectedScenarioId, marketSymbol]);
 
   useEffect(() => {
