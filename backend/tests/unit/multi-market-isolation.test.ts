@@ -32,6 +32,9 @@ test('Market registry loads, queries and mutates scenarios only for its own symb
     assert.deepEqual(btc.getAllActive().map(s => s.symbol), ['BTCUSDT']);
     assert.deepEqual(eth.getAllActive().map(s => s.symbol), ['ETHUSDT']);
     assert.deepEqual(db.getScenarios({ symbol: 'ETHUSDT' }).map(s => s.id), ['ETH_scenario']);
+    assert.equal(db.getDiscoveryFunnel('BTCUSDT').scenarios, 1);
+    assert.equal(db.getDiscoveryFunnel('ETHUSDT').scenarios, 1);
+    assert.equal(db.getDiscoveryFunnel().scenarios, 2);
     assert.equal(btc.getScenario('ETH_scenario'), null);
     assert.equal(eth.getScenario('BTC_scenario'), null);
     assert.throws(() => eth.registerScenario(scenario('BTCUSDT', 'cross_market')),
