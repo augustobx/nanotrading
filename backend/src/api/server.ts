@@ -350,6 +350,24 @@ export class ApiServer {
       res.writeHead(statusCode, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: statusCode < 400, symbol, data }));
     };
+    if (req.method === 'POST' && resource.startsWith('scenarios/') &&
+      resource.endsWith('/revalidate')) {
+      if (!this.isAuthenticated(req)) {
+        reply({ error: 'Autenticación requerida' }, 401);
+        return;
+      }
+      const scenarioId = resource.slice('scenarios/'.length, -'/revalidate'.length);
+      const sc = coordinator.getScenarioRegistry().getScenario(scenarioId);
+      if (!sc || sc.symbol !== symbol) return reply({ error: 'Escenario no encontrado' }, 404);
+      const currentPrice = coordinator.getMarketState().ticker?.lastPrice || sc.targetEntry;
+      coordinator.getAiRevalidation().revalidate(sc, currentPrice)
+        .then(result => reply(result))
+        .catch(err => {
+          this.db.logEvent('ERROR', 'MarketApi', `Revalidation failed for ${symbol}: ${err?.message || err}`);
+          reply({ error: 'No se pudo completar la revalidación' }, 503);
+        });
+      return;
+    }
     if (req.method === 'POST' && resource === 'discovery/trigger') {
       if (!this.isAuthenticated(req)) {
         reply({ error: 'Autenticación requerida' }, 401);
@@ -384,6 +402,19 @@ export class ApiServer {
     if (resource === 'scenarios') {
       return reply(coordinator.getScenarioRegistry().getAll({ limit }));
     }
+    if (resource.startsWith('scenarios/')) {
+      const id = resource.slice('scenarios/'.length);
+      const scenario = coordinator.getScenarioRegistry().getScenario(id);
+      if (!scenario || scenario.symbol !== symbol) return reply({ error: 'Escenario no encontrado' }, 404);
+      return reply({
+        scenario,
+        lifecycle: coordinator.getScenarioRegistry().getLifecycle(id),
+        revalidations: this.db.getScenarioRevalidations(id),
+        discoveryAudit: this.db.getDiscoveryAudit(scenario.snapshotId),
+        relatedDiscoveryAudits: this.db.getDiscoveryAuditsForScenario(id),
+      });
+    }
+    if (resource === 'signals/active') return reply(coordinator.getSignalStateMachine().getActiveSignals());
     if (resource === 'signals') return reply(this.db.getSignals(limit, symbol));
     if (resource === 'watch-plans') return reply(this.db.getActiveWatchPlans(symbol));
     if (resource === 'scheduler') return reply(coordinator.getDiscoveryScheduler().getStatus());
