@@ -207,14 +207,59 @@ export class AlgorithmicWatcher extends EventEmitter {
         continue;
       }
 
+      // An observed live touch is independent of AI condition parameters.
+      const { inZone, distPct } = this.calculateDistance(sc, currentPrice);
+      const plan = sc.watchPlan;
+      const entryPending = ['SCENARIO_PROPOSED', 'SCENARIO_REGISTERED',
+        'SCENARIO_MONITORING', 'APPROACHING_ZONE'].includes(sc.status);
+      if (entryPending && plan) {
+        // Legacy plans may contain false-positive confirmations from the old
+        // unbounded PRICE_IN_RANGE evaluator. Never treat them as fresh evidence.
+        if (!plan.zoneTouchedTimestamp && plan.observableConditions.some(c => c.isMet)) {
+          const allPreviouslyMet = plan.observableConditions.length > 0 &&
+            plan.observableConditions.every(c => c.automatable && c.isMet);
+          const maxDrift = this.entryDriftLimit(sc);
+          const favorableAway = sc.direction === 'SHORT' ? currentPrice < sc.entryZoneMin
+            : currentPrice > sc.entryZoneMax;
+          if (allPreviouslyMet && favorableAway && Math.abs(currentPrice - sc.targetEntry) > maxDrift) {
+            this.scenarioRegistry.transitionStatus(sc.id, 'EXPIRED',
+              'OPPORTUNITY_MISSED: confirmaciones históricas registradas, precio fuera del margen; no se reconstruye una entrada retroactiva.',
+              { currentPrice, distanceToZonePct: distPct, maxDrift, legacyEvidence: true });
+            continue;
+          }
+          for (const condition of plan.observableConditions) {
+            condition.isMet = false;
+            delete condition.metTimestamp;
+            delete condition.metDetails;
+          }
+          this.scenarioRegistry.updateMetrics(sc.id, { watchPlan: plan });
+          this.scenarioRegistry.logLifecycle({
+            scenarioId: sc.id, fromStatus: sc.status, toStatus: sc.status, timestamp: now,
+            reason: 'Confirmaciones antiguas sin evidencia verificable de toque; se requiere una observación nueva.',
+            metadata: { watcherProgress: 'LEGACY_CONFIRMATIONS_RESET' },
+          });
+        }
+        if (inZone && !plan.zoneTouchedTimestamp) {
+          plan.zoneTouchedTimestamp = now;
+          plan.zoneTouchedPrice = currentPrice;
+          this.scenarioRegistry.updateMetrics(sc.id, { watchPlan: plan, currentPrice, distanceToZonePct: 0 });
+          this.scenarioRegistry.logLifecycle({
+            scenarioId: sc.id, fromStatus: sc.status, toStatus: sc.status, timestamp: now,
+            reason: 'Zona operativa alcanzada; esperando confirmaciones del plan.',
+            metadata: { watcherProgress: 'ZONE_TOUCHED', currentPrice },
+          });
+        }
+      }
+
       // 4. Evaluate Observable Conditions in Strict Sequential Order (1 -> 2 -> 3...)
       let allRequiredConditionsMet = true;
-      if (sc.watchPlan?.observableConditions && sc.watchPlan.observableConditions.length > 0) {
+      if (entryPending && plan?.observableConditions && plan.observableConditions.length > 0) {
         const sortedConditions = [...sc.watchPlan.observableConditions].sort(
           (a, b) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
         );
         let sequenceBlocked = false;
         let previousStepMetTimestamp: number | undefined = undefined;
+        let conditionsChanged = false;
 
         for (const cond of sortedConditions) {
           if (cond.isMet) {
@@ -241,6 +286,12 @@ export class AlgorithmicWatcher extends EventEmitter {
               cond.isMet = true;
               cond.metTimestamp = now;
               previousStepMetTimestamp = now;
+              conditionsChanged = true;
+              this.scenarioRegistry.logLifecycle({
+                scenarioId: sc.id, fromStatus: sc.status, toStatus: sc.status, timestamp: now,
+                reason: `Confirmación cumplida: ${cond.description}`,
+                metadata: { watcherProgress: 'CONDITION_MET', conditionId: cond.id, operator: cond.operator, currentPrice },
+              });
             } else {
               allRequiredConditionsMet = false;
               sequenceBlocked = true; // Subsequent sequence steps cannot be fulfilled yet
@@ -250,10 +301,16 @@ export class AlgorithmicWatcher extends EventEmitter {
             sequenceBlocked = true;
           }
         }
+        if (conditionsChanged) this.scenarioRegistry.updateMetrics(sc.id, { watchPlan: plan });
+      }
+      if (isInvalidated) {
+        this.scenarioRegistry.transitionStatus(sc.id, 'INVALIDATED', invalidationReason, { currentPrice });
+        this.notifyCancelled(sc, invalidationReason);
+        this.emit('scenario_invalidated', { scenarioId: sc.id, reason: invalidationReason });
+        continue;
       }
 
       // 5. Distance to entry zone calculation
-      const { inZone, distPct } = this.calculateDistance(sc, currentPrice);
 
       // Update tracked metrics on scenario
       // Avoid a SQLite write for every WebSocket tick. State transitions are
@@ -267,8 +324,23 @@ export class AlgorithmicWatcher extends EventEmitter {
         });
       }
 
-      // 6. In Zone Trigger
-      if (inZone) {
+      // Confirmation may occur just outside the zone after a rejection.
+      // Never chase price beyond the very same drift cap used by revalidation.
+      const confirmedPlan = !!plan?.zoneTouchedTimestamp && plan.automatable &&
+        plan.observableConditions.length > 0 && allRequiredConditionsMet;
+      const drift = Math.abs(currentPrice - sc.targetEntry);
+      const maxDrift = this.entryDriftLimit(sc);
+      const favorableAway = sc.direction === 'SHORT' ? currentPrice < sc.entryZoneMin
+        : currentPrice > sc.entryZoneMax;
+      if (entryPending && confirmedPlan && favorableAway && drift > maxDrift) {
+        this.scenarioRegistry.transitionStatus(sc.id, 'EXPIRED',
+          `OPPORTUNITY_MISSED: confirmaciones completas, precio fuera del margen de entrada (${drift.toFixed(2)} > ${maxDrift.toFixed(2)} USDT).`,
+          { currentPrice, distanceToZonePct: distPct, drift, maxDrift });
+        this.emit('scenario_expired', { scenarioId: sc.id, reason: 'OPPORTUNITY_MISSED' });
+        continue;
+      }
+      // 6. In Zone / Confirmed Rejection Trigger
+      if (inZone || (entryPending && confirmedPlan && favorableAway && drift <= maxDrift)) {
         // If plan has non-automatable conditions, do not auto-approve entry; flag waiting confirmation
         if (sc.watchPlan && !sc.watchPlan.automatable) {
           if (sc.status !== 'WAITING_CONFIRMATION') {
@@ -279,21 +351,21 @@ export class AlgorithmicWatcher extends EventEmitter {
         }
 
         // For automatable plans: all required conditions must be satisfied in sequential order
-        if (!allRequiredConditionsMet && (sc.watchPlan?.observableConditions?.length || 0) > 0) {
+        if ((!allRequiredConditionsMet || (plan && !plan.zoneTouchedTimestamp)) && entryPending && (plan?.observableConditions?.length || 0) > 0) {
           // Conditions are still pending in sequence, remain in monitoring
           continue;
         }
 
-        if (sc.status !== 'IN_ZONE' && sc.status !== 'REVALIDATION_REQUESTED' && sc.status !== 'AI_REVALIDATING' && sc.status !== 'ENTRY_VALIDATED' && sc.status !== 'WAITING_CONFIRMATION') {
+        if (entryPending) {
           const triggerReason = inZone
             ? `Precio alcanzó la zona operativa [${sc.entryZoneMin} - ${sc.entryZoneMax}]`
-            : `Condiciones observables del AI_WATCH_PLAN satisfechas en secuencia`;
+            : `Zona previamente alcanzada y confirmaciones satisfechas; precio dentro del margen de entrada (${drift.toFixed(2)} USDT)`;
 
           this.scenarioRegistry.transitionStatus(
             sc.id,
             'IN_ZONE',
             triggerReason,
-            { currentPrice, distPct }
+            { currentPrice, distanceToZonePct: distPct, inZone }
           );
 
           this.scenarioRegistry.transitionStatus(
@@ -456,13 +528,19 @@ export class AlgorithmicWatcher extends EventEmitter {
       if (neutralRecoveryOnly) continue;
 
       // 2. Sequential conditions check on candle close
-      if (candle.timestamp < sc.discoveryTimestamp) continue;
-      if (sc.watchPlan?.observableConditions && sc.watchPlan.observableConditions.length > 0) {
+      if (candle.symbol && candle.symbol !== sc.symbol) continue;
+      const duration = TIMEFRAME_DURATION_MS[candle.timeframe as keyof typeof TIMEFRAME_DURATION_MS];
+      if (!duration || !Number.isFinite(candle.timestamp) ||
+          candle.timestamp + duration <= sc.discoveryTimestamp ||
+          candle.timestamp + duration > Math.min(now, sc.validUntilTimestamp)) continue;
+      if (sc.watchPlan?.zoneTouchedTimestamp && sc.watchPlan.observableConditions.length > 0 &&
+          ['SCENARIO_PROPOSED', 'SCENARIO_REGISTERED', 'SCENARIO_MONITORING', 'APPROACHING_ZONE', 'WAITING_CONFIRMATION'].includes(sc.status)) {
         const sortedConditions = [...sc.watchPlan.observableConditions].sort(
           (a, b) => (a.sequenceOrder || 1) - (b.sequenceOrder || 1)
         );
         let sequenceBlocked = false;
         let previousStepMetTimestamp: number | undefined = undefined;
+        let conditionsChanged = false;
 
         for (const cond of sortedConditions) {
           if (cond.isMet) {
@@ -484,11 +562,15 @@ export class AlgorithmicWatcher extends EventEmitter {
           }
 
           if (cond.automatable) {
+            if (['PRICE_IN_RANGE', 'PRICE_TOUCH_LEVEL', 'PRICE_CROSS_ABOVE', 'PRICE_CROSS_BELOW', 'BREAK_AND_RETEST', 'SPREAD_TOLERANCE'].includes(cond.operator)) {
+              sequenceBlocked = true;
+              continue;
+            }
             if (cond.params?.timeframe && cond.params.timeframe !== candle.timeframe) {
               sequenceBlocked = true;
               continue;
             }
-            const spreadNow = this.coordinator.getMarketState()?.ticker?.spreadPcnt;
+            const spreadNow = this.coordinator.getMarketState?.()?.ticker?.spreadPcnt;
             const isMet = this.evaluateCondition(cond, candle.close,
               typeof spreadNow === 'number' ? spreadNow : Number.NaN,
               candle, sc.discoveryTimestamp, previousStepMetTimestamp);
@@ -496,12 +578,21 @@ export class AlgorithmicWatcher extends EventEmitter {
               cond.isMet = true;
               cond.metTimestamp = now;
               previousStepMetTimestamp = now;
+              conditionsChanged = true;
+              this.scenarioRegistry.logLifecycle({
+                scenarioId: sc.id, fromStatus: sc.status, toStatus: sc.status, timestamp: now,
+                reason: `Confirmación cumplida: ${cond.description}`,
+                metadata: { watcherProgress: 'CONDITION_MET', conditionId: cond.id, operator: cond.operator, candleTimestamp: candle.timestamp },
+              });
             } else {
               sequenceBlocked = true;
             }
           } else {
             sequenceBlocked = true;
           }
+        }
+        if (conditionsChanged && this.scenarioRegistry.getAllActive().some(s => s.id === sc.id)) {
+          this.scenarioRegistry.updateMetrics(sc.id, { watchPlan: sc.watchPlan });
         }
       }
 
@@ -528,7 +619,15 @@ export class AlgorithmicWatcher extends EventEmitter {
 
     // The queue was already persisted synchronously before closing the watch.
     // Do not replay historical prices into live directional signal handling.
-    if (!neutralRecoveryOnly) this.evaluateTick(candle.close);
+    const ticker = this.coordinator.getMarketState?.()?.ticker;
+    if (!neutralRecoveryOnly && Number.isFinite(ticker?.lastPrice) && ticker.lastPrice > 0) {
+      this.evaluateTick(ticker.lastPrice, ticker.spreadPcnt);
+    }
+  }
+
+  private entryDriftLimit(sc: Scenario): number {
+    return Math.max(0.5, Math.min(sc.targetEntry * 0.0015,
+      Math.abs(sc.targetEntry - sc.stopLossPrice) * 0.10));
   }
 
   public evaluateCandlePattern(pattern: string, candle: any, prevCandle?: any): boolean {
@@ -611,7 +710,8 @@ export class AlgorithmicWatcher extends EventEmitter {
     if (!candleManager) return false;
     const recent = candleManager.getCandles(timeframe, 20);
     if (!recent || recent.length < 3) return false;
-    const past = recent.slice(0, -1);
+    const past = recent.filter((c: any) => c.confirmed === true && c.timestamp < candle.timestamp && Number.isFinite(c.volume) && c.volume > 0);
+    if (past.length < 2) return false;
     const avgVol = past.reduce((acc: number, c: any) => acc + (c.volume || 0), 0) / Math.max(1, past.length);
     if (!Number.isFinite(avgVol) || avgVol <= 0) return false;
     return (candle.volume || 0) >= avgVol * threshold;
@@ -628,9 +728,11 @@ export class AlgorithmicWatcher extends EventEmitter {
     const p = cond.params || {};
     switch (cond.operator) {
       case 'PRICE_IN_RANGE': {
-        const min = p.minLevel !== undefined ? p.minLevel : 0;
-        const max = p.maxLevel !== undefined ? p.maxLevel : Infinity;
-        return currentPrice >= min && currentPrice <= max;
+        const min = p.minLevel ?? p.min;
+        const max = p.maxLevel ?? p.max;
+        return typeof min === 'number' && typeof max === 'number' &&
+          Number.isFinite(min) && Number.isFinite(max) && min > 0 && max >= min &&
+          currentPrice >= min && currentPrice <= max;
       }
       case 'PRICE_TOUCH_LEVEL': {
         if (p.level === undefined) return false;
@@ -686,7 +788,7 @@ export class AlgorithmicWatcher extends EventEmitter {
           }
         }
 
-        if (!evalCandle) return false;
+        if (!evalCandle || evalCandle.confirmed !== true) return false;
         // Never reuse stale events before discovery
         if (discoveryTimestamp && evalCandle.timestamp && evalCandle.timestamp < discoveryTimestamp) {
           return false;
@@ -708,6 +810,7 @@ export class AlgorithmicWatcher extends EventEmitter {
         if (!evalCandle) return false;
         if (discoveryTimestamp && evalCandle.timestamp && evalCandle.timestamp < discoveryTimestamp) return false;
         if (previousStepMetTimestamp && evalCandle.timestamp && evalCandle.timestamp < previousStepMetTimestamp) return false;
+        if (dir !== 'BEARISH' && dir !== 'BULLISH') return false;
         return this.evaluateLevelRejectionWick(dir, lvl, evalCandle, p.minWickRatio || 0.25);
       }
       case 'STRUCTURE_CLOSE': {
@@ -722,18 +825,25 @@ export class AlgorithmicWatcher extends EventEmitter {
         if (!evalCandle) return false;
         if (discoveryTimestamp && evalCandle.timestamp && evalCandle.timestamp < discoveryTimestamp) return false;
         if (previousStepMetTimestamp && evalCandle.timestamp && evalCandle.timestamp < previousStepMetTimestamp) return false;
-        return dir === 'BEARISH' ? evalCandle.close <= lvl : evalCandle.close >= lvl;
+        if (String(dir) === 'BEARISH' || String(dir) === 'BELOW') return evalCandle.close <= lvl;
+        if (String(dir) === 'BULLISH' || String(dir) === 'ABOVE') return evalCandle.close >= lvl;
+        return false;
       }
       case 'VOLUME_EXPANSION':
       case 'VOLUME_SPIKE': {
         const tf = p.timeframe || '15m';
-        const threshold = p.threshold || p.volumeThresholdRvol || 1.5;
+        const threshold = p.threshold ?? p.volumeThresholdRvol ?? p.thresholdMultiplier ?? 1.5;
+        if (!Number.isFinite(threshold) || threshold <= 0) return false;
         let evalCandle = candle;
         if (!evalCandle && this.coordinator.getCandleManager) {
           evalCandle = this.coordinator.getCandleManager()?.getLastClosedCandle(tf);
         }
         if (!evalCandle) return false;
         if (discoveryTimestamp && evalCandle.timestamp && evalCandle.timestamp < discoveryTimestamp) return false;
+        if (evalCandle.confirmed !== true) return false;
+        if (previousStepMetTimestamp && evalCandle.timestamp + TIMEFRAME_DURATION_MS[tf] <= previousStepMetTimestamp) return false;
+        if (p.direction === 'BEARISH' && evalCandle.close >= evalCandle.open) return false;
+        if (p.direction === 'BULLISH' && evalCandle.close <= evalCandle.open) return false;
         return this.evaluateVolumeExpansion(evalCandle, tf, threshold);
       }
       case 'BREAK_AND_RETEST': {
