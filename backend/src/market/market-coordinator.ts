@@ -462,12 +462,13 @@ export class MarketCoordinator extends EventEmitter {
     if (this.snapshotIntervalTimer) clearInterval(this.snapshotIntervalTimer);
     this.snapshotIntervalTimer = setInterval(() => {
       // Independent candle watchdog: WS can report 'connected' yet stop
-      // delivering closed klines. REST backfill is rate-limited to one
+      // delivering closed klines. The normal 15m interval plus 3m grace
+      // avoids false alarms between legitimate closes. One
       // in-flight request per market/timeframe and consumes no IA tokens.
       const last15m = this.candleManager.getLastClosedCandle('15m');
       const lastClosedAt = last15m ? last15m.timestamp + 15 * 60000 : 0;
       if (this.isBootstrapped && !this.isStopped &&
-          (!lastClosedAt || Date.now() - lastClosedAt > 3 * 60000)) {
+          (!lastClosedAt || Date.now() - lastClosedAt > 18 * 60000)) {
         void this.backfillGap('15m');
       }
       if (this.currentTicker) {
