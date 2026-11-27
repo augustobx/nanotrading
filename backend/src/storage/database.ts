@@ -827,10 +827,14 @@ export class DatabaseService {
     return row ? JSON.parse(row.payload_json) : null;
   }
 
-  public getDiscoveryAudits(limit = 20): DiscoveryAudit[] {
+  public getDiscoveryAudits(limit = 20, symbol?: string): DiscoveryAudit[] {
     const bounded = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 20;
-    return (this.db.prepare('SELECT payload_json FROM discovery_analyses ORDER BY timestamp DESC LIMIT ?')
-      .all(bounded) as any[]).map(row => JSON.parse(row.payload_json));
+    const rows = symbol
+      ? this.db.prepare(`SELECT payload_json FROM discovery_analyses
+        WHERE json_extract(payload_json, '$.snapshot.symbol') = ?
+        ORDER BY timestamp DESC LIMIT ?`).all(symbol, bounded)
+      : this.db.prepare('SELECT payload_json FROM discovery_analyses ORDER BY timestamp DESC LIMIT ?').all(bounded);
+    return (rows as any[]).map(row => JSON.parse(row.payload_json));
   }
 
   public getDiscoveryAuditsForScenario(scenarioId: string): DiscoveryAudit[] {
@@ -839,28 +843,40 @@ export class DatabaseService {
       ORDER BY a.timestamp DESC LIMIT 5`).all(scenarioId) as any[]).map(row => JSON.parse(row.payload_json));
   }
 
-  public getDiscoveryFunnel(): Record<string, unknown> {
+  public getDiscoveryFunnel(symbol?: string): Record<string, unknown> {
+    const bind = symbol ? [symbol] : [];
+    const scenariosFilter = symbol ? ' WHERE symbol = ?' : '';
+    const auditsFilter = symbol ?
+      " WHERE json_extract(a.payload_json, '$.snapshot.symbol') = ?" : '';
+    const signalsFilter = symbol ? ' WHERE symbol = ?' : '';
     const counts = this.db.prepare(`SELECT COUNT(*) scenarios,
       SUM(CASE WHEN direction='NEUTRAL' THEN 1 ELSE 0 END) neutral,
       SUM(CASE WHEN direction='LONG' THEN 1 ELSE 0 END) longs,
       SUM(CASE WHEN direction='SHORT' THEN 1 ELSE 0 END) shorts,
       SUM(CASE WHEN direction='NEUTRAL' AND status='COMPLETED' THEN 1 ELSE 0 END) neutralBreakouts,
       SUM(CASE WHEN snapshot_id NOT IN (SELECT id FROM discovery_analyses) THEN 1 ELSE 0 END) legacyScenarios
-      FROM scenarios`).get();
+      FROM scenarios${scenariosFilter}`).get(...bind);
     const signals = this.db.prepare(`SELECT SUM(CASE WHEN consensus_verdict='AUTHORIZED' THEN 1 ELSE 0 END) authorizedSignals,
       COUNT(simulated_entry_time) paperEntries,
-      SUM(CASE WHEN simulated_entry_time IS NOT NULL AND exit_time IS NOT NULL THEN 1 ELSE 0 END) paperClosed FROM signals`).get();
+      SUM(CASE WHEN simulated_entry_time IS NOT NULL AND exit_time IS NOT NULL THEN 1 ELSE 0 END) paperClosed
+      FROM signals${signalsFilter}`).get(...bind);
     return {
       ...counts, ...signals,
-      analyses: this.db.prepare('SELECT outcome, COUNT(*) count FROM discovery_analyses GROUP BY outcome').all(),
+      analyses: this.db.prepare(`SELECT a.outcome, COUNT(*) count FROM discovery_analyses a
+        ${auditsFilter} GROUP BY a.outcome`).all(...bind),
       candidates: this.db.prepare(`SELECT json_extract(c.value, '$.reason') reason, COUNT(*) count
-        FROM discovery_analyses a, json_each(a.payload_json, '$.candidates') c GROUP BY 1`).all(),
+        FROM discovery_analyses a, json_each(a.payload_json, '$.candidates') c
+        ${auditsFilter} GROUP BY 1`).all(...bind),
       providers: this.db.prepare(`SELECT p.key provider, json_extract(p.value, '$.status') status, COUNT(*) count
-        FROM discovery_analyses a, json_each(a.payload_json, '$.providers') p GROUP BY 1,2`).all(),
+        FROM discovery_analyses a, json_each(a.payload_json, '$.providers') p
+        ${auditsFilter} GROUP BY 1,2`).all(...bind),
       revalidations: this.db.prepare(`SELECT s.direction, r.consensus_verdict verdict, COUNT(*) count
-        FROM scenario_revalidations r JOIN scenarios s ON s.id=r.scenario_id GROUP BY 1,2`).all(),
+        FROM scenario_revalidations r JOIN scenarios s ON s.id=r.scenario_id
+        ${symbol ? 'WHERE s.symbol = ?' : ''} GROUP BY 1,2`).all(...bind),
       zoneConfirmed: this.db.prepare(`SELECT s.direction, COUNT(DISTINCT l.scenario_id) count
-        FROM scenario_lifecycle l JOIN scenarios s ON s.id=l.scenario_id WHERE l.to_status='IN_ZONE' GROUP BY 1`).all(),
+        FROM scenario_lifecycle l JOIN scenarios s ON s.id=l.scenario_id
+        WHERE l.to_status='IN_ZONE' ${symbol ? 'AND s.symbol = ?' : ''}
+        GROUP BY 1`).all(...bind),
     };
   }
 
@@ -992,9 +1008,12 @@ export class DatabaseService {
     } catch {}
   }
 
-  public getSignals(limit: number = 50): any[] {
+  public getSignals(limit: number = 50, symbol?: string): any[] {
     if (this.isClosed) return [];
-    const rows = this.selectSignalsStmt.all(limit) as any[];
+    const bounded = Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.floor(limit))) : 50;
+    const rows = symbol
+      ? this.db.prepare('SELECT * FROM signals WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?').all(symbol, bounded) as any[]
+      : this.selectSignalsStmt.all(bounded) as any[];
     return rows.map((r) => ({
       id: r.id,
       setupId: r.setup_id,
@@ -1202,11 +1221,11 @@ export class DatabaseService {
     } catch {}
   }
 
-  public getActiveSignalsForRecovery(): any[] {
+  public getActiveSignalsForRecovery(symbol?: string): any[] {
     if (this.isClosed) return [];
     try {
       const rows = this.selectActiveSignalsStmt.all() as any[];
-      return rows.map((r) => ({
+      return rows.filter((r) => !symbol || r.symbol === symbol).map((r) => ({
         id: r.id,
         setupId: r.setup_id,
         timestamp: Number(r.timestamp),
@@ -1933,20 +1952,27 @@ export class DatabaseService {
     );
   }
 
-  public getScenarios(options?: { status?: ScenarioStatus | ScenarioStatus[]; limit?: number }): Scenario[] {
+  public getScenarios(options?: { status?: ScenarioStatus | ScenarioStatus[]; symbol?: string; limit?: number }): Scenario[] {
     if (this.isClosed) return [];
     try {
       let query = 'SELECT * FROM scenarios';
       const params: any[] = [];
+      const conditions: string[] = [];
+      if (options?.symbol) {
+        conditions.push('symbol = ?');
+        params.push(options.symbol);
+      }
       if (options?.status) {
         if (Array.isArray(options.status)) {
-          query += ` WHERE status IN (${options.status.map(() => '?').join(',')})`;
+          if (options.status.length === 0) return [];
+          conditions.push(`status IN (${options.status.map(() => '?').join(',')})`);
           params.push(...options.status);
         } else {
-          query += ' WHERE status = ?';
+          conditions.push('status = ?');
           params.push(options.status);
         }
       }
+      if (conditions.length > 0) query += ' WHERE ' + conditions.join(' AND ');
       query += ' ORDER BY discovery_timestamp DESC';
       if (options?.limit) {
         query += ' LIMIT ?';
@@ -2187,14 +2213,15 @@ export class DatabaseService {
     }
   }
 
-  public getActiveWatchPlans(): AiWatchPlan[] {
+  public getActiveWatchPlans(symbol?: string): AiWatchPlan[] {
     if (this.isClosed) return [];
     try {
       const rows = this.db.prepare(`
         SELECT * FROM ai_watch_plans 
         WHERE status IN ('PENDING', 'ACTIVE', 'TRIGGERED', 'REVALIDATING')
+          AND (? IS NULL OR symbol = ?)
         ORDER BY created_at DESC
-      `).all() as any[];
+      `).all(symbol || null, symbol || null) as any[];
       return rows.map((r) => this.mapWatchPlanRow(r));
     } catch {
       return [];
@@ -2260,7 +2287,7 @@ export class DatabaseService {
   // ---------------------------------------------------------------------------
   // Discovery Scheduler Configuration
   // ---------------------------------------------------------------------------
-  public getDiscoverySchedulerConfig(): {
+  public getDiscoverySchedulerConfig(symbol = 'BTCUSDT'): {
     enabled: boolean;
     intervalMinutes: number;
     triggerOn1hClose: boolean;
@@ -2272,8 +2299,8 @@ export class DatabaseService {
     if (this.isClosed) {
       return {
         enabled: true,
-        intervalMinutes: 60,
-        triggerOn1hClose: true,
+        intervalMinutes: symbol === 'ETHUSDT' ? 120 : 60,
+        triggerOn1hClose: symbol !== 'ETHUSDT',
         triggerOn15mStructure: true,
         minPriceMovePct: 1.5,
         minCooldownMinutes: 15,
@@ -2281,12 +2308,13 @@ export class DatabaseService {
       };
     }
     try {
-      const row = this.db.prepare('SELECT * FROM discovery_scheduler_config WHERE id = ?').get('default') as any;
+      const id = symbol === 'BTCUSDT' ? 'default' : symbol;
+      const row = this.db.prepare('SELECT * FROM discovery_scheduler_config WHERE id = ?').get(id) as any;
       if (!row) {
         return {
           enabled: true,
-          intervalMinutes: 60,
-          triggerOn1hClose: true,
+          intervalMinutes: symbol === 'ETHUSDT' ? 120 : 60,
+          triggerOn1hClose: symbol !== 'ETHUSDT',
           triggerOn15mStructure: true,
           minPriceMovePct: 1.5,
           minCooldownMinutes: 15,
@@ -2305,8 +2333,8 @@ export class DatabaseService {
     } catch {
       return {
         enabled: true,
-        intervalMinutes: 60,
-        triggerOn1hClose: true,
+        intervalMinutes: symbol === 'ETHUSDT' ? 120 : 60,
+        triggerOn1hClose: symbol !== 'ETHUSDT',
         triggerOn15mStructure: true,
         minPriceMovePct: 1.5,
         minCooldownMinutes: 15,
@@ -2322,7 +2350,7 @@ export class DatabaseService {
     triggerOn15mStructure: boolean;
     minPriceMovePct: number;
     minCooldownMinutes: number;
-  }): void {
+  }, symbol = 'BTCUSDT'): void {
     if (this.isClosed) return;
     try {
       this.db.prepare(`
@@ -2338,7 +2366,7 @@ export class DatabaseService {
           min_cooldown_minutes = excluded.min_cooldown_minutes,
           updated_at = excluded.updated_at
       `).run(
-        'default',
+        symbol === 'BTCUSDT' ? 'default' : symbol,
         config.enabled ? 1 : 0,
         config.intervalMinutes,
         config.triggerOn1hClose ? 1 : 0,

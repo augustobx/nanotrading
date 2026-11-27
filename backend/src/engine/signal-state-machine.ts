@@ -82,10 +82,12 @@ export const VALID_TRANSITIONS: Record<SignalState, SignalState[]> = {
 export class SignalStateMachine extends EventEmitter {
   private signals: Map<string, SignalInstance> = new Map();
   private db: DatabaseService;
+  private symbol?: string;
 
-  constructor(db: DatabaseService) {
+  constructor(db: DatabaseService, symbol?: string) {
     super();
     this.db = db;
+    this.symbol = symbol;
   }
 
   public registerSignalFromConsensus(consensus: ConsensusResult): SignalInstance {
@@ -429,7 +431,7 @@ export class SignalStateMachine extends EventEmitter {
 
   public recoverActiveSignals(): number {
     try {
-      const activeRows = this.db.getActiveSignalsForRecovery();
+      const activeRows = this.db.getActiveSignalsForRecovery(this.symbol);
       let recoveredCount = 0;
 
       for (const row of activeRows) {

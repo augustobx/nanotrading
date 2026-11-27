@@ -40,7 +40,11 @@ import { formatUsd, formatArgentinaDateTime } from '../utils/formatters';
 
 export function AiTradingIntelligence({
   onShowScenarioOnChart,
-}: { onShowScenarioOnChart?: (scenarioId: string) => void } = {}) {
+  marketSymbol = 'BTCUSDT',
+}: {
+  onShowScenarioOnChart?: (scenarioId: string) => void;
+  marketSymbol?: 'BTCUSDT' | 'ETHUSDT';
+} = {}) {
   const [activeTab, setActiveTab] = useState<
     'en_proceso' | 'senales' | 'paper' | 'sin_trade' | 'historial' | 'funnel' | 'market_intelligence' | 'watcher_stats'
   >('en_proceso');
@@ -60,10 +64,11 @@ export function AiTradingIntelligence({
   const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   const apiBase = getApiBaseUrl();
+  const marketBase = marketSymbol === 'ETHUSDT' ? `${apiBase}/api/v1/markets/ETHUSDT` : null;
 
   const fetchScenarios = async () => {
     try {
-      const res = await fetch(`${apiBase}/api/v1/discovery/scenarios`);
+      const res = await fetch(marketBase ? `${marketBase}/scenarios` : `${apiBase}/api/v1/discovery/scenarios`);
       if (res.ok) {
         const data = await res.json();
         setScenarios(data.data || []);
@@ -73,7 +78,7 @@ export function AiTradingIntelligence({
 
   const fetchMarketIntel = async () => {
     try {
-      const res = await fetch(`${apiBase}/api/v1/discovery/market-intelligence`);
+      const res = await fetch(marketBase ? `${marketBase}/market-intelligence` : `${apiBase}/api/v1/discovery/market-intelligence`);
       if (res.ok) {
         const data = await res.json();
         setMarketIntel(data.data || null);
@@ -83,7 +88,7 @@ export function AiTradingIntelligence({
 
   const fetchSchedulerStatus = async () => {
     try {
-      const res = await fetch(`${apiBase}/api/v1/discovery/scheduler/status`);
+      const res = await fetch(marketBase ? `${marketBase}/scheduler` : `${apiBase}/api/v1/discovery/scheduler/status`);
       if (res.ok) {
         const data = await res.json();
         setSchedulerStatus(data.data || null);
@@ -103,12 +108,12 @@ export function AiTradingIntelligence({
 
   const fetchActiveSignals = async () => {
     try {
-      const res = await fetch(`${apiBase}/api/v1/signals/active`);
+      const res = await fetch(marketBase ? `${marketBase}/signals/active` : `${apiBase}/api/v1/signals/active`);
       if (res.ok) {
         const data = await res.json();
         setActiveSignals(data.data || []);
       }
-      const resHistory = await fetch(`${apiBase}/api/v1/signals?limit=100`);
+      const resHistory = await fetch(marketBase ? `${marketBase}/signals?limit=100` : `${apiBase}/api/v1/signals?limit=100`);
       if (resHistory.ok) {
         const dataH = await resHistory.json();
         setAllSignals(dataH.data || []);
@@ -118,7 +123,7 @@ export function AiTradingIntelligence({
 
   const fetchDetail = async (id: string) => {
     try {
-      const res = await fetch(`${apiBase}/api/v1/discovery/scenarios/${id}`);
+      const res = await fetch(marketBase ? `${marketBase}/scenarios/${id}` : `${apiBase}/api/v1/discovery/scenarios/${id}`);
       if (res.ok) {
         const data = await res.json();
         setScenarioDetail(data.data || null);
@@ -141,7 +146,7 @@ export function AiTradingIntelligence({
     }, 15000);
 
     return () => clearInterval(interval);
-  }, []);
+  }, [marketSymbol]);
 
   useEffect(() => {
     if (selectedScenarioId) {
@@ -149,14 +154,19 @@ export function AiTradingIntelligence({
     } else {
       setScenarioDetail(null);
     }
-  }, [selectedScenarioId]);
+  }, [selectedScenarioId, marketSymbol]);
+
+  useEffect(() => {
+    setSelectedScenarioId(null);
+    setScenarioDetail(null);
+  }, [marketSymbol]);
 
   const handleTriggerDiscovery = async () => {
     setIsDiscovering(true);
     setMessage(null);
     try {
       const headers = await getAdminMutationHeaders();
-      const res = await fetch(`${apiBase}/api/v1/discovery/trigger`, {
+      const res = await fetch(marketBase ? `${marketBase}/discovery/trigger` : `${apiBase}/api/v1/discovery/trigger`, {
         method: 'POST',
         headers,
       });
@@ -180,7 +190,7 @@ export function AiTradingIntelligence({
     setIsRevalidating(true);
     try {
       const headers = await getAdminMutationHeaders();
-      const res = await fetch(`${apiBase}/api/v1/discovery/scenarios/${id}/revalidate`, {
+      const res = await fetch(marketBase ? `${marketBase}/scenarios/${id}/revalidate` : `${apiBase}/api/v1/discovery/scenarios/${id}/revalidate`, {
         method: 'POST',
         headers,
       });
@@ -234,7 +244,7 @@ export function AiTradingIntelligence({
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="font-display font-extrabold text-base sm:text-lg text-slate-900 dark:text-white tracking-wide uppercase">
-                Centro de Inteligencia & Control Autónomo
+                Centro de Inteligencia & Control Autónomo · {marketSymbol}
               </h2>
               <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-orange-500/15 text-orange-600 dark:text-orange-400 border border-orange-500/30">
                 FASE 5C.3
@@ -522,7 +532,11 @@ export function AiTradingIntelligence({
             signals={allSignals.length > 0 ? allSignals : activeSignals}
             totalAutonomousRuns={schedulerStatus?.totalAutonomousRuns || 0}
           />
-          <DiscoveryAuditPanel apiBase={apiBase} />
+          {marketSymbol === 'BTCUSDT' ? <DiscoveryAuditPanel apiBase={apiBase} /> : (
+            <p className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/50 p-4 text-xs text-slate-500">
+              La auditoría de ETHUSDT está disponible en su terminal independiente.
+            </p>
+          )}
         </div>
       )}
 

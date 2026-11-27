@@ -871,8 +871,8 @@ export class AiMarketDiscoveryEngine extends EventEmitter {
       : 'Mercado sin confluencia técnica estricta. "No operar es una decisión válida y a menudo la mejor". Preservación de capital prioritaria.';
 
     const neutralPlan: AiWatchPlan = {
-      id: `wp_neutral_${Date.now()}`,
-      scenarioId: `sc_neutral_${Date.now()}`,
+      id: `wp_neutral_${summary.symbol}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
+      scenarioId: `sc_neutral_${summary.symbol}_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`,
       symbol: summary.symbol || 'BTCUSDT',
       direction: 'NEUTRAL',
       marketThesis: neutralThesis,

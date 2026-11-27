@@ -17,6 +17,7 @@ export class ApiServer {
   private server: http.Server;
   private wss: WebSocketServer;
   private coordinator: MarketCoordinator;
+  private markets: Map<string, MarketCoordinator>;
   private db: DatabaseService;
   private port: number;
   private host: string;
@@ -26,8 +27,10 @@ export class ApiServer {
   private historicalDataManager: HistoricalDataManager;
   private backtestEngine: BacktestEngine;
 
-  constructor(coordinator: MarketCoordinator, db: DatabaseService, port?: number, host?: string) {
+  constructor(coordinator: MarketCoordinator, db: DatabaseService, port?: number, host?: string,
+    markets?: Map<string, MarketCoordinator>) {
     this.coordinator = coordinator;
+    this.markets = markets || new Map([['BTCUSDT', coordinator]]);
     this.db = db;
     this.historicalDataManager = new HistoricalDataManager(new BybitRestClient(), this.db);
     this.backtestEngine = new BacktestEngine(this.historicalDataManager, this.db);
@@ -102,7 +105,13 @@ export class ApiServer {
     }
 
     try {
-      if (pathname === '/health' && req.method === 'GET') {
+      if (pathname === '/api/v1/markets/portfolio' && req.method === 'GET') {
+        this.sendCrossMarketExposure(res);
+      } else if (pathname === '/api/v1/markets' && req.method === 'GET') {
+        this.sendMarketDirectory(res);
+      } else if (pathname.startsWith('/api/v1/markets/')) {
+        this.handleMultiMarketRequest(req, res, url, pathname);
+      } else if (pathname === '/health' && req.method === 'GET') {
         this.sendHealth(res);
       } else if (pathname === '/api/v1/market/state' && req.method === 'GET') {
         this.sendMarketState(res);
@@ -212,10 +221,10 @@ export class ApiServer {
       } else if (pathname === '/api/v1/discovery/market-intelligence' && req.method === 'GET') {
         this.sendMarketIntelligence(res);
       } else if (pathname === '/api/v1/discovery/audit' && req.method === 'GET') {
-        const analyses = this.db.getDiscoveryAudits(Number(url.searchParams.get('limit') || 20));
+        const analyses = this.db.getDiscoveryAudits(Number(url.searchParams.get('limit') || 20), this.coordinator.getMarketState().symbol);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, data: {
-          funnel: this.db.getDiscoveryFunnel(),
+          funnel: this.db.getDiscoveryFunnel(this.coordinator.getMarketState().symbol),
           policy: { ...effectiveRRMinimums(this.coordinator.getRiskPolicyManager().getPolicy()),
             mode: this.coordinator.getRiskPolicyManager().getPolicy().rrTargetMode },
           analyses: analyses.map(({ snapshot, policy, ...analysis }) => ({
@@ -280,6 +289,159 @@ export class ApiServer {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal Server Error', message: 'Error interno de servidor' }));
     }
+  }
+
+
+  /** Read-only BTC/ETH overlap audit for correlated paper positions. */
+  private sendCrossMarketExposure(res: http.ServerResponse): void {
+    const liveStates = new Set(['ENTRY_VALIDATED', 'ALERT_SENT', 'APPROACHING_ZONE',
+      'IN_ZONE', 'ENTRY_TRIGGERED', 'TRACKING']);
+    const entries = Array.from(this.markets.entries()).flatMap(([symbol, coordinator]) =>
+      coordinator.getSignalStateMachine().getActiveSignals()
+        .filter(s => liveStates.has(s.state))
+        .map(s => ({ symbol, id: s.id, direction: s.direction, state: s.state,
+          paperRiskUsdt: Number(s.riskUsdt) || 0 })));
+    const overlappingDirections = ['LONG', 'SHORT'].filter(direction =>
+      new Set(entries.filter(s => s.direction === direction).map(s => s.symbol)).size > 1);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: {
+      concurrentPaperSignals: entries,
+      overlappingDirections,
+      correlatedSameDirection: overlappingDirections.length > 0,
+      combinedRiskUsdt: Number(entries.reduce((sum, s) => sum + s.paperRiskUsdt, 0).toFixed(2)),
+      advisoryOnly: true,
+      note: 'BTC y ETH pueden estar correlacionados. La alerta no modifica la política de 4R ni las decisiones paper.',
+    } }));
+  }
+
+  /** Read-only per-market API. The legacy /api/v1/market endpoints remain BTC-compatible.
+   * No paid AI invocation is performed by GET requests. Writes require admin authentication.
+   */
+  private sendMarketDirectory(res: http.ServerResponse): void {
+    const list = Array.from(this.markets.entries()).map(([symbol, coordinator]) => {
+      const market = coordinator.getMarketState();
+      const scheduler = coordinator.getDiscoveryScheduler().getStatus();
+      return {
+        symbol, status: market.status,
+        lastPrice: market.ticker?.lastPrice ?? null,
+        wsConnected: market.wsConnected,
+        schedulerEnabled: scheduler.enabled,
+        activeWatchedScenarios: scheduler.activeWatchedScenarios,
+        autonomousRunsSinceRestart: scheduler.totalAutonomousRuns,
+        executionMode: 'SIGNALS_ONLY',
+      };
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: true, data: list }));
+  }
+
+  private handleMultiMarketRequest(req: http.IncomingMessage, res: http.ServerResponse,
+    url: URL, pathname: string): void {
+    const segments = pathname.slice('/api/v1/markets/'.length).split('/');
+    const symbol = segments[0];
+    const resource = segments.slice(1).join('/');
+    const coordinator = this.markets.get(symbol);
+    if (!coordinator || !resource) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Mercado o ruta no disponible' }));
+      return;
+    }
+    const reply = (data: any, statusCode = 200) => {
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: statusCode < 400, symbol, data }));
+    };
+    if (req.method === 'POST' && resource.startsWith('scenarios/') &&
+      resource.endsWith('/revalidate')) {
+      if (!this.isAuthenticated(req)) {
+        reply({ error: 'Autenticación requerida' }, 401);
+        return;
+      }
+      const scenarioId = resource.slice('scenarios/'.length, -'/revalidate'.length);
+      const sc = coordinator.getScenarioRegistry().getScenario(scenarioId);
+      if (!sc || sc.symbol !== symbol) return reply({ error: 'Escenario no encontrado' }, 404);
+      const currentPrice = coordinator.getMarketState().ticker?.lastPrice || sc.targetEntry;
+      coordinator.getAiRevalidation().revalidate(sc, currentPrice)
+        .then(result => reply(result))
+        .catch(err => {
+          this.db.logEvent('ERROR', 'MarketApi', `Revalidation failed for ${symbol}: ${err?.message || err}`);
+          reply({ error: 'No se pudo completar la revalidación' }, 503);
+        });
+      return;
+    }
+    if (req.method === 'POST' && resource === 'discovery/trigger') {
+      if (!this.isAuthenticated(req)) {
+        reply({ error: 'Autenticación requerida' }, 401);
+        return;
+      }
+      coordinator.getAiDiscoveryEngine().runDiscovery({
+        forceManual: true, triggerSource: 'MANUAL_TRIGGER',
+      }).then(result => reply(result)).catch(err => {
+        this.db.logEvent('ERROR', 'MarketApi', `Discovery failed for ${symbol}: ${err?.message || err}`);
+        reply({ error: 'No se pudo completar el descubrimiento' }, 503);
+      });
+      return;
+    }
+    if (req.method !== 'GET') {
+      res.setHeader('Allow', 'GET');
+      reply({ error: 'Método no permitido' }, 405);
+      return;
+    }
+    const limit = Math.max(1, Math.min(500, Number(url.searchParams.get('limit')) || 100));
+    const state = coordinator.getMarketState();
+    if (resource === 'state') return reply(state);
+    if (resource === 'orderbook') return reply(state.orderBook);
+    if (resource === 'instrument') return reply(coordinator.getInstrumentInfo());
+    if (resource === 'analysis') return reply(coordinator.getAnalyses());
+    if (resource === 'candles') {
+      const timeframe = url.searchParams.get('timeframe') || '15m';
+      if (!SUPPORTED_TIMEFRAMES.includes(timeframe as Timeframe)) {
+        return reply({ error: 'Timeframe no permitido' }, 400);
+      }
+      return reply(coordinator.getCandles(timeframe as Timeframe, limit));
+    }
+    if (resource === 'scenarios') {
+      return reply(coordinator.getScenarioRegistry().getAll({ limit }));
+    }
+    if (resource.startsWith('scenarios/')) {
+      const id = resource.slice('scenarios/'.length);
+      const scenario = coordinator.getScenarioRegistry().getScenario(id);
+      if (!scenario || scenario.symbol !== symbol) return reply({ error: 'Escenario no encontrado' }, 404);
+      return reply({
+        scenario,
+        lifecycle: coordinator.getScenarioRegistry().getLifecycle(id),
+        revalidations: this.db.getScenarioRevalidations(id),
+        discoveryAudit: this.db.getDiscoveryAudit(scenario.snapshotId),
+        relatedDiscoveryAudits: this.db.getDiscoveryAuditsForScenario(id),
+      });
+    }
+    if (resource === 'signals/active') return reply(coordinator.getSignalStateMachine().getActiveSignals());
+    if (resource === 'signals') return reply(this.db.getSignals(limit, symbol));
+    if (resource === 'watch-plans') return reply(this.db.getActiveWatchPlans(symbol));
+    if (resource === 'scheduler') return reply(coordinator.getDiscoveryScheduler().getStatus());
+    if (resource === 'market-intelligence') {
+      if (!state.ticker) return reply({ error: 'Mercado sin datos suficientes' }, 503);
+      return reply(coordinator.getAiDiscoveryEngine().getLatestSummary());
+    }
+    if (resource === 'audits') {
+      return reply(this.db.getDiscoveryAudits(limit, symbol).map(({ snapshot, policy, ...record }) => record));
+    }
+    if (resource === 'stats') {
+      const scenarios = this.db.getScenarios({ symbol });
+      const signals = this.db.getSignals(500, symbol);
+      const closed = signals.filter(s => s.simulatedEntryTime && s.exitTime);
+      const realized = closed.reduce((sum, s) => sum + (Number(s.realizedNetR) || 0), 0);
+      return reply({
+        symbol,
+        totalScenarios: scenarios.length,
+        neutralObservations: scenarios.filter(s => s.direction === 'NEUTRAL').length,
+        directionalScenarios: scenarios.filter(s => s.direction !== 'NEUTRAL').length,
+        paperEntries: signals.filter(s => s.simulatedEntryTime).length,
+        paperClosed: closed.length,
+        netRRealized: Number(realized.toFixed(4)),
+        note: 'Las estadísticas no prueban edge por sí mismas; incluyen el historial prospectivo.',
+      });
+    }
+    reply({ error: 'Recurso no disponible' }, 404);
   }
 
   private sendHealth(res: http.ServerResponse): void {
@@ -450,7 +612,7 @@ export class ApiServer {
   }
 
   private sendSignals(res: http.ServerResponse, limit: number): void {
-    const signals = this.db.getSignals(limit);
+    const signals = this.db.getSignals(limit, this.coordinator.getMarketState().symbol);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, count: signals.length, data: signals }));
   }
@@ -503,6 +665,15 @@ export class ApiServer {
         const active = payload.active === true;
         const reason = payload.reason || 'Acción manual desde panel de control';
         this.coordinator.setKillSwitch(active, reason);
+        // A single emergency action must cover both symbol-isolated paper engines.
+        // Share the global kill switch without sending duplicate Telegram alerts.
+        if (active) {
+          for (const market of this.markets.values()) {
+            if (market !== this.coordinator) {
+              market.getSignalStateMachine().cancelAll('KILL_SWITCH_ACTIVE');
+            }
+          }
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, killSwitchActive: active, reason }));
       } catch (err: any) {
@@ -1939,7 +2110,7 @@ export class ApiServer {
   }
 
   private sendWatchPlans(res: http.ServerResponse): void {
-    const plans = this.db.getActiveWatchPlans();
+    const plans = this.db.getActiveWatchPlans(this.coordinator.getMarketState().symbol);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ success: true, count: plans.length, data: plans }));
   }

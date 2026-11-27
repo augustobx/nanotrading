@@ -4,6 +4,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { PaletteSelector } from '../nanolabs-components/PaletteSelector';
 import { useERPTheme } from '../nanolabs-components/ThemeContext';
 import { CandleChart, Timeframe, CandleData } from '../components/CandleChart';
+import { EthMarketPanel } from '../components/EthMarketPanel';
 import { OrderBookWidget } from '../components/OrderBookWidget';
 import { MultiTimeframeMatrix } from '../components/MultiTimeframeMatrix';
 import { AiAnalystsCard } from '../components/AiAnalystsCard';
@@ -84,6 +85,7 @@ export default function DashboardPage() {
   const { palette, isDark, toggleDarkMode } = useERPTheme();
 
   const [activeMainTab, setActiveMainTab] = useState<MainTab>('terminal');
+  const [selectedMarket, setSelectedMarket] = useState<'BTCUSDT' | 'ETHUSDT'>('BTCUSDT');
   const [selectedScenarioId, setSelectedScenarioId] = useState<string | null>(null);
   const [pendingChartFocus, setPendingChartFocus] = useState(false);
   const [auditFilter, setAuditFilter] = useState<'ALL' | 'CRITICAL' | 'ERROR' | 'WARN' | 'INFO'>('ALL');
@@ -1114,6 +1116,25 @@ export default function DashboardPage() {
         {/* ========================================================================= */}
         {activeMainTab === 'terminal' && (
           <div className="space-y-5">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] px-4 py-3">
+              <div>
+                <h2 className="font-display text-sm font-bold text-slate-900 dark:text-white">Mercado en seguimiento</h2>
+                <p className="text-[11px] text-slate-500">Análisis, zonas y resultados separados · Presupuesto IA global compartido</p>
+              </div>
+              <div className="flex gap-2" role="group" aria-label="Seleccionar mercado">
+                {(['BTCUSDT', 'ETHUSDT'] as const).map(symbol => (
+                  <button type="button" key={symbol} onClick={() => setSelectedMarket(symbol)}
+                    aria-pressed={selectedMarket === symbol}
+                    className={`rounded-lg px-4 py-2 text-xs font-bold transition-colors ${selectedMarket === symbol
+                      ? 'bg-[var(--color-brand,#FF6600)] text-white shadow-sm'
+                      : 'bg-slate-100 dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-amber-500/60'}`}>
+                    {symbol === 'BTCUSDT' ? '₿ BTCUSDT' : 'Ξ ETHUSDT'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {selectedMarket === 'BTCUSDT' ? (
+              <>
             {/* Sección H: Centro de Respuesta Operativa - Bloque "Ahora mismo" */}
             <div id="ahora-mismo-terminal" className="p-4 sm:p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1422] shadow-sm space-y-4">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
@@ -1366,6 +1387,10 @@ export default function DashboardPage() {
               activeTimeframe={timeframe}
               onSelectTimeframe={setTimeframe}
             />
+              </>
+            ) : (
+              <EthMarketPanel isDark={isDark} focusScenarioId={selectedScenarioId} />
+            )}
           </div>
         )}
 
@@ -1374,7 +1399,7 @@ export default function DashboardPage() {
         {/* ========================================================================= */}
         {activeMainTab === 'scenarios' && (
           <div className="space-y-4">
-            <AiTradingIntelligence onShowScenarioOnChart={(id) => {
+            <AiTradingIntelligence marketSymbol={selectedMarket} onShowScenarioOnChart={(id) => {
               setSelectedScenarioId(id);
               setActiveMainTab('terminal');
               setPendingChartFocus(true);
