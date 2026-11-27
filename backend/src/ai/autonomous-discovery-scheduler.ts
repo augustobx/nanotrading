@@ -28,6 +28,8 @@ export interface SchedulerStatus {
   discoveryInFlight: boolean;
   providerFailureBackoffUntil: number | null;
   consecutiveProviderFailures: number;
+  pendingNeutralBreakout: { price: number; confirmedAt: number } | null;
+  lastBlockedTrigger: { code: string; timestamp: number } | null;
 }
 
 export class AutonomousDiscoveryScheduler extends EventEmitter {
@@ -50,6 +52,8 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
   private consecutiveProviderFailures = 0;
   private providerFailureBackoffUntil: number | null = null;
   private lastBlockedLog: { code: string; timestamp: number; suppressed: number } | null = null;
+  private pendingNeutralBreakout: { price: number; confirmedAt: number } | null = null;
+  private readonly neutralBreakoutQueueLifetimeMs = 90 * 60 * 1000;
 
   private blocked(code: string, trigger: string): false {
     const now = Date.now();
@@ -201,12 +205,41 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
   private evaluatePeriodicTrigger(): void {
     if (!this.isRunning || !this.config.enabled) return;
     const now = Date.now();
+
+    // A confirmed neutral breakout is important enough to retry after a
+    // cooldown/backoff, but not important enough to bypass hard budgets.
+    if (this.pendingNeutralBreakout) {
+      if (now - this.pendingNeutralBreakout.confirmedAt > this.neutralBreakoutQueueLifetimeMs) {
+        this.db.logEvent('WARN', 'DiscoveryScheduler', 'Neutral breakout expired while awaiting discovery', {
+          symbol: this.symbol, price: this.pendingNeutralBreakout.price,
+        });
+        this.pendingNeutralBreakout = null;
+      } else {
+        void this.triggerDiscovery('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH',
+          this.pendingNeutralBreakout.price);
+        return;
+      }
+    }
     const intervalMs = this.config.intervalMinutes * 60 * 1000;
 
     if (!this.lastTriggerTimestamp || now - this.lastTriggerTimestamp >= intervalMs) {
       const currentPrice = this.coordinator.getMarketState().ticker?.lastPrice || 0;
       this.triggerDiscovery('PERIODIC_SCHEDULED_DISCOVERY', currentPrice);
     }
+  }
+
+  /** Coalesce confirmed breakouts without bypassing cooldown, provider backoff,
+   * global budget or the existing active-directional-scenario guard. */
+  public queueConfirmedNeutralBreakout(price: number): void {
+    if (!Number.isFinite(price) || price <= 0) return;
+    if (!this.pendingNeutralBreakout) {
+      this.pendingNeutralBreakout = { price, confirmedAt: Date.now() };
+      this.db.logEvent('INFO', 'DiscoveryScheduler', 'Confirmed neutral breakout queued for autonomous discovery', {
+        symbol: this.symbol, price,
+      });
+    }
+    void this.triggerDiscovery('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH',
+      this.pendingNeutralBreakout.price);
   }
 
   public async triggerDiscovery(reason: string, currentPrice?: number): Promise<boolean> {
@@ -280,6 +313,9 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       }
       this.consecutiveProviderFailures = 0;
       this.providerFailureBackoffUntil = null;
+      // A completed discovery (even an explicit AI NO_TRADE) satisfies the
+      // queued request; do not spend a second time on the same breakout.
+      this.pendingNeutralBreakout = null;
       this.totalAutonomousRuns++;
       this.totalScenariosFound += result.scenarios.length;
       if (fingerprint) this.lastStructuralFingerprint = fingerprint;
@@ -348,6 +384,10 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       discoveryInFlight: this.discoveryInFlight,
       providerFailureBackoffUntil: this.providerFailureBackoffUntil,
       consecutiveProviderFailures: this.consecutiveProviderFailures,
+      pendingNeutralBreakout: this.pendingNeutralBreakout,
+      lastBlockedTrigger: this.lastBlockedLog
+        ? { code: this.lastBlockedLog.code, timestamp: this.lastBlockedLog.timestamp }
+        : null,
     };
   }
 }
