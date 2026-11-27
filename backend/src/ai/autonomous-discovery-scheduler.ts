@@ -302,9 +302,9 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     // Budget check
     if (this.hardBudgetManager.isBlocked()) {
       this.db.logEvent('WARN', 'DiscoveryScheduler', 'Autonomous discovery skipped: Budget limit blocked', {
-        reason: this.hardBudgetManager.getBlockedReason(),
+        symbol: this.symbol, reason: this.hardBudgetManager.getBlockedReason(),
       });
-      return false;
+      return this.blocked('BUDGET_BLOCKED', reason);
     }
 
     this.lastTriggerTimestamp = now;
