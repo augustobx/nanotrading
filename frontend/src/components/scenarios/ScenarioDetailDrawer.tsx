@@ -92,7 +92,16 @@ export function ScenarioDetailDrawer({
       let desc = ev.reason || 'Actualización registrada por el motor de estados.';
       let type: any = 'MONITOR';
 
-      if (ev.toStatus === 'APPROACHING_ZONE') {
+      if (ev.metadata?.neutralObservation) {
+        title = ev.metadata.progress === 'OUTSIDE_AWAITING_CLOSE'
+          ? 'Precio cruzó límite · Sin confirmar'
+          : ev.metadata.progress === 'OUTSIDE_CLOSED_LOW_VOLUME'
+          ? 'Cierre sin volumen suficiente'
+          : ev.metadata.progress === 'OUTSIDE_CLOSED_INSUFFICIENT_DATA'
+          ? 'Cierre sin historial de volumen'
+          : 'El precio volvió al rango';
+        type = 'ZONE';
+      } else if (ev.toStatus === 'APPROACHING_ZONE') {
         title = 'Precio Próximo a Zona (≤ 0.35%)';
         desc = 'Alerta temprana emitida. El precio se acercó al umbral operativo.';
         type = 'ZONE';
