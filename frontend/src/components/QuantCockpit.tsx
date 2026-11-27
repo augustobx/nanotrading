@@ -6,12 +6,13 @@ import {
   Clock3, FileSearch, Moon, Radio, RefreshCw, Settings2,
   ShieldCheck, Sun, TrendingDown, TrendingUp,
 } from 'lucide-react';
-import { CandleChart, type CandleData, type Timeframe } from './CandleChart';
+import { CandleChart, resolveWatchForChart, type CandleData, type Timeframe } from './CandleChart';
 import { ConfigCenterModal } from './config/ConfigCenterModal';
 import { useERPTheme } from '../nanolabs-components/ThemeContext';
 import { getApiBaseUrl } from '../utils/api-config';
 
 type Symbol = 'BTCUSDT' | 'ETHUSDT';
+type ChartSource = 'AUTO' | 'AI' | 'QUANT';
 type QuantDecision = {
   id: string; candleTimestamp: number; regime: string; strategy: string | null;
   direction: 'LONG' | 'SHORT' | null; outcome: string; reason: string;
@@ -60,6 +61,9 @@ export function QuantCockpit() {
   const { isDark, toggleDarkMode } = useERPTheme();
   const [symbol, setSymbol] = useState<Symbol>('BTCUSDT');
   const [tf, setTf] = useState<Timeframe>('5m');
+  const [chartSource, setChartSource] = useState<ChartSource>('AUTO');
+  const [aiScenarios, setAiScenarios] = useState<any[]>([]);
+  const [aiScenarioError, setAiScenarioError] = useState(false);
   const [quant, setQuant] = useState<QuantResponse | null>(null);
   const [markets, setMarkets] = useState<MarketDirectory[]>([]);
   const [candles, setCandles] = useState<CandleData[]>([]);
@@ -73,13 +77,17 @@ export function QuantCockpit() {
   const refresh = useCallback(async () => {
     const api = getApiBaseUrl();
     try {
-      const [q, marketList, chart, state, signalData] = await Promise.all([
+      const [q, marketList, chart, state, signalData, aiWatchData] = await Promise.all([
         fetch(`${api}/api/v1/markets/${symbol}/quant?limit=80`, { cache: 'no-store' }),
         fetch(`${api}/api/v1/markets`, { cache: 'no-store' }),
         fetch(`${api}/api/v1/markets/${symbol}/candles?timeframe=${tf}&limit=150`,
           { cache: 'no-store' }),
         fetch(`${api}/api/v1/markets/${symbol}/state`, { cache: 'no-store' }),
         fetch(`${api}/api/v1/markets/${symbol}/signals?limit=50`, { cache: 'no-store' }),
+        // The legacy discovery endpoint is independent of the quantitative engine.
+        fetch(`${api}/api/v1/discovery/scenarios?limit=100`, { cache: 'no-store' })
+          .then(async response => response.ok ? await response.json() : null)
+          .catch(() => null),
       ]);
       if (![q, marketList, chart, state, signalData].every(r => r.ok)) {
         throw new Error('El backend cuantitativo no respondió correctamente');
@@ -91,6 +99,9 @@ export function QuantCockpit() {
       setCandles(json[2].data);
       setMarketState(json[3].data);
       setSignals(json[4].data);
+      const validAiData = aiWatchData?.success === true && Array.isArray(aiWatchData.data);
+      setAiScenarios(validAiData ? aiWatchData.data : []);
+      setAiScenarioError(!validAiData);
       setRefreshTime(Date.now());
       setError(null);
     } catch (err: any) {
@@ -115,7 +126,7 @@ export function QuantCockpit() {
   const recent = quant?.decisions || [];
   const observedSignals = signals.filter(s => !closedStates.has(s.status));
   const latestCandidate = recent.find(d => d.strategy && d.entryPrice != null && d.stopLoss != null);
-  const chartScenarios = useMemo(() => {
+  const quantChartScenarios = useMemo(() => {
     if (!latestCandidate || !latestCandidate.entryPrice || !latestCandidate.stopLoss ||
         !['SHADOW_QUALIFIED', 'PAPER_SIGNAL'].includes(latestCandidate.outcome)) return [];
     if (Date.now() - latestCandidate.candleTimestamp > 45 * 60000) return [];
@@ -127,10 +138,21 @@ export function QuantCockpit() {
       entryZoneMax: latestCandidate.entryPrice,
       stopLossPrice: latestCandidate.stopLoss,
       target14Price: latestCandidate.takeProfit,
+      netRR14: latestCandidate.netRR,
       discoveryTimestamp: latestCandidate.candleTimestamp,
       validUntilTimestamp: latestCandidate.candleTimestamp + 45 * 60000,
     }];
   }, [latestCandidate, symbol]);
+
+  // Do not attribute symbol-less legacy BTC scenarios to ETH.
+  const marketAiScenarios = aiScenarios.filter(s => (s.symbol || 'BTCUSDT') === symbol);
+  const aiWatch = resolveWatchForChart(marketAiScenarios, null, symbol);
+  const quantWatch = resolveWatchForChart(quantChartScenarios, null, symbol);
+  const displayedSource = chartSource === 'AUTO'
+    ? (quantWatch ? 'QUANT' : aiWatch ? 'AI' : null)
+    : chartSource;
+  const displayedWatch = displayedSource === 'AI' ? aiWatch : displayedSource === 'QUANT' ? quantWatch : null;
+  const chartScenarios = displayedWatch ? [displayedWatch] : [];
 
   const infoCards = [
     { title: 'Velas evaluadas · 24h', value: quant?.summary?.evaluatedCandles ?? '—', note: 'Una evaluación por cada cierre 5m', icon: Activity },
@@ -200,11 +222,39 @@ export function QuantCockpit() {
 
         <section className="grid grid-cols-1 xl:grid-cols-[minmax(0,1.8fr)_minmax(330px,1fr)] gap-4">
           <div className="min-w-0 space-y-3">
+            <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-[#131c2a] px-3 py-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-semibold text-slate-600 dark:text-slate-300">Escenario del gráfico</span>
+                <div className="flex flex-wrap gap-1">
+                  {([{ value: 'AUTO', label: 'Automático' }, { value: 'AI', label: 'IA' }, { value: 'QUANT', label: 'Matemático' }] as const).map(source => (
+                    <button key={source.value} type="button" aria-pressed={chartSource === source.value}
+                      onClick={() => setChartSource(source.value)}
+                      className={`px-2.5 py-1 rounded-lg border text-xs font-semibold ${chartSource === source.value
+                        ? 'bg-sky-600 text-white border-sky-600'
+                        : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'}`}>
+                      {source.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="mt-2 text-xs text-slate-500 dark:text-slate-400" aria-live="polite">
+                {displayedWatch
+                  ? displayedSource === 'AI'
+                    ? 'IA · Escenario de vigilancia, no implica entrada autorizada.'
+                    : 'Matemático · Candidato apto según el motor cuantitativo, no implica operación abierta.'
+                  : displayedSource === 'AI'
+                    ? 'Sin escenarios IA vigentes para este mercado.'
+                    : displayedSource === 'QUANT'
+                      ? 'Sin candidatos matemáticos aptos y vigentes.'
+                      : 'Sin escenarios vigentes ni candidatos matemáticos aptos.'}
+              </div>
+              {aiScenarioError && <p role="status" className="mt-1 text-xs text-amber-600 dark:text-amber-400">No se pudieron consultar los escenarios IA.</p>}
+            </div>
             <CandleChart symbol={symbol} isDark={isDark} candles={candles}
               currentCandle={marketState?.currentCandle?.[tf] || null}
               timeframe={tf} onTimeframeChange={setTf} scenarios={chartScenarios}
-              overlayLabel="Señal matemática"/>
-            <p className="text-xs text-slate-500 dark:text-slate-400 px-1">El gráfico muestra los niveles del último candidato vigente. Los datos se actualizan automáticamente cada 15 segundos.</p>
+              overlayLabel={displayedSource === 'AI' ? 'Escenario IA' : displayedSource === 'QUANT' ? 'Candidato matemático' : 'Escenario / zonas'}/>
+            <p className="text-xs text-slate-500 dark:text-slate-400 px-1">En automático se prioriza un candidato matemático apto y vigente; si no existe, se muestra el escenario IA vigente. Las oportunidades rechazadas permanecen en la auditoría. Actualización cada 15 segundos.</p>
           </div>
 
           <div className="space-y-4">
@@ -224,7 +274,7 @@ export function QuantCockpit() {
             </div>
 
             <div className="rounded-2xl bg-white dark:bg-[#131c2a] border border-[#e1e6ed] dark:border-slate-800 p-5">
-              <div className="flex items-center gap-2 mb-3"><BarChart3 size={18} className="text-slate-500"/><h2 className="font-bold">Último candidato</h2></div>
+              <div className="flex items-center gap-2 mb-3"><BarChart3 size={18} className="text-slate-500"/><h2 className="font-bold">Último candidato matemático</h2></div>
               {latestCandidate ? <>
                 <div className="flex items-center gap-2 text-sm font-semibold">
                   {latestCandidate.direction === 'LONG'
