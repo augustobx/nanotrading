@@ -45,6 +45,8 @@ services:
       TIMEZONE: America/Argentina/Buenos_Aires
       DB_TYPE: sqlite
       DB_SQLITE_PATH: /app/data/trading.db
+      # SHADOW by default; PAPER requires explicit opt-in after backtest validation.
+      QUANT_SIGNAL_MODE: ${QUANT_SIGNAL_MODE:-SHADOW}
       CONFIG_MASTER_KEY: ${CONFIG_MASTER_KEY:?CONFIG_MASTER_KEY_REQUIRED}
       DB_HOST: postgres
       DB_PORT: 5432

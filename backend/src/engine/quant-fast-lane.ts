@@ -30,7 +30,7 @@ export interface QuantDetection {
   regime: QuantRegime;
   reason: string;
   candidate: QuantCandidate | null;
-  indicators: { ema50_15m?: number; ema21_5m?: number; atr5m?: number; rvol5m?: number };
+  indicators: { ema50_15m?: number; ema21_5m?: number; atr5m?: number; atr15m?: number; rvol5m?: number };
 }
 
 /** One reproducible pure detector. No AI prompts, network, clock or mutable state.
@@ -75,6 +75,7 @@ export function detectQuantSetup(
   const ema21 = TechnicalIndicators.ema(closes5, 21);
   const ema50 = TechnicalIndicators.ema(closes15, 50);
   const atr = TechnicalIndicators.atr(five, 14);
+  const atr15 = TechnicalIndicators.atr(fifteen, 14);
   const prev5 = five[five.length - 2];
   const last15 = fifteen[fifteen.length - 1];
   const emaNow = ema21[ema21.length - 1];
@@ -87,6 +88,7 @@ export function detectQuantSetup(
   const rvol = avgVolume > 0 ? last5.volume / avgVolume : 0;
   const indicators = {
     ema50_15m: ema15Now, ema21_5m: emaNow, atr5m: atrNow,
+    atr15m: atr15[atr15.length - 1],
     rvol5m: Number(rvol.toFixed(2)),
   };
   if (![emaNow, emaPrev, ema15Now, ema15Prev, atrNow].every(Number.isFinite) || atrNow <= 0) {
@@ -212,26 +214,49 @@ export class QuantFastLane {
       const active = this.deps.stateMachine.getActiveSignals();
       const state = this.deps.getMarketState();
       const history = db.getSignals(500);
+      const activeStatuses = new Set(['ENTRY_VALIDATED', 'ALERT_SENT', 'APPROACHING_ZONE',
+        'IN_ZONE', 'ENTRY_TRIGGERED', 'TRACKING']);
+      const globalActive = history.filter(x => activeStatuses.has(x.status));
+      const globalNotional = globalActive.reduce((sum: number, x: any) =>
+        sum + Math.max(0, Number(x.positionSizeBTC) || 0) * (Number(x.entryPrice) || 0), 0);
       const dayStart = Math.floor(Date.now() / 86400000) * 86400000;
       const enteredToday = history.filter(x => x.simulatedEntryTime >= dayStart).length;
       const realizedToday = history.filter(x => x.exitTime >= dayStart)
         .reduce((total: number, x: any) => total + (Number(x.realizedNetPnlUsdt) || 0), 0);
+      const weeklyStart = Date.now() - 7 * 86400000;
+      const realizedWeek = history.filter(x => x.exitTime >= weeklyStart)
+        .reduce((total: number, x: any) => total + (Number(x.realizedNetPnlUsdt) || 0), 0);
+      const closedByRecency = history.filter(x => Number(x.exitTime) > 0 &&
+        Number.isFinite(x.realizedNetPnlUsdt))
+        .sort((a, b) => b.exitTime - a.exitTime);
+      let lossStreak = 0;
+      for (const closed of closedByRecency) {
+        if (closed.realizedNetPnlUsdt >= 0) break;
+        lossStreak++;
+      }
       const violations: string[] = [];
       if (!selected.isValid || selected.netRR < policy.minNetRR) violations.push('RR_POLICY');
       if (selected.netLossUSDT > Math.min(policy.maxRiskPerTradeUsdt,
         policy.capitalUsdt * policy.maxRiskPerTradePercent / 100)) violations.push('POSITION_RISK');
-      if (active.length >= policy.maxActiveSignals) violations.push('MAX_ACTIVE_SIGNALS');
+      if (Math.max(active.length, globalActive.length) >= policy.maxActiveSignals) violations.push('MAX_ACTIVE_SIGNALS');
+      if (globalNotional + selected.notionalValueUSDT > policy.maxSimultaneousExposureUsdt) violations.push('PORTFOLIO_EXPOSURE');
       if (enteredToday >= policy.maxDailyEntries) violations.push('MAX_DAILY_ENTRIES');
       if (-realizedToday >= Math.min(policy.maxDailyLossUsdt,
         policy.capitalUsdt * policy.maxDailyLossPercent / 100)) violations.push('DAILY_LOSS_LIMIT');
+      if (-realizedWeek >= Math.min(policy.maxWeeklyLossUsdt,
+        policy.capitalUsdt * policy.maxWeeklyLossPercent / 100)) violations.push('WEEKLY_LOSS_LIMIT');
+      if (lossStreak >= policy.maxConsecutiveLosses) violations.push('CONSECUTIVE_LOSSES');
       if (policy.stopLossCeilings.maxSlDistancePercent.enabled &&
           candidate.riskDistance / candidate.entryPrice * 100 >
           policy.stopLossCeilings.maxSlDistancePercent.value) violations.push('SL_DISTANCE');
       if (policy.stopLossCeilings.maxSlDistanceUsdt.enabled &&
           candidate.riskDistance > policy.stopLossCeilings.maxSlDistanceUsdt.value) violations.push('SL_USDT');
       if (policy.stopLossCeilings.maxSlDistanceAtrMultiplier.enabled &&
-          candidate.riskDistance / Math.max(candidate.atr5m, 0.001) >
+          candidate.riskDistance / Math.max(detection.indicators.atr15m || 0, 0.001) >
           policy.stopLossCeilings.maxSlDistanceAtrMultiplier.value) violations.push('SL_ATR');
+      if (!Number.isFinite(detection.indicators.atr15m) ||
+          detection.indicators.atr15m! < policy.marketRestrictions.minAtrUsdt ||
+          detection.indicators.atr15m! > policy.marketRestrictions.maxAtrUsdt) violations.push('ATR_15M_OUTSIDE_POLICY');
       if (policy.stopLossCeilings.maxMonetaryLossUsdt.enabled &&
           selected.netLossUSDT > policy.stopLossCeilings.maxMonetaryLossUsdt.value) violations.push('SL_MONETARY');
       if (!Number.isFinite(state.ticker?.spreadPcnt) ||
