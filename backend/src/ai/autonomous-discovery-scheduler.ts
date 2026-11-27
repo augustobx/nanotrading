@@ -119,7 +119,14 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
     this.db = options.db;
     this.symbol = options.symbol || 'BTCUSDT';
     this.config = this.db.getDiscoverySchedulerConfig(this.symbol);
-
+    // Load the pending event synchronously before attaching listeners.
+    // A backend restart must never silently discard a confirmed breakout.
+    this.pendingNeutralBreakout = this.db.getPendingNeutralBreakout(this.symbol);
+    // A restart must not reset a recently spent analysis cooldown.
+    const lastAudit = this.db.getDiscoveryAudits(1, this.symbol)[0];
+    if (lastAudit && lastAudit.timestamp > Date.now() - 4 * 3600_000) {
+      this.lastTriggerTimestamp = lastAudit.timestamp;
+    }
   }
 
   public start(): void {
@@ -213,6 +220,8 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
         this.db.logEvent('WARN', 'DiscoveryScheduler', 'Neutral breakout expired while awaiting discovery', {
           symbol: this.symbol, price: this.pendingNeutralBreakout.price,
         });
+        // Clearing a persisted queue is required; fail closed if SQLite fails.
+        this.db.savePendingNeutralBreakout(this.symbol, null);
         this.pendingNeutralBreakout = null;
       } else {
         void this.triggerDiscovery('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH',
@@ -230,16 +239,32 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
 
   /** Coalesce confirmed breakouts without bypassing cooldown, provider backoff,
    * global budget or the existing active-directional-scenario guard. */
-  public queueConfirmedNeutralBreakout(price: number): void {
-    if (!Number.isFinite(price) || price <= 0) return;
+  public queueConfirmedNeutralBreakout(price: number): boolean {
+    if (!Number.isFinite(price) || price <= 0) return false;
     if (!this.pendingNeutralBreakout) {
-      this.pendingNeutralBreakout = { price, confirmedAt: Date.now() };
-      this.db.logEvent('INFO', 'DiscoveryScheduler', 'Confirmed neutral breakout queued for autonomous discovery', {
-        symbol: this.symbol, price,
-      });
+      const pending = { price, confirmedAt: Date.now() };
+      try {
+        // Durable write MUST precede any irreversible neutral transition.
+        this.db.savePendingNeutralBreakout(this.symbol, pending);
+      } catch (err: any) {
+        this.db.logEvent('CRITICAL', 'DiscoveryScheduler',
+          'Confirmed breakout NOT queued; SQLite persistence failed', {
+            symbol: this.symbol, price, error: err.message,
+          });
+        return false;
+      }
+      this.pendingNeutralBreakout = pending;
+      this.db.logEvent('INFO', 'DiscoveryScheduler',
+        'Confirmed neutral breakout persisted for autonomous discovery', {
+          symbol: this.symbol, price,
+        });
     }
-    void this.triggerDiscovery('RANGE_BREAKOUT_FROM_NEUTRAL_WATCH',
-      this.pendingNeutralBreakout.price);
+    // Defer paid work until the watcher has finished recording COMPLETED.
+    queueMicrotask(() => {
+      if (this.isRunning) void this.triggerDiscovery(
+        'RANGE_BREAKOUT_FROM_NEUTRAL_WATCH', this.pendingNeutralBreakout?.price);
+    });
+    return true;
   }
 
   public async triggerDiscovery(reason: string, currentPrice?: number): Promise<boolean> {
@@ -315,6 +340,7 @@ export class AutonomousDiscoveryScheduler extends EventEmitter {
       this.providerFailureBackoffUntil = null;
       // A completed discovery (even an explicit AI NO_TRADE) satisfies the
       // queued request; do not spend a second time on the same breakout.
+      this.db.savePendingNeutralBreakout(this.symbol, null);
       this.pendingNeutralBreakout = null;
       this.totalAutonomousRuns++;
       this.totalScenariosFound += result.scenarios.length;
