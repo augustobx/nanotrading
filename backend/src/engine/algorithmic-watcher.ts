@@ -48,6 +48,30 @@ export class AlgorithmicWatcher extends EventEmitter {
     this.isRunning = true;
     this.coordinator.on('state_updated', this.onStateUpdated);
     this.coordinator.on('candle_closed', this.onCandleClosed);
+    // Bybit REST backfill loads closed candles without emitting candle_closed.
+    // Recover any confirmed neutral breakouts missed during a container restart.
+    this.reconcileNeutralConfirmedCandles();
+  }
+
+  /** Reconcile persisted neutral watchers with real CLOSED REST candles.
+   * Never replay directional signals, paper entries or AI revalidation. */
+  public reconcileNeutralConfirmedCandles(): void {
+    if (!this.isRunning) return;
+    const activeNeutral = this.scenarioRegistry.getAllActive().filter(sc =>
+      (sc.direction === 'NEUTRAL' || sc.kind === 'NEUTRAL_OBSERVATION') &&
+      sc.validUntilTimestamp > Date.now());
+    if (!activeNeutral.length) return;
+    const earliest = Math.min(...activeNeutral.map(sc => sc.discoveryTimestamp));
+    const duration = TIMEFRAME_DURATION_MS['15m'];
+    const now = Date.now();
+    const candles = this.coordinator.getCandleManager?.()?.getCandles('15m', 200) || [];
+    for (const candle of candles.filter((c: any) =>
+      c.confirmed === true && c.timeframe === '15m' &&
+      (!c.symbol || c.symbol === activeNeutral[0].symbol) &&
+      Number.isFinite(c.timestamp) && c.timestamp + duration > earliest &&
+      c.timestamp + duration <= now).sort((a: any, b: any) => a.timestamp - b.timestamp)) {
+      this.evaluateCandleClose(candle, true);
+    }
   }
 
   public stop(): void {
@@ -67,6 +91,9 @@ export class AlgorithmicWatcher extends EventEmitter {
       neutralBreakoutProgress: progress,
       currentPrice: progress.price,
       lastCheckedTimestamp: progress.observedAt,
+      ...(Number.isFinite(progress.candleTimestamp)
+        ? { neutralLastEvaluatedCandleTimestamp: progress.candleTimestamp }
+        : {}),
     });
     if (log) {
       this.scenarioRegistry.logLifecycle({
@@ -338,15 +365,13 @@ export class AlgorithmicWatcher extends EventEmitter {
     return { confirmed: relativeVolume >= 1.2, relativeVolume, baselineCount: prior.length };
   }
 
-  public evaluateCandleClose(candle: any): void {
+  public evaluateCandleClose(candle: any, neutralRecoveryOnly = false): void {
     if (!candle || candle.confirmed !== true || !Number.isFinite(candle.close)) return;
     const inactiveStatuses = ['EXPIRED', 'INVALIDATED', 'CANCELLED', 'COMPLETED', 'DISCARDED'];
     const activeScenarios = this.scenarioRegistry.getAllActive().filter((s) => !inactiveStatuses.includes(s.status));
     if (activeScenarios.length === 0) return;
 
     const now = Date.now();
-    let neutralBreakout: { price: number; reason: string } | null = null;
-
     for (const sc of activeScenarios) {
       // 1. NEUTRAL_OBSERVATION check on candle close
       if (sc.kind === 'NEUTRAL_OBSERVATION' || sc.direction === 'NEUTRAL') {
@@ -356,7 +381,10 @@ export class AlgorithmicWatcher extends EventEmitter {
         // Bybit kline.timestamp is the OPEN time. A 15m candle beginning
         // before discovery may legitimately CLOSE after the watch was created.
         const duration = TIMEFRAME_DURATION_MS[sc.timeframe];
-        if (!duration || candle.timestamp + duration <= sc.discoveryTimestamp) continue;
+        if (!duration || candle.timestamp + duration <= sc.discoveryTimestamp ||
+            candle.timestamp + duration > sc.validUntilTimestamp ||
+            (sc.neutralLastEvaluatedCandleTimestamp !== undefined &&
+              sc.neutralLastEvaluatedCandleTimestamp >= candle.timestamp)) continue;
         if (!Number.isFinite(sc.entryZoneMin) || !Number.isFinite(sc.entryZoneMax) ||
             sc.entryZoneMin <= 0 || sc.entryZoneMax <= sc.entryZoneMin) continue;
 
@@ -367,6 +395,10 @@ export class AlgorithmicWatcher extends EventEmitter {
               state: 'BACK_INSIDE_RANGE', price: candle.close, observedAt: now,
               candleTimestamp: candle.timestamp,
             }, `Vela ${sc.timeframe} cerró nuevamente dentro del rango; sin ruptura confirmada.`, true);
+          } else {
+            this.scenarioRegistry.updateMetrics(sc.id, {
+              neutralLastEvaluatedCandleTimestamp: candle.timestamp,
+            });
           }
           continue;
         }
@@ -390,6 +422,20 @@ export class AlgorithmicWatcher extends EventEmitter {
         const breakoutReason = `Ruptura confirmada en vela ${sc.timeframe} cerrada: ${candle.close.toFixed(1)} ${side === 'CEILING'
           ? `superó techo ${sc.entryZoneMax.toFixed(1)}`
           : `perforó piso ${sc.entryZoneMin.toFixed(1)}`}, RVOL ${evidence.relativeVolume!.toFixed(2)}.`;
+        // Persist the scheduler event BEFORE marking this watch COMPLETED.
+        // A crash between these operations may cause harmless reconciliation,
+        // never silent disappearance of a real, confirmed breakout.
+        const queued = this.coordinator.getDiscoveryScheduler?.()
+          ?.queueConfirmedNeutralBreakout?.(candle.close);
+        if (queued === false) {
+          this.scenarioRegistry.logLifecycle({
+            scenarioId: sc.id, fromStatus: sc.status, toStatus: sc.status,
+            timestamp: now,
+            reason: 'Ruptura confirmada pero no se pudo persistir su solicitud de IA; seguirá en observación hasta reintento.',
+            metadata: { neutralObservation: true, progress: 'QUEUE_PERSIST_FAILED' },
+          });
+          continue;
+        }
         this.setNeutralProgress(sc, {
           state: 'BREAKOUT_CONFIRMED', side, price: candle.close, observedAt: now,
           candleTimestamp: candle.timestamp,
@@ -404,10 +450,10 @@ export class AlgorithmicWatcher extends EventEmitter {
         this.emit('neutral_range_breakout', {
           scenario: sc, breakoutPrice: candle.close, reason: breakoutReason,
         });
-        // One coalesced scheduler request for multiple neutral watches.
-        if (!neutralBreakout) neutralBreakout = { price: candle.close, reason: breakoutReason };
         continue;
       }
+
+      if (neutralRecoveryOnly) continue;
 
       // 2. Sequential conditions check on candle close
       if (candle.timestamp < sc.discoveryTimestamp) continue;
@@ -480,12 +526,9 @@ export class AlgorithmicWatcher extends EventEmitter {
       }
     }
 
-    if (neutralBreakout) {
-      this.coordinator.getDiscoveryScheduler?.()?.queueConfirmedNeutralBreakout?.(
-        neutralBreakout.price
-      );
-    }
-    this.evaluateTick(candle.close);
+    // The queue was already persisted synchronously before closing the watch.
+    // Do not replay historical prices into live directional signal handling.
+    if (!neutralRecoveryOnly) this.evaluateTick(candle.close);
   }
 
   public evaluateCandlePattern(pattern: string, candle: any, prevCandle?: any): boolean {
