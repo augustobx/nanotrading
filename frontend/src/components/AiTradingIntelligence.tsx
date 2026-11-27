@@ -358,6 +358,21 @@ export function AiTradingIntelligence({
         </div>
       </div>
 
+      {schedulerStatus?.pendingNeutralBreakout && (
+        <div role="status" className="rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-800 dark:text-amber-300">
+          <strong>Ruptura de rango confirmada en {marketSymbol}.</strong>{' '}
+          La solicitud de nuevo descubrimiento IA está en cola
+          {schedulerStatus.lastBlockedTrigger?.code === 'COOLDOWN'
+            ? ' por cooldown de seguridad'
+            : schedulerStatus.lastBlockedTrigger?.code === 'PROVIDER_BACKOFF'
+            ? ' por pausa del proveedor IA'
+            : schedulerStatus.lastBlockedTrigger?.code === 'DIRECTIONAL_SCENARIO_ACTIVE'
+            ? ' porque ya existe una hipótesis direccional activa'
+            : ' respetando los filtros y el presupuesto'}.
+          {' '}No existe una señal autorizada hasta completar otro análisis.
+        </div>
+      )}
+
       {/* Message Banner */}
       {message && (
         <div
