@@ -843,28 +843,40 @@ export class DatabaseService {
       ORDER BY a.timestamp DESC LIMIT 5`).all(scenarioId) as any[]).map(row => JSON.parse(row.payload_json));
   }
 
-  public getDiscoveryFunnel(): Record<string, unknown> {
+  public getDiscoveryFunnel(symbol?: string): Record<string, unknown> {
+    const bind = symbol ? [symbol] : [];
+    const scenariosFilter = symbol ? ' WHERE symbol = ?' : '';
+    const auditsFilter = symbol ?
+      " WHERE json_extract(a.payload_json, '$.snapshot.symbol') = ?" : '';
+    const signalsFilter = symbol ? ' WHERE symbol = ?' : '';
     const counts = this.db.prepare(`SELECT COUNT(*) scenarios,
       SUM(CASE WHEN direction='NEUTRAL' THEN 1 ELSE 0 END) neutral,
       SUM(CASE WHEN direction='LONG' THEN 1 ELSE 0 END) longs,
       SUM(CASE WHEN direction='SHORT' THEN 1 ELSE 0 END) shorts,
       SUM(CASE WHEN direction='NEUTRAL' AND status='COMPLETED' THEN 1 ELSE 0 END) neutralBreakouts,
       SUM(CASE WHEN snapshot_id NOT IN (SELECT id FROM discovery_analyses) THEN 1 ELSE 0 END) legacyScenarios
-      FROM scenarios`).get();
+      FROM scenarios${scenariosFilter}`).get(...bind);
     const signals = this.db.prepare(`SELECT SUM(CASE WHEN consensus_verdict='AUTHORIZED' THEN 1 ELSE 0 END) authorizedSignals,
       COUNT(simulated_entry_time) paperEntries,
-      SUM(CASE WHEN simulated_entry_time IS NOT NULL AND exit_time IS NOT NULL THEN 1 ELSE 0 END) paperClosed FROM signals`).get();
+      SUM(CASE WHEN simulated_entry_time IS NOT NULL AND exit_time IS NOT NULL THEN 1 ELSE 0 END) paperClosed
+      FROM signals${signalsFilter}`).get(...bind);
     return {
       ...counts, ...signals,
-      analyses: this.db.prepare('SELECT outcome, COUNT(*) count FROM discovery_analyses GROUP BY outcome').all(),
+      analyses: this.db.prepare(`SELECT a.outcome, COUNT(*) count FROM discovery_analyses a
+        ${auditsFilter} GROUP BY a.outcome`).all(...bind),
       candidates: this.db.prepare(`SELECT json_extract(c.value, '$.reason') reason, COUNT(*) count
-        FROM discovery_analyses a, json_each(a.payload_json, '$.candidates') c GROUP BY 1`).all(),
+        FROM discovery_analyses a, json_each(a.payload_json, '$.candidates') c
+        ${auditsFilter} GROUP BY 1`).all(...bind),
       providers: this.db.prepare(`SELECT p.key provider, json_extract(p.value, '$.status') status, COUNT(*) count
-        FROM discovery_analyses a, json_each(a.payload_json, '$.providers') p GROUP BY 1,2`).all(),
+        FROM discovery_analyses a, json_each(a.payload_json, '$.providers') p
+        ${auditsFilter} GROUP BY 1,2`).all(...bind),
       revalidations: this.db.prepare(`SELECT s.direction, r.consensus_verdict verdict, COUNT(*) count
-        FROM scenario_revalidations r JOIN scenarios s ON s.id=r.scenario_id GROUP BY 1,2`).all(),
+        FROM scenario_revalidations r JOIN scenarios s ON s.id=r.scenario_id
+        ${symbol ? 'WHERE s.symbol = ?' : ''} GROUP BY 1,2`).all(...bind),
       zoneConfirmed: this.db.prepare(`SELECT s.direction, COUNT(DISTINCT l.scenario_id) count
-        FROM scenario_lifecycle l JOIN scenarios s ON s.id=l.scenario_id WHERE l.to_status='IN_ZONE' GROUP BY 1`).all(),
+        FROM scenario_lifecycle l JOIN scenarios s ON s.id=l.scenario_id
+        WHERE l.to_status='IN_ZONE' ${symbol ? 'AND s.symbol = ?' : ''}
+        GROUP BY 1`).all(...bind),
     };
   }
 
