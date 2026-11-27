@@ -30,7 +30,7 @@ type QuantResponse = {
   executionMode: string;
 };
 type MarketDirectory = {
-  symbol: string; wsConnected: boolean; candle15mStale?: boolean;
+  symbol: string; wsConnected: boolean; candle15mStale?: boolean; candle5mStale?: boolean;
   lastPrice: number | null; last15mClosedAt?: number | null;
 };
 const money = (n: number | undefined | null) => n != null && Number.isFinite(n)
@@ -174,10 +174,10 @@ export function QuantCockpit() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <span className={`inline-flex items-center gap-2 rounded-full text-xs font-semibold px-3 py-2 ${m?.wsConnected && !m?.candle15mStale
+            <span className={`inline-flex items-center gap-2 rounded-full text-xs font-semibold px-3 py-2 ${m?.wsConnected && !m?.candle15mStale && !m?.candle5mStale
               ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300'
               : 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300'}`}>
-              <Radio size={14}/> {m?.wsConnected && !m?.candle15mStale ? 'Datos conectados' : 'Revisar conexión / velas'}
+              <Radio size={14}/> {m?.wsConnected && !m?.candle15mStale && !m?.candle5mStale ? 'Datos conectados' : 'Revisar conexión / velas'}
             </span>
             <span className="inline-flex items-center gap-2 rounded-full bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300 text-xs font-semibold px-3 py-2">
               <ShieldCheck size={14}/> {quant?.mode === 'PAPER' ? 'Paper cuantitativo' : 'Motor en sombra'}
@@ -187,7 +187,7 @@ export function QuantCockpit() {
         </section>
 
         {error && <div role="alert" className="border border-rose-300 bg-rose-50 dark:bg-rose-950/30 rounded-xl px-4 py-3 text-sm text-rose-800 dark:text-rose-300">{error}. No se puede confirmar el estado del motor. {refreshTime && 'Los datos mostrados son anteriores.'}</div>}
-        {m?.candle15mStale && <div role="alert" className="border border-amber-300 bg-amber-50 dark:bg-amber-900/20 rounded-xl px-4 py-3 text-sm text-amber-800 dark:text-amber-300">La última vela de 15m está desactualizada. El motor no debe operar con datos incompletos.</div>}
+        {(m?.candle15mStale || m?.candle5mStale) && <div role="alert" className="border border-amber-300 bg-amber-50 dark:bg-amber-900/20 rounded-xl px-4 py-3 text-sm text-amber-800 dark:text-amber-300">Hay velas de {m?.candle5mStale ? "5m" : ""}{m?.candle5mStale && m?.candle15mStale ? " y " : ""}{m?.candle15mStale ? "15m" : ""} desactualizadas. El motor intenta recuperar datos sin consultar IA.</div>}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {infoCards.map(card => <div key={card.title} className="rounded-2xl bg-white dark:bg-[#131c2a] border border-[#e1e6ed] dark:border-slate-800 p-4 sm:p-5">
             <card.icon size={19} className="text-slate-500 dark:text-slate-400 mb-4"/>
