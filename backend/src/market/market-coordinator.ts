@@ -60,6 +60,7 @@ export class MarketCoordinator extends EventEmitter {
   private isBootstrapped: boolean = false;
   private isStopped: boolean = false;
   private snapshotIntervalTimer: NodeJS.Timeout | null = null;
+  private readonly backfillInProgress = new Set<Timeframe>();
 
   constructor(
     restClient: BybitRestClient,
@@ -184,6 +185,9 @@ export class MarketCoordinator extends EventEmitter {
     // WebSocket events
     this.wsClient.on('connected', () => {
       this.db.logEvent('INFO', 'BybitWS', `Connected to Bybit V5 Linear stream for ${this.symbol}`);
+      // A reconnect does not retroactively emit Bybit candle-close events.
+      // REST reconciliation recovers any 15m breakout missed while disconnected.
+      if (this.isBootstrapped && !this.isStopped) void this.backfillGap('15m');
       this.emit('state_updated', this.getMarketState());
     });
 
@@ -425,19 +429,37 @@ export class MarketCoordinator extends EventEmitter {
   }
 
   public async backfillGap(timeframe: Timeframe): Promise<void> {
+    if (this.backfillInProgress.has(timeframe) || this.isStopped) return;
+    this.backfillInProgress.add(timeframe);
     try {
-      this.db.logEvent('INFO', 'Coordinator', `Starting automatic REST backfill for ${timeframe}`);
+      this.db.logEvent('INFO', 'Coordinator', `Starting automatic REST backfill for ${this.symbol} ${timeframe}`);
       const freshCandles = await this.restClient.getKlines(this.symbol, timeframe, 50);
+      if (this.isStopped) return;
       this.candleManager.loadHistoricalCandles(timeframe, freshCandles);
-      this.db.logEvent('INFO', 'Coordinator', `Backfill complete for ${timeframe}, merged ${freshCandles.length} candles`);
+      // Historical backfill does not emit candle_closed; recover neutral
+      // confirmations without replaying directional/paper trades.
+      if (timeframe === '15m') this.algorithmicWatcher.reconcileNeutralConfirmedCandles();
+      this.db.logEvent('INFO', 'Coordinator',
+        `Backfill complete for ${this.symbol} ${timeframe}, merged ${freshCandles.length} candles`);
     } catch (err: any) {
-      this.db.logEvent('ERROR', 'Coordinator', `Backfill failed for ${timeframe}: ${err.message}`);
+      this.db.logEvent('ERROR', 'Coordinator', `Backfill failed for ${this.symbol} ${timeframe}: ${err.message}`);
+    } finally {
+      this.backfillInProgress.delete(timeframe);
     }
   }
 
   private startSnapshotTimer(): void {
     if (this.snapshotIntervalTimer) clearInterval(this.snapshotIntervalTimer);
     this.snapshotIntervalTimer = setInterval(() => {
+      // Independent candle watchdog: WS can report 'connected' yet stop
+      // delivering closed klines. REST backfill is rate-limited to one
+      // in-flight request per market/timeframe and consumes no IA tokens.
+      const last15m = this.candleManager.getLastClosedCandle('15m');
+      const lastClosedAt = last15m ? last15m.timestamp + 15 * 60000 : 0;
+      if (this.isBootstrapped && !this.isStopped &&
+          (!lastClosedAt || Date.now() - lastClosedAt > 3 * 60000)) {
+        void this.backfillGap('15m');
+      }
       if (this.currentTicker) {
         this.db.saveSnapshot(
           this.symbol,
