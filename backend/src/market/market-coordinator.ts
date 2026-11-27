@@ -317,6 +317,10 @@ export class MarketCoordinator extends EventEmitter {
     this.scenarioRegistry.on('scenario_updated', (sc) => this.emit('scenario_updated', sc));
     this.algorithmicWatcher.on('scenario_approaching', (evt) => this.emit('scenario_approaching', evt));
     this.aiRevalidation.on('entry_validated', (evt: any) => {
+      if (this.quantFastLane.getMode() === 'PAPER') {
+        this.db.logEvent('WARN', 'Coordinator', 'Legacy AI authorization ignored: quant-only paper mode');
+        return;
+      }
       this.emit('scenario_entry_validated', evt);
       const { scenario, currentPrice, riskCalc } = evt;
       if (scenario && scenario.direction !== 'NEUTRAL') {
@@ -387,8 +391,13 @@ export class MarketCoordinator extends EventEmitter {
 
       // 7. Start 24/7 background monitor worker & Algorithmic Watcher
       this.marketMonitorWorker.start();
-      this.algorithmicWatcher.start();
-      this.discoveryScheduler.start();
+      if (this.quantFastLane.getMode() !== 'PAPER') {
+        this.algorithmicWatcher.start();
+        this.discoveryScheduler.start();
+      } else {
+        this.db.logEvent('INFO', 'Coordinator',
+          'PAPER cuantitativo: descubrimiento autónomo IA y watcher IA desactivados como fuente de señales');
+      }
 
       // 8. Start periodic audit snapshot timer (every 60s)
       this.startSnapshotTimer();

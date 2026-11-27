@@ -89,7 +89,8 @@ export class MarketMonitorWorker extends EventEmitter {
   }
 
   private async processSignalEvaluated(consensus: ConsensusResult): Promise<void> {
-    if (consensus.consensusVerdict !== 'AUTHORIZED') return;
+    if (consensus.consensusVerdict !== 'AUTHORIZED' ||
+        this.coordinator.getQuantFastLane?.()?.getMode?.() === 'PAPER') return;
 
     try {
       const signal = this.stateMachine.registerSignalFromConsensus(consensus);
